@@ -1,0 +1,18 @@
+[package]
+name = "oxideav-scribe"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust font rasterizer + shaper + layout for the oxideav framework — TrueType outline flattening, scanline anti-aliasing, GSUB ligatures, GPOS kerning"
+repository = "https://github.com/OxideAV/oxideav-scribe"
+homepage = "https://github.com/OxideAV/oxideav-scribe"
+readme = "README.md"
+keywords = ["font", "rasterizer", "shaper", "truetype", "text"]
+categories = ["graphics", "rendering", "text-processing"]
+
+[dependencies]
+oxideav-core = "0.1"
+oxideav-ttf = "0.0"
+oxideav-pixfmt = "0.1"
