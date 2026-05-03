@@ -8,7 +8,7 @@
 //! convert pen-relative coordinates to absolute destination pixels,
 //! and (3) call `blit_alpha_mask` with the colour for the run.
 
-use crate::cache::{CachedGlyph, GlyphCache, GlyphKey};
+use crate::cache::{subpixel_offset, subpixel_slot, CachedGlyph, GlyphCache, GlyphKey};
 use crate::face::Face;
 use crate::face_chain::{shear_for, FaceChain};
 use crate::rasterizer::Rasterizer;
@@ -236,13 +236,25 @@ impl Composer {
         for g in glyphs {
             let face = chain.face(g.face_idx);
             let shear = shear_for(face, style);
-            let key = GlyphKey::new_styled(face.id(), g.glyph_id, size_px, shear);
+
+            // Sub-pixel positioning: take the fractional part of the
+            // desired pre-bbox pen X, snap it to one of SUBPIXEL_STEPS
+            // slots, rasterise (with cache) at that sub-pixel offset.
+            // The integer part of the pen X drives the blit origin so
+            // the bitmap lands at the right whole-pixel position.
+            let target_x = pen_x + g.x_offset;
+            let int_x = target_x.floor();
+            let frac_x = target_x - int_x;
+            let slot = subpixel_slot(frac_x);
+            let key = GlyphKey::new_subpixel(face.id(), g.glyph_id, size_px, shear, slot);
             let cached = if let Some(c) = self.cache.get(&key) {
                 c
             } else {
-                let bitmap = Rasterizer::raster_glyph_styled(face, g.glyph_id, size_px, shear)?;
+                let sub_x = subpixel_offset(slot);
+                let bitmap =
+                    Rasterizer::raster_glyph_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
                 let (off_x, off_y) =
-                    Rasterizer::glyph_offset_styled(face, g.glyph_id, size_px, shear)?;
+                    Rasterizer::glyph_offset_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
                 let entry = CachedGlyph {
                     bitmap,
                     offset_x: off_x,
@@ -264,7 +276,11 @@ impl Composer {
                 (cached.bitmap.clone(), 0.0, 0.0)
             };
 
-            let glyph_x = pen_x + g.x_offset + cached.offset_x + blit_dx;
+            // X: the bitmap baked in the sub-pixel offset; only the
+            // INTEGER part of the desired position contributes to the
+            // blit origin (plus the bbox-relative offset_x and any
+            // dilation shift).
+            let glyph_x = int_x + cached.offset_x + blit_dx;
             let glyph_y = pen_y + g.y_offset + cached.offset_y + blit_dy;
 
             if !blit_bitmap.is_empty() {

@@ -105,19 +105,52 @@ pub fn flatten_with_shear(
     scale: f32,
     shear_x_per_y: f32,
 ) -> Option<FlatOutline> {
+    flatten_with_shear_offset(outline, scale, shear_x_per_y, 0.0)
+}
+
+/// Flatten with shear AND a horizontal sub-pixel offset (raster-pixel
+/// units, applied AFTER scale + Y-flip). The offset shifts every
+/// flattened point right by `x_subpixel`, growing the right edge of
+/// the bbox by the same amount and leaving the left edge fixed at
+/// `floor(x_min)`. The composer queries [`subpixel_offset`] for the
+/// fractional X it baked in and uses `floor(pen_x)` as the blit
+/// origin so the bitmap lands at the correct fractional position.
+///
+/// `x_subpixel == 0.0` is bit-identical to [`flatten_with_shear`].
+///
+/// [`subpixel_offset`]: crate::cache::subpixel_offset
+pub fn flatten_with_shear_offset(
+    outline: &TtOutline,
+    scale: f32,
+    shear_x_per_y: f32,
+    x_subpixel: f32,
+) -> Option<FlatOutline> {
     if outline.contours.is_empty() {
         return None;
     }
 
-    // Without shear we can use the font's cached bbox directly (faster +
-    // matches what the original flatten() did exactly so existing tests
-    // don't shift by a sub-pixel rounding).
-    let bounds = if shear_x_per_y == 0.0 {
+    // Without shear or sub-pixel shift we can use the font's cached
+    // bbox directly (faster + bit-identical to the round-1 path).
+    let bounds = if shear_x_per_y == 0.0 && x_subpixel == 0.0 {
         let raw = outline.bounds?;
         FlatBounds {
             x_min: raw.x_min as f32 * scale,
             y_min: -(raw.y_max as f32) * scale,
             x_max: raw.x_max as f32 * scale,
+            y_max: -(raw.y_min as f32) * scale,
+        }
+    } else if shear_x_per_y == 0.0 {
+        // Sub-pixel only: derive from cached bbox, shift right by
+        // `x_subpixel`. Round x_min DOWN so the bitmap left edge stays
+        // pixel-aligned (the sub-pixel slot is encoded in where the
+        // glyph silhouette sits within the same-sized bitmap).
+        let raw = outline.bounds?;
+        let xmin = raw.x_min as f32 * scale + x_subpixel;
+        let xmax = raw.x_max as f32 * scale + x_subpixel;
+        FlatBounds {
+            x_min: xmin.floor(),
+            y_min: -(raw.y_max as f32) * scale,
+            x_max: xmax,
             y_max: -(raw.y_min as f32) * scale,
         }
     } else {
@@ -129,7 +162,7 @@ pub fn flatten_with_shear(
         for c in &outline.contours {
             for p in &c.points {
                 let (sx, sy) = shear_point(p.x as f32, p.y as f32, shear_x_per_y);
-                let rx = sx * scale;
+                let rx = sx * scale + x_subpixel;
                 let ry = -sy * scale;
                 x_min = x_min.min(rx);
                 y_min = y_min.min(ry);
@@ -140,8 +173,16 @@ pub fn flatten_with_shear(
         if !x_min.is_finite() {
             return None;
         }
+        // Round x_min DOWN so the bitmap left edge is pixel-aligned;
+        // the sub-pixel offset is encoded in the silhouette position
+        // within the bitmap.
+        let xmin_floor = if x_subpixel != 0.0 {
+            x_min.floor()
+        } else {
+            x_min
+        };
         FlatBounds {
-            x_min,
+            x_min: xmin_floor,
             y_min,
             x_max,
             y_max,
@@ -150,7 +191,7 @@ pub fn flatten_with_shear(
 
     let mut contours = Vec::with_capacity(outline.contours.len());
     for c in &outline.contours {
-        let pts = flatten_contour(&c.points, scale, &bounds, shear_x_per_y);
+        let pts = flatten_contour(&c.points, scale, &bounds, shear_x_per_y, x_subpixel);
         if pts.len() >= 2 {
             contours.push(pts);
         }
@@ -173,11 +214,20 @@ fn shear_point(x: f32, y: f32, shear_x_per_y: f32) -> (f32, f32) {
 /// point so the result is in raster pixels with origin at top-left of
 /// the glyph bbox. Honour an optional horizontal shear (applied in TT
 /// Y-up coordinates BEFORE the Y-flip) so synthesised italic produces
-/// the visually-expected forward slant.
+/// the visually-expected forward slant. `x_subpixel` is added in
+/// raster-X after scaling so sub-pixel positioning shifts the glyph
+/// inside its bitmap.
 #[inline]
-fn map_point(x: i16, y: i16, scale: f32, bounds: &FlatBounds, shear_x_per_y: f32) -> (f32, f32) {
+fn map_point(
+    x: i16,
+    y: i16,
+    scale: f32,
+    bounds: &FlatBounds,
+    shear_x_per_y: f32,
+    x_subpixel: f32,
+) -> (f32, f32) {
     let (sx, sy) = shear_point(x as f32, y as f32, shear_x_per_y);
-    let rx = sx * scale - bounds.x_min;
+    let rx = sx * scale + x_subpixel - bounds.x_min;
     let ry = -sy * scale - bounds.y_min;
     (rx, ry)
 }
@@ -196,6 +246,7 @@ fn flatten_contour(
     scale: f32,
     bounds: &FlatBounds,
     shear_x_per_y: f32,
+    x_subpixel: f32,
 ) -> Vec<(f32, f32)> {
     if pts.is_empty() {
         return Vec::new();
@@ -210,7 +261,7 @@ fn flatten_contour(
         let mut ord: Vec<OrderedPoint> = Vec::with_capacity(n);
         for i in 0..n {
             let p = pts[(s + i) % n];
-            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y);
+            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y, x_subpixel);
             ord.push((x, y, p.on_curve));
         }
         let s_xy = (ord[0].0, ord[0].1);
@@ -219,15 +270,15 @@ fn flatten_contour(
         // All-off-curve: the start is the midpoint of pts[0]..pts[1].
         let p0 = pts[0];
         let p1 = pts[1 % n];
-        let (x0, y0) = map_point(p0.x, p0.y, scale, bounds, shear_x_per_y);
-        let (x1, y1) = map_point(p1.x, p1.y, scale, bounds, shear_x_per_y);
+        let (x0, y0) = map_point(p0.x, p0.y, scale, bounds, shear_x_per_y, x_subpixel);
+        let (x1, y1) = map_point(p1.x, p1.y, scale, bounds, shear_x_per_y, x_subpixel);
         let mid = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
         let mut ord: Vec<OrderedPoint> = Vec::with_capacity(n + 1);
         // Insert the synthetic on-curve start, then walk the original
         // ring in order.
         ord.push((mid.0, mid.1, true));
         for p in pts.iter().take(n) {
-            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y);
+            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y, x_subpixel);
             ord.push((x, y, p.on_curve));
         }
         (mid, ord)

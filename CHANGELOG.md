@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 3, sub-pixel positioning (2026-05-04)
+
+- `cache::SUBPIXEL_STEPS = 16` + `subpixel_slot(x_fract)` +
+  `subpixel_offset(slot)` — quantise the fractional part of a pen X
+  position to one of 16 sub-pixel positions per pixel. The composer
+  uses these to bake the sub-pixel placement into the cached glyph
+  bitmap, then blits at `floor(pen_x)`. Result: visibly cleaner edges
+  at 12–14 px body sizes than naive integer rounding.
+- `GlyphKey { ..., x_subpixel_q4: u8 }` + `GlyphKey::new_subpixel(...)`
+  — extends the LRU key with the sub-pixel slot. Each unique
+  `(face, glyph, size, shear)` tuple now occupies up to 16 cache
+  slots; in practice ~3-4 are touched per glyph in typical text and
+  the 256-entry default still holds an entire cue.
+- `Rasterizer::raster_glyph_subpixel(face, gid, size_px, shear,
+  x_subpixel)` + `Rasterizer::glyph_offset_subpixel(...)` — outline
+  is shifted right by `x_subpixel` pixels before flatten, so the
+  resulting alpha pattern reflects the sub-pixel placement. The
+  bitmap left edge stays floor-aligned so the composer can blit at
+  integer X.
+- `outline::flatten_with_shear_offset(...)` — the underlying flatten
+  helper that takes the shear + sub-pixel arguments. Bit-identical to
+  `flatten_with_shear` when `x_subpixel == 0.0`.
+- `render_text_styled` now uses sub-pixel positioning automatically;
+  `Composer::compose_run` / `compose_run_styled` /
+  `compose_run_with_stroke` likewise. Existing callers see a quality
+  improvement with no API changes.
+
 ## [0.1.0](https://github.com/OxideAV/oxideav-scribe/compare/v0.0.1...v0.1.0) - 2026-05-03
 
 ### Other

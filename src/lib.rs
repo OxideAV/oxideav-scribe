@@ -32,14 +32,17 @@ pub mod shaper;
 pub mod stroke;
 pub mod style;
 
-pub use cache::{CachedGlyph, GlyphCache, GlyphKey};
+pub use cache::{
+    subpixel_offset, subpixel_slot, CachedGlyph, GlyphCache, GlyphKey, SUBPIXEL_STEPS,
+};
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use compose::{Composer, RgbaBitmap, StrokeStyle};
 pub use face::{Face, FaceKind};
 pub use face_chain::{shear_for, FaceChain};
 pub use layout::{run_width, wrap_lines};
 pub use outline::{
-    flatten, flatten_cubic, flatten_cubic_with_shear, flatten_with_shear, FlatBounds, FlatOutline,
+    flatten, flatten_cubic, flatten_cubic_with_shear, flatten_with_shear,
+    flatten_with_shear_offset, FlatBounds, FlatOutline,
 };
 pub use rasterizer::{AlphaBitmap, Rasterizer};
 pub use shaper::{PositionedGlyph, Shaper};
@@ -132,26 +135,36 @@ pub fn render_text_styled(
     let shear = synthetic_italic_shear(style, face.italic_angle());
 
     // Pre-rasterise each glyph (once) so we know its bbox + can reuse
-    // the bitmap during the compose pass below.
+    // the bitmap during the compose pass below. Sub-pixel positioning:
+    // each glyph is rasterised with the fractional part of its target
+    // pen position baked into the outline, so the per-glyph alpha
+    // pattern reflects its sub-pixel placement (sharper edges at small
+    // body sizes than naive integer rounding).
     let mut pen = 0.0_f32;
     let mut x_min = f32::INFINITY;
     let mut y_min = f32::INFINITY;
     let mut x_max = f32::NEG_INFINITY;
     let mut y_max = f32::NEG_INFINITY;
-    let mut prepared: Vec<(PositionedGlyph, AlphaBitmap, f32, f32)> =
+    let mut prepared: Vec<(PositionedGlyph, AlphaBitmap, f32, f32, f32)> =
         Vec::with_capacity(glyphs.len());
     for g in &glyphs {
-        let bitmap = Rasterizer::raster_glyph_styled(face, g.glyph_id, size_px, shear)?;
-        let (off_x, off_y) = Rasterizer::glyph_offset_styled(face, g.glyph_id, size_px, shear)?;
+        let target = pen + g.x_offset;
+        let int_x = target.floor();
+        let frac_x = target - int_x;
+        let slot = crate::cache::subpixel_slot(frac_x);
+        let sub_x = crate::cache::subpixel_offset(slot);
+        let bitmap = Rasterizer::raster_glyph_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
+        let (off_x, off_y) =
+            Rasterizer::glyph_offset_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
         if !bitmap.is_empty() {
-            let glyph_x = pen + g.x_offset + off_x;
+            let glyph_x = int_x + off_x;
             let glyph_y = g.y_offset + off_y;
             x_min = x_min.min(glyph_x);
             y_min = y_min.min(glyph_y);
             x_max = x_max.max(glyph_x + bitmap.width as f32);
             y_max = y_max.max(glyph_y + bitmap.height as f32);
         }
-        prepared.push((*g, bitmap, off_x, off_y));
+        prepared.push((*g, bitmap, off_x, off_y, int_x));
         pen += g.x_advance;
     }
 
@@ -174,10 +187,9 @@ pub fn render_text_styled(
     let dw = dst.width;
     let dh = dst.height;
     let ds = dst.stride();
-    let mut pen2 = 0.0_f32;
-    for (g, bitmap, off_x, off_y) in prepared {
+    for (g, bitmap, off_x, off_y, int_x) in prepared {
         if !bitmap.is_empty() {
-            let glyph_x = pen2 + g.x_offset + off_x - x_origin;
+            let glyph_x = int_x + off_x - x_origin;
             let glyph_y = g.y_offset + off_y - y_origin;
             oxideav_pixfmt::blit_alpha_mask(
                 &mut dst.data,
@@ -193,7 +205,6 @@ pub fn render_text_styled(
                 color,
             );
         }
-        pen2 += g.x_advance;
     }
 
     Ok(dst)

@@ -40,7 +40,7 @@
 //! they get fixed in round 2.
 
 use crate::face::Face;
-use crate::outline::{flatten_with_shear, FlatBounds};
+use crate::outline::{flatten_with_shear_offset, FlatBounds};
 use crate::Error;
 
 /// Vertical supersampling factor for AA.
@@ -109,6 +109,27 @@ impl Rasterizer {
         size_px: f32,
         shear_x_per_y: f32,
     ) -> Result<AlphaBitmap, Error> {
+        Self::raster_glyph_subpixel(face, glyph_id, size_px, shear_x_per_y, 0.0)
+    }
+
+    /// Rasterise a single glyph at `size_px` with shear AND a
+    /// horizontal sub-pixel offset (`x_subpixel`, in pixels, typically
+    /// 0..1). The outline is shifted right by `x_subpixel` before
+    /// rasterising — the resulting bitmap has slightly different edge
+    /// coverage than the same glyph at `x_subpixel = 0`, which gives
+    /// crisper antialiasing for body-text sizes when the composer
+    /// rounds the integer pen position and queries the cache with the
+    /// fractional remainder.
+    ///
+    /// Set `x_subpixel = 0.0` to reproduce the round-2 / pixel-aligned
+    /// rasterisation exactly.
+    pub fn raster_glyph_subpixel(
+        face: &Face,
+        glyph_id: u16,
+        size_px: f32,
+        shear_x_per_y: f32,
+        x_subpixel: f32,
+    ) -> Result<AlphaBitmap, Error> {
         if size_px <= 0.0 {
             return Ok(AlphaBitmap::default());
         }
@@ -117,7 +138,7 @@ impl Rasterizer {
 
         // Pull the outline.
         let outline = face.with_font(|font| font.glyph_outline(glyph_id))??;
-        let flat = match flatten_with_shear(&outline, scale, shear_x_per_y) {
+        let flat = match flatten_with_shear_offset(&outline, scale, shear_x_per_y, x_subpixel) {
             Some(f) => f,
             None => return Ok(AlphaBitmap::default()),
         };
@@ -148,13 +169,28 @@ impl Rasterizer {
         size_px: f32,
         shear_x_per_y: f32,
     ) -> Result<(f32, f32), Error> {
+        Self::glyph_offset_subpixel(face, glyph_id, size_px, shear_x_per_y, 0.0)
+    }
+
+    /// Sub-pixel variant of [`Self::glyph_offset_styled`]. Mirrors
+    /// [`Self::raster_glyph_subpixel`] — the bbox left edge moves
+    /// rightward by the same `x_subpixel` so the composer can place
+    /// the bitmap at `floor(pen_x)` and still land on the correct
+    /// fractional position.
+    pub fn glyph_offset_subpixel(
+        face: &Face,
+        glyph_id: u16,
+        size_px: f32,
+        shear_x_per_y: f32,
+        x_subpixel: f32,
+    ) -> Result<(f32, f32), Error> {
         if size_px <= 0.0 {
             return Ok((0.0, 0.0));
         }
         let upem = face.units_per_em().max(1) as f32;
         let scale = size_px / upem;
         let outline = face.with_font(|font| font.glyph_outline(glyph_id))??;
-        let flat = match flatten_with_shear(&outline, scale, shear_x_per_y) {
+        let flat = match flatten_with_shear_offset(&outline, scale, shear_x_per_y, x_subpixel) {
             Some(f) => f,
             None => return Ok((0.0, 0.0)),
         };
