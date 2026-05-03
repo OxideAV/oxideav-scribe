@@ -1,12 +1,10 @@
-//! End-to-end integration tests against the DejaVu Sans fixture
-//! (which is the same .ttf used by `oxideav-ttf`'s tests). The fixture
-//! lives under the `oxideav-ttf` crate; we reach across via a
-//! relative path so we don't duplicate the binary in two tree
-//! locations.
+//! End-to-end integration tests against the DejaVu Sans fixture.
+//! The fixture is shipped under `tests/fixtures/` so the standalone
+//! crate package is self-contained for CI / docs.rs.
 
 use oxideav_scribe::{render_text, Face, Rasterizer, Shaper, WHITE};
 
-const FIXTURE: &[u8] = include_bytes!("../../oxideav-ttf/tests/fixtures/DejaVuSans.ttf");
+const FIXTURE: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 
 fn load_face() -> Face {
     Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans must parse")

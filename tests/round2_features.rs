@@ -14,8 +14,8 @@ use oxideav_scribe::{
     AlphaBitmap, Face, FaceChain, RgbaBitmap, Shaper, StrokeStyle, Style, WHITE,
 };
 
-const FIXTURE: &[u8] = include_bytes!("../../oxideav-ttf/tests/fixtures/DejaVuSans.ttf");
-const FIXTURE_MONO: &[u8] = include_bytes!("../../oxideav-ttf/tests/fixtures/DejaVuSansMono.ttf");
+const FIXTURE: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
+const FIXTURE_MONO: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
 fn load_face() -> Face {
     Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans must parse")
