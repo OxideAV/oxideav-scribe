@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 4, GPOS mark-to-mark stacking (2026-05-04)
+
+- Shaper now runs a 5th pass after mark-to-base: for each consecutive
+  `(mark_prev, mark_new)` pair where both glyphs are GDEF marks,
+  `oxideav_ttf::Font::lookup_mark_to_mark(prev, new)` is consulted.
+  If the font ships an anchor for the pair, the new mark is positioned
+  relative to the previous mark's *post-attachment* position (which
+  already sits on the base). This handles double-diacritic stacks
+  like Vietnamese `ê + acute → ế` and polytonic Greek
+  `α + tonos + dialytika`.
+- Round-3 mark-to-base remains the fallback for any pair the font
+  doesn't cover with a mark-to-mark anchor (most fonts ship a sparse
+  set of mark-to-mark anchors compared to mark-to-base).
+- New integration test `round4_marks.rs` verifies that
+  `e + COMBINING CIRCUMFLEX + COMBINING ACUTE` stacks the acute
+  ABOVE the circumflex (proving mark-to-mark fired, not the
+  round-3 fallback which would overlap them); that the gap scales
+  linearly with `size_px`; and that the round-3 single-mark path is
+  unaffected.
+
 ### Added — round 3, synthetic bold via alpha dilation (2026-05-04)
 
 - `style::synthetic_bold_radius(style, face_weight, size_px) -> f32`

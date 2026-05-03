@@ -1,5 +1,5 @@
 //! Text shaper: cmap → ligature substitution → pair kerning →
-//! mark-to-base attachment.
+//! mark-to-base attachment → mark-to-mark stacking.
 //!
 //! This is a deliberately small subset of an OpenType shaper — enough
 //! to render Latin (incl. extended diacritics) / Cyrillic / Greek
@@ -27,6 +27,16 @@
 //!    delta is applied to the mark's `x_offset` / `y_offset` (with
 //!    the mark's own advance subtracted on X so the mark stacks on
 //!    top of the base instead of being placed after it).
+//! 5. **Mark-to-mark stacking (GPOS type 6)**: for each consecutive
+//!    `(mark_prev, mark_new)` pair where both are GDEF marks, call
+//!    `Font::lookup_mark_to_mark(mark_prev, mark_new)`. If the font
+//!    provides an anchor for the pair, the new mark is positioned
+//!    relative to the previous mark's *post-attachment* position
+//!    (which already sits on the base). This handles double-diacritic
+//!    stacks like polytonic Greek and Vietnamese tonal vowels. The
+//!    mark-to-base path remains the fallback: if no mark-to-mark
+//!    anchor exists, the new mark falls back to attaching to the
+//!    walked-back base (round-3 behaviour).
 //!
 //! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
 
@@ -132,25 +142,68 @@ pub fn shape_run_with_font(
         });
     }
 
-    // Step 4: mark-to-base attachment (GPOS LookupType 4). For each
-    // pair (base = i-1, mark = i) where the right-hand glyph is a
-    // mark per GDEF, look up the anchor delta and apply it to the
-    // mark's offsets. We also subtract the mark's own advance on X
-    // and zero its advance so the next glyph's pen lands at the
-    // base's pen + base.advance (the convention all desktop shapers
-    // follow).
+    // Step 4 + 5: mark-to-base attachment (GPOS LookupType 4) plus
+    // mark-to-mark stacking (GPOS LookupType 6).
     //
-    // Marks are processed in order, so a mark adjacent to another
-    // mark (e.g. base + tonos + dialytika in polytonic Greek) gets
-    // its base from the *original* base, not the previous mark. The
-    // simplest encoding of this is: while the immediately-previous
-    // glyph is a mark, walk back until we find a base.
+    // For each `i` whose glyph is a GDEF mark, we choose ONE of two
+    // anchor sources:
+    //
+    //   a) **Mark-to-mark (preferred when applicable)** — if the
+    //      immediately-previous glyph (i-1) is also a mark AND the
+    //      font ships a MarkMarkPos anchor for the pair, stack on
+    //      that mark. The previous mark has already been positioned
+    //      relative to the base (we processed marks left-to-right, so
+    //      its `x_offset` / `y_offset` already encode the offset
+    //      from base to mark). Stacking on top of it just adds the
+    //      mark-to-mark delta.
+    //
+    //   b) **Mark-to-base (fallback)** — walk back to the nearest
+    //      non-mark base and apply MarkBasePos. This is what round 3
+    //      did and is still correct for "single mark on base" plus
+    //      for any case where the font lacks a mark-to-mark anchor
+    //      (most fonts ship a sparse set of mark-to-mark anchors
+    //      compared to mark-to-base).
+    //
+    // In both cases we zero the new mark's x_advance so subsequent
+    // base glyphs start where the pen would be without this mark.
     for i in 1..out.len() {
         let mark_gid = out[i].glyph_id;
         if !font.is_mark_glyph(mark_gid) {
             continue;
         }
-        // Walk back to find the nearest non-mark base.
+
+        // Try mark-to-mark first against the immediately-previous mark.
+        let prev = i - 1;
+        let prev_gid = out[prev].glyph_id;
+        if font.is_mark_glyph(prev_gid) {
+            if let Some((dx_units, dy_units)) = font.lookup_mark_to_mark(prev_gid, mark_gid) {
+                let dx = dx_units as f32 * scale;
+                let dy = dy_units as f32 * scale;
+                // The previous mark's effective pen position is its
+                // own (x_offset, y_offset) plus the cumulative
+                // advances up to it. The new mark is one slot later,
+                // so its un-attached pen X is `prev.advance` further
+                // right (typically 0 since the previous mark already
+                // had its advance zeroed). We want the new mark to
+                // land at `prev_pen + (dx, dy)` — which is
+                // `prev.x_offset + dx`, with the new mark's own pen
+                // delta already accounted for in its current
+                // `x_offset` (zero kerning since marks don't kern).
+                //
+                // Concretely: shift the new mark by
+                //   (prev.x_offset - new_mark.current_x_offset) + dx
+                // on X, and equivalently on Y. Simplest expression:
+                // overwrite both offsets and zero the advance.
+                out[i].x_offset = out[prev].x_offset + dx - out[i].x_advance;
+                // TT Y-up → raster Y-down (negate dy on Y). The
+                // previous mark's y_offset is already in raster space.
+                out[i].y_offset = out[prev].y_offset - dy;
+                out[i].x_advance = 0.0;
+                continue;
+            }
+        }
+
+        // Fallback: mark-to-base. Walk back to the nearest non-mark.
         let mut j = i;
         while j > 0 {
             j -= 1;
