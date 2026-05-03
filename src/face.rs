@@ -18,10 +18,7 @@
 //! the face holds into the unified `FlatOutline` polyline.
 
 use crate::Error;
-use oxideav_core::{
-    FillRule, ImageRef, Node, Paint, Path, PathCommand, PathNode, Point, Rect, Rgba, Transform2D,
-    VideoFrame, VideoPlane,
-};
+use oxideav_core::{FillRule, Node, Paint, Path, PathCommand, PathNode, Point, Rgba};
 
 /// Which underlying parser this face wraps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,67 +328,20 @@ impl Face {
     /// Dispatch:
     /// - **Outline glyph** → `Node::Path(PathNode { path, fill: Some(black), .. })`.
     ///   Replace `fill` if the caller wants colour.
-    /// - **Bitmap glyph** (CBDT/sbix from round 5) → `Node::Image(ImageRef { ... })`
-    ///   carrying the rasterised RGBA bitmap as a `VideoFrame`. Bounds
-    ///   are sized to the bitmap's CBDT-declared placement at the
-    ///   strike's native ppem (caller scales via the outer
-    ///   `Transform2D` when blitting at a non-strike size).
     /// - **COLRv1 layered glyph** (round 6 — not yet implemented) — for
     ///   now, falls through to the outline path. Round 6 will return a
     ///   `Group` of `PathNode`s here, one per COLR layer.
+    /// - **Bitmap glyph** (CBDT/sbix) — currently returns `None` because
+    ///   the colour-bitmap rasterizer is staged behind the published
+    ///   `oxideav-ttf` API (the round-5 work depends on parser methods
+    ///   that haven't been released to crates.io yet). It will land in a
+    ///   follow-up that re-introduces the `Node::Image` dispatch.
     ///
-    /// Returns `None` for empty / non-rendering glyphs (e.g. SPACE).
+    /// Returns `None` for empty / non-rendering glyphs (e.g. SPACE) and
+    /// for bitmap-only glyphs until the follow-up CBDT re-land.
     pub fn glyph_node(&self, glyph_id: u16, size_px: f32) -> Option<Node> {
         if size_px <= 0.0 || !size_px.is_finite() {
             return None;
-        }
-
-        // Bitmap dispatch first: a face that ships CBDT for this glyph
-        // (typical for emoji codepoints) wins over any empty-outline
-        // fallback. CBDT-only fonts have no outline at all so this
-        // branch is the only path that produces a renderable glyph.
-        if matches!(self.kind, FaceKind::Ttf) && self.has_color_bitmaps() {
-            if let Ok(Some(cgb)) = self.raster_color_glyph(glyph_id, size_px) {
-                if !cgb.bitmap.is_empty() {
-                    let w = cgb.bitmap.width;
-                    let h = cgb.bitmap.height;
-                    // Pack the RGBA8 into a VideoFrame with one plane.
-                    let stride = (w as usize) * 4;
-                    let frame = VideoFrame {
-                        pts: None,
-                        planes: vec![VideoPlane {
-                            stride,
-                            data: cgb.bitmap.data.clone(),
-                        }],
-                    };
-                    // CBDT bearing_x / bearing_y describe the glyph
-                    // box at the strike's native ppem (ppem). Convert
-                    // to the requested raster size by `size_px / ppem`.
-                    let strike_scale = if cgb.ppem > 0 {
-                        size_px / cgb.ppem as f32
-                    } else {
-                        1.0
-                    };
-                    // Pen-relative placement: the bitmap left edge sits
-                    // bearing_x px right of the pen, the bitmap top
-                    // edge sits bearing_y px ABOVE the pen (so in
-                    // Y-down space, top-edge Y = -bearing_y).
-                    let bx = cgb.bearing_x as f32 * strike_scale;
-                    let by = -(cgb.bearing_y as f32) * strike_scale;
-                    let bw = w as f32 * strike_scale;
-                    let bh = h as f32 * strike_scale;
-                    return Some(Node::Image(ImageRef {
-                        frame: Box::new(frame),
-                        bounds: Rect {
-                            x: bx,
-                            y: by,
-                            width: bw,
-                            height: bh,
-                        },
-                        transform: Transform2D::identity(),
-                    }));
-                }
-            }
         }
 
         // Outline path: take the Y-up native Path and bake in

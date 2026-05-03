@@ -89,9 +89,11 @@ impl Shaper {
     ///   (matches [`PositionedGlyph::face_idx`]).
     /// - `glyph` is a self-contained [`Node`] from
     ///   [`Face::glyph_node`] — outline glyphs become `Node::Path`
-    ///   (Y-down, baked-in size scale, black solid fill); bitmap glyphs
-    ///   (CBDT/sbix) become `Node::Image`. The node's local origin
-    ///   `(0, 0)` is the glyph's pen origin (baseline-left).
+    ///   (Y-down, baked-in size scale, black solid fill). Bitmap-glyph
+    ///   (CBDT/sbix) dispatch to `Node::Image` is staged for a follow-up
+    ///   once the `oxideav-ttf` colour-bitmap API is on crates.io. The
+    ///   node's local origin `(0, 0)` is the glyph's pen origin
+    ///   (baseline-left).
     /// - `transform` is the per-glyph placement: a translation by
     ///   `(x_int + x_frac, y_baseline + y_offset)` in raster pixels,
     ///   honouring the round-3 sub-pixel positioning and the

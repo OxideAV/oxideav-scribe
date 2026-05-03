@@ -21,14 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — returns a self-contained `Node` ready to be positioned at the pen
   origin. Outline glyphs come back as `Node::Path(PathNode)` with the
   Y-flip + size scale baked in (origin at (0, 0) = pen origin, Y grows
-  downward), with a default black solid fill. Bitmap glyphs (CBDT,
-  e.g. Noto Color Emoji) come back as `Node::Image(ImageRef)` carrying
-  the rasterised RGBA bitmap as an `oxideav_core::VideoFrame`, with
-  `bounds` sized to the bitmap's CBDT-declared placement at the
-  strike's native ppem (scaled by `size_px / strike_ppem`). COLRv1
-  layered glyphs fall through to the base outline path for now —
-  round 6 (#356) extends `glyph_node` to return a `Group` of layered
-  PathNodes per COLR layer.
+  downward), with a default black solid fill. COLRv1 layered glyphs
+  fall through to the base outline path for now — round 6 (#356)
+  extends `glyph_node` to return a `Group` of layered PathNodes per
+  COLR layer. Bitmap-glyph (CBDT/sbix) dispatch to
+  `Node::Image(ImageRef)` is staged for a follow-up once the
+  `oxideav-ttf` colour-bitmap API is on crates.io.
 - `Shaper::shape_to_paths(face_chain, text, size_px) -> Vec<(usize,
   Node, Transform2D)>` — primary vector text API. Shapes through the
   full GSUB / GPOS / mark-attachment / face-chain-fallback pipeline,
@@ -53,39 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/round7_shape_to_paths.rs` — DejaVu Sans Mono "Hi" must
     return 2 `PathNode`s with the second translated rightward;
     "A B" skips the SPACE node and translates 'B' past it.
-  - `tests/round7_bitmap_glyph_node.rs` — Noto Color Emoji
-    `glyph_node('🎉', 96.0)` must be `Node::Image(ImageRef)` with
-    a non-empty RGBA plane and ≥1 non-zero-alpha pixel.
-
-### Added — round 5, CBDT/CBLC color bitmap glyphs (2026-05-04)
-
-- New `color_glyph` module + `ColorGlyphBitmap { bitmap, bearing_x,
-  bearing_y, advance, ppem }` carrying a decoded RGBA bitmap plus the
-  metrics needed for placement.
-- `Face::has_color_bitmaps() -> bool` — wraps
-  `oxideav_ttf::Font::has_color_bitmaps`. Short-circuits for OTF
-  faces (no CFF font we've seen ships CBDT).
-- `Face::color_strike_sizes() -> Vec<(u8, u8)>` — all `(ppem_x,
-  ppem_y)` strikes the face declares; empty when no CBDT.
-- `Face::raster_color_glyph(glyph_id, size_px) -> Result<Option<
-  ColorGlyphBitmap>, Error>` — picks the closest strike to
-  `size_px.round()`, walks CBLC to find the glyph entry, hands the
-  raw PNG bytes from CBDT to `oxideav_png::decode_png_to_frame`, and
-  unwraps the `VideoFrame` into an `RgbaBitmap`. PNG width/height
-  are recovered directly from the IHDR chunk so the bytes-per-pixel
-  ratio is unambiguous (no heuristic: stride / width gives the
-  right answer for Rgba8 / Rgb24 / Ya8 / Gray8).
-- `oxideav-png` added as a dependency of `oxideav-scribe`. NO `png` /
-  `image` crate per workspace policy.
-- `tests/round5_emoji.rs` integration test against
-  `NotoColorEmoji.ttf` (10.6 MB; download-on-demand via the same
-  fixture cache as the CJK test). Verifies the font loads (which
-  pre-round-5 would fail because Noto Color Emoji has no `glyf`/
-  `loca`), `has_color_bitmaps()` is true, U+1F389 PARTY POPPER
-  resolves through cmap, the CBDT walker hands back a non-empty
-  PNG payload, the rasterised RGBA bitmap has >5% non-zero alpha
-  pixels, and `Shaper::shape("🎉 ok")` survives the no-outline
-  shaping path.
 
 ### Added — round 5, TTC support + CJK fallback integration test (2026-05-04)
 
