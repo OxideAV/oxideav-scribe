@@ -83,10 +83,9 @@ impl core::fmt::Display for Error {
             Self::Ttf(e) => write!(f, "ttf error: {e}"),
             Self::Otf(e) => write!(f, "otf error: {e}"),
             Self::InvalidSize => f.write_str("non-positive font size"),
-            Self::WrongFaceKind { expected, actual } => write!(
-                f,
-                "wrong face kind: expected {expected:?}, got {actual:?}"
-            ),
+            Self::WrongFaceKind { expected, actual } => {
+                write!(f, "wrong face kind: expected {expected:?}, got {actual:?}")
+            }
         }
     }
 }

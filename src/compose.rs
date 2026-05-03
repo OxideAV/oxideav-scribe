@@ -240,8 +240,7 @@ impl Composer {
             let cached = if let Some(c) = self.cache.get(&key) {
                 c
             } else {
-                let bitmap =
-                    Rasterizer::raster_glyph_styled(face, g.glyph_id, size_px, shear)?;
+                let bitmap = Rasterizer::raster_glyph_styled(face, g.glyph_id, size_px, shear)?;
                 let (off_x, off_y) =
                     Rasterizer::glyph_offset_styled(face, g.glyph_id, size_px, shear)?;
                 let entry = CachedGlyph {

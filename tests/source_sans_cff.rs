@@ -8,8 +8,7 @@
 
 use oxideav_scribe::{flatten_cubic, Face, FaceKind};
 
-const FIXTURE: &[u8] =
-    include_bytes!("../../oxideav-otf/tests/fixtures/SourceSans3-Regular.otf");
+const FIXTURE: &[u8] = include_bytes!("../../oxideav-otf/tests/fixtures/SourceSans3-Regular.otf");
 
 #[test]
 fn from_otf_bytes_round_trip() {

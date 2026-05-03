@@ -146,7 +146,10 @@ mod tests {
     fn italic_request_on_upright_face_yields_default_shear() {
         let shear = synthetic_italic_shear(Style::italic(), 0.0);
         let expected = DEFAULT_SYNTHETIC_ITALIC_DEG.to_radians().tan();
-        assert!((shear - expected).abs() < 1e-6, "shear = {shear}, expected = {expected}");
+        assert!(
+            (shear - expected).abs() < 1e-6,
+            "shear = {shear}, expected = {expected}"
+        );
         // Also ~0.213 (tan 12 deg).
         assert!(shear > 0.20 && shear < 0.22, "shear = {shear}");
     }

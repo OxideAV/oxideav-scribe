@@ -10,9 +10,8 @@
 //!    the border under the fill.
 
 use oxideav_scribe::{
-    compose::Composer, dilate_alpha, render_text, render_text_styled,
-    rasterizer::Rasterizer, AlphaBitmap, Face, FaceChain, RgbaBitmap, Shaper, Style, StrokeStyle,
-    WHITE,
+    compose::Composer, dilate_alpha, rasterizer::Rasterizer, render_text, render_text_styled,
+    AlphaBitmap, Face, FaceChain, RgbaBitmap, Shaper, StrokeStyle, Style, WHITE,
 };
 
 const FIXTURE: &[u8] = include_bytes!("../../oxideav-ttf/tests/fixtures/DejaVuSans.ttf");
@@ -111,7 +110,10 @@ fn italic_pixels_are_displaced_relative_to_upright() {
     // (at 48 px the 'I' has visible top pixels on the right side after shear).
     // If both are zero the test is meaningless, so guard.
     let total = upright_top_right_sum + italic_top_right_sum;
-    assert!(total > 0, "neither upright nor italic has alpha in top-right");
+    assert!(
+        total > 0,
+        "neither upright nor italic has alpha in top-right"
+    );
     assert!(
         italic_top_right_sum >= upright_top_right_sum,
         "italic top-right alpha sum ({}) should be >= upright ({})",
@@ -205,11 +207,27 @@ fn composer_per_run_color_via_compose_run() {
     let baseline = face.ascent_px(24.0);
 
     composer
-        .compose_run(&glyphs, &face, 24.0, [255, 0, 0, 255], &mut red_dst, 4.0, baseline)
+        .compose_run(
+            &glyphs,
+            &face,
+            24.0,
+            [255, 0, 0, 255],
+            &mut red_dst,
+            4.0,
+            baseline,
+        )
         .expect("compose red");
     // Same composer (cache populated) — should hit the cache.
     composer
-        .compose_run(&glyphs, &face, 24.0, [0, 0, 255, 255], &mut blue_dst, 4.0, baseline)
+        .compose_run(
+            &glyphs,
+            &face,
+            24.0,
+            [0, 0, 255, 255],
+            &mut blue_dst,
+            4.0,
+            baseline,
+        )
         .expect("compose blue");
 
     // Find at least one pixel where red and blue disagree on RGB.

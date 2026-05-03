@@ -118,9 +118,8 @@ impl FaceChain {
             }
             let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
             let face = &self.faces[face_idx as usize];
-            let mut run_glyphs = face.with_font(|font| {
-                shape_run_with_font(font, &gids, size_px, face_idx)
-            })?;
+            let mut run_glyphs =
+                face.with_font(|font| shape_run_with_font(font, &gids, size_px, face_idx))?;
             out.append(&mut run_glyphs);
             run_start = run_end;
         }
