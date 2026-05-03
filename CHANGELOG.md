@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 3, GPOS mark-to-base attachment (2026-05-04)
+
+- Shaper now runs a 4th pass after kerning: for each `(base, mark)`
+  pair where `mark` is classified as a mark by the font's `GDEF`
+  table, it queries `oxideav_ttf::Font::lookup_mark_to_base(base,
+  mark)` and applies the returned anchor delta to the mark's
+  `x_offset` / `y_offset`. The mark's `x_advance` is zeroed so a
+  following glyph lands at the post-base pen position, matching what
+  every desktop shaper does. Multi-mark stacks (e.g. polytonic
+  Greek `α + tonos + dialytika`) work because each mark walks back
+  through previous marks until a base is found.
+- Y axis is converted from TT (Y-up) to raster (Y-down) at the
+  shaper boundary so consumers don't have to think about it.
+- No public-API change: `PositionedGlyph` already had `y_offset`
+  from round 1.
+- New integration test `round3_marks.rs` verifies `'A' + U+0301` →
+  combining acute lifts above the baseline (negative raster Y
+  offset), the mark's advance is zeroed, the offset scales linearly
+  with `size_px`, and pure-base runs are untouched.
+
 ### Added — round 3, sub-pixel positioning (2026-05-04)
 
 - `cache::SUBPIXEL_STEPS = 16` + `subpixel_slot(x_fract)` +

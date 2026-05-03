@@ -1,9 +1,11 @@
-//! Round-1 text shaper: cmap → ligature substitution → pair kerning.
+//! Text shaper: cmap → ligature substitution → pair kerning →
+//! mark-to-base attachment.
 //!
 //! This is a deliberately small subset of an OpenType shaper — enough
-//! to render Latin / Cyrillic / Greek / basic CJK with the ligatures
-//! and kerning that production fonts ship. Bidi (UAX #9), Arabic
-//! joining, Indic conjunct formation, and the more elaborate
+//! to render Latin (incl. extended diacritics) / Cyrillic / Greek
+//! (incl. polytonic) / basic CJK with the ligatures, kerning and
+//! diacritic attachment that production fonts ship. Bidi (UAX #9),
+//! Arabic joining, Indic conjunct formation, and the more elaborate
 //! contextual GSUB/GPOS lookups are explicitly deferred.
 //!
 //! ## Pipeline
@@ -19,6 +21,12 @@
 //! 3. **Kerning (GPOS type 2 + legacy `kern`)**: for each adjacent
 //!    pair, call `Font::lookup_kerning(left, right)` and apply the
 //!    result as an additional `x_offset` on the right-hand glyph.
+//! 4. **Mark-to-base attachment (GPOS type 4)**: for each (base, mark)
+//!    pair where `mark` is classified as a mark by GDEF, call
+//!    `Font::lookup_mark_to_base(base, mark)`. The returned anchor
+//!    delta is applied to the mark's `x_offset` / `y_offset` (with
+//!    the mark's own advance subtracted on X so the mark stacks on
+//!    top of the base instead of being placed after it).
 //!
 //! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
 
@@ -122,6 +130,61 @@ pub fn shape_run_with_font(
             x_advance,
             face_idx,
         });
+    }
+
+    // Step 4: mark-to-base attachment (GPOS LookupType 4). For each
+    // pair (base = i-1, mark = i) where the right-hand glyph is a
+    // mark per GDEF, look up the anchor delta and apply it to the
+    // mark's offsets. We also subtract the mark's own advance on X
+    // and zero its advance so the next glyph's pen lands at the
+    // base's pen + base.advance (the convention all desktop shapers
+    // follow).
+    //
+    // Marks are processed in order, so a mark adjacent to another
+    // mark (e.g. base + tonos + dialytika in polytonic Greek) gets
+    // its base from the *original* base, not the previous mark. The
+    // simplest encoding of this is: while the immediately-previous
+    // glyph is a mark, walk back until we find a base.
+    for i in 1..out.len() {
+        let mark_gid = out[i].glyph_id;
+        if !font.is_mark_glyph(mark_gid) {
+            continue;
+        }
+        // Walk back to find the nearest non-mark base.
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            if !font.is_mark_glyph(out[j].glyph_id) {
+                break;
+            }
+        }
+        if font.is_mark_glyph(out[j].glyph_id) {
+            // No base found in this run — leave the mark unattached.
+            continue;
+        }
+        let base_gid = out[j].glyph_id;
+        if let Some((dx_units, dy_units)) = font.lookup_mark_to_base(base_gid, mark_gid) {
+            let dx = dx_units as f32 * scale;
+            let dy = dy_units as f32 * scale;
+            // The mark's pen lands AFTER the base + any intervening
+            // marks (whose advance is typically also 0 — and we zero
+            // it below for that reason). Total advance from base to
+            // mark = sum of advances in (j..i].
+            let mut intervening_advance = 0.0_f32;
+            for k in (j + 1)..=i {
+                intervening_advance += out[k].x_advance;
+            }
+            // x_offset already encodes any kern; we add the anchor
+            // delta minus the cumulative advance.
+            out[i].x_offset += dx - intervening_advance;
+            // TT Y-up → raster Y-down: a positive base_anchor.y means
+            // the base anchor is above the baseline; the mark should
+            // sit higher in raster (smaller Y). Negate here.
+            out[i].y_offset -= dy;
+            // Zero the mark's own advance so subsequent base glyphs
+            // start where the pen would be without this mark.
+            out[i].x_advance = 0.0;
+        }
     }
 
     out
