@@ -17,6 +17,10 @@ oxideav-core = "0.1"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
 oxideav-pixfmt = "0.1"
+# CBDT/CBLC colour-emoji glyphs ship per-glyph PNG byte streams; we
+# decode them to RGBA via the sibling oxideav-png crate. NO external
+# `png` / `image` crate per workspace policy.
+oxideav-png = "0.1"
 
 [dev-dependencies]
 # round5_cjk_fallback / round5_emoji integration tests fetch large

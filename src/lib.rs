@@ -22,6 +22,7 @@
 
 pub mod cache;
 pub mod color;
+pub mod color_glyph;
 pub mod compose;
 pub mod face;
 pub mod face_chain;
@@ -36,6 +37,7 @@ pub use cache::{
     subpixel_offset, subpixel_slot, CachedGlyph, GlyphCache, GlyphKey, SUBPIXEL_STEPS,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
+pub use color_glyph::ColorGlyphBitmap;
 pub use compose::{Composer, RgbaBitmap, StrokeStyle};
 pub use face::{Face, FaceKind};
 pub use face_chain::{shear_for, FaceChain};
