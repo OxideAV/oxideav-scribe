@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — OTF / CFF integration (2026-05-03)
+
+- `Face::from_otf_bytes(Vec<u8>)` — construct a face from an
+  OpenType-CFF font (Adobe TN5176 / TN5177 via the new sibling
+  `oxideav-otf` crate). Mirrors the existing `Face::from_ttf_bytes`
+  TTF entry point.
+- `Face::kind() -> FaceKind` + `FaceKind { Ttf, Otf }` — runtime
+  discriminant for callers that need to dispatch on the underlying
+  outline format.
+- `Face::with_otf_font(|font| ...)` — re-parse-on-demand handle to
+  the underlying `oxideav_otf::Font<'_>`. Mirrors `with_font` but
+  rejects TTF-flavoured faces with `Error::WrongFaceKind`. The
+  pre-existing `with_font` now also enforces this and rejects
+  OTF-flavoured faces.
+- `outline::flatten_cubic` + `outline::flatten_cubic_with_shear` —
+  cubic-Bezier de Casteljau flattener that mirrors the existing
+  quadratic path. Accepts a `oxideav_otf::CubicOutline` (explicit
+  `MoveTo` / `LineTo` / `CurveTo` / `ClosePath` segments) and emits
+  a polyline-`FlatOutline` with the same Y-down, top-left-origin
+  convention. Tolerance + max-depth match the quadratic path.
+- New `Error` variants: `Otf(oxideav_otf::Error)` and
+  `WrongFaceKind { expected, actual }`.
+
 ### Added — round 2 (2026-05-03)
 
 - `Style { italic: bool, weight: u16 }` — font request style carried

@@ -334,6 +334,198 @@ fn subdivide_quad(
     subdivide_quad(out, m, m12, p2, depth + 1);
 }
 
+// ---- CFF / cubic-Bezier flattening ----------------------------------
+
+/// Flatten a CFF (cubic-Bezier) outline at `scale` (raster pixels per
+/// font unit). Coordinate convention matches [`flatten`]: Y-down,
+/// origin at the top-left of the glyph bounding box.
+///
+/// Type 2 charstrings (Adobe TN5177) emit explicit cubic Beziers and
+/// `ClosePath` markers, so this implementation is simpler than the
+/// quadratic path — there's no on-curve / off-curve dance.
+///
+/// Returns `None` for empty outlines.
+pub fn flatten_cubic(outline: &oxideav_otf::CubicOutline, scale: f32) -> Option<FlatOutline> {
+    flatten_cubic_with_shear(outline, scale, 0.0)
+}
+
+/// Sheared variant of [`flatten_cubic`]. The Y-flipped Y-down output
+/// is post-multiplied by a horizontal shear `[1, shear; 0, 1]` —
+/// matches the synthetic-italic transform in `style.rs`.
+pub fn flatten_cubic_with_shear(
+    outline: &oxideav_otf::CubicOutline,
+    scale: f32,
+    shear: f32,
+) -> Option<FlatOutline> {
+    if outline.contours.is_empty() {
+        return None;
+    }
+    // Map the source bbox (Y-up, font units) to raster (Y-down, px).
+    // Sheared output's bbox needs to account for points shifted by
+    // shear * y; we recompute by walking emitted points below.
+    let raw = outline.bounds;
+    if raw.x_max <= raw.x_min || raw.y_max <= raw.y_min {
+        return None;
+    }
+
+    let mut contours: Vec<Vec<(f32, f32)>> = Vec::with_capacity(outline.contours.len());
+    let mut x_min = f32::INFINITY;
+    let mut y_min = f32::INFINITY;
+    let mut x_max = f32::NEG_INFINITY;
+    let mut y_max = f32::NEG_INFINITY;
+
+    for contour in &outline.contours {
+        let mut pen = (0.0f32, 0.0f32);
+        let mut start = (0.0f32, 0.0f32);
+        let mut pts: Vec<(f32, f32)> = Vec::new();
+        for seg in &contour.segments {
+            match *seg {
+                oxideav_otf::CubicSegment::MoveTo(p) => {
+                    let xy = scribe_map(p.x, p.y, scale, shear);
+                    pen = xy;
+                    start = xy;
+                    pts.push(xy);
+                }
+                oxideav_otf::CubicSegment::LineTo(p) => {
+                    let xy = scribe_map(p.x, p.y, scale, shear);
+                    pts.push(xy);
+                    pen = xy;
+                }
+                oxideav_otf::CubicSegment::CurveTo { c1, c2, end } => {
+                    let p0 = pen;
+                    let p1 = scribe_map(c1.x, c1.y, scale, shear);
+                    let p2 = scribe_map(c2.x, c2.y, scale, shear);
+                    let p3 = scribe_map(end.x, end.y, scale, shear);
+                    subdivide_cubic(&mut pts, p0, p1, p2, p3, 0);
+                    pen = p3;
+                }
+                oxideav_otf::CubicSegment::ClosePath => {
+                    if pts.first() != Some(&start) {
+                        pts.push(start);
+                    } else if let Some(&last) = pts.last() {
+                        if (last.0 - start.0).abs() > 1e-3 || (last.1 - start.1).abs() > 1e-3 {
+                            pts.push(start);
+                        }
+                    }
+                    if pts.len() >= 2 {
+                        for &(x, y) in &pts {
+                            x_min = x_min.min(x);
+                            y_min = y_min.min(y);
+                            x_max = x_max.max(x);
+                            y_max = y_max.max(y);
+                        }
+                        contours.push(std::mem::take(&mut pts));
+                    } else {
+                        pts.clear();
+                    }
+                    pen = start;
+                }
+            }
+        }
+        // Flush a trailing open subpath (a font that didn't emit a
+        // ClosePath before endchar — uncommon but legal).
+        if pts.len() >= 2 {
+            for &(x, y) in &pts {
+                x_min = x_min.min(x);
+                y_min = y_min.min(y);
+                x_max = x_max.max(x);
+                y_max = y_max.max(y);
+            }
+            contours.push(pts);
+        }
+    }
+
+    if contours.is_empty() || !x_min.is_finite() {
+        return None;
+    }
+
+    // Translate so the bbox top-left lands at (0, 0).
+    for c in &mut contours {
+        for p in c.iter_mut() {
+            p.0 -= x_min;
+            p.1 -= y_min;
+        }
+    }
+    let bounds = FlatBounds {
+        x_min: 0.0,
+        y_min: 0.0,
+        x_max: x_max - x_min,
+        y_max: y_max - y_min,
+    };
+    // Suppress an unused-variable warning if the bbox sanity check
+    // above ever gets relaxed.
+    let _ = raw;
+    Some(FlatOutline { contours, bounds })
+}
+
+/// Apply `scale` + Y-flip + shear to a single CFF point. Note that
+/// CFF point coordinates are floats already (the Type 2 interpreter
+/// keeps fixed-real precision), so we don't have to round on input.
+#[inline]
+fn scribe_map(x: f32, y: f32, scale: f32, shear: f32) -> (f32, f32) {
+    // y_raster = -y * scale (Y-up → Y-down). The shear is applied
+    // post-Y-flip so it matches what the rasterizer expects.
+    let rx = x * scale + shear * (-y * scale);
+    let ry = -y * scale;
+    (rx, ry)
+}
+
+/// Recursively subdivide a cubic Bezier (`p0`, `p1`, `p2`, `p3`)
+/// using the de Casteljau split at t = 0.5. Pushes output points
+/// (excluding `p0`, including `p3`).
+///
+/// The flatness test is the standard "max of perpendicular
+/// distances from c1 / c2 to the chord (p0, p3) is below the
+/// tolerance" — see e.g. Hain et al., "Fast, precise flattening of
+/// cubic Bezier path and offset curves" (CAGD 2005). This is the
+/// same test scribe's quadratic path uses, generalised to two
+/// control points.
+fn subdivide_cubic(
+    out: &mut Vec<(f32, f32)>,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    depth: u8,
+) {
+    let dx = p3.0 - p0.0;
+    let dy = p3.1 - p0.1;
+    let chord_sq = dx * dx + dy * dy;
+    let chord_len = chord_sq.sqrt();
+    let perp = |p: (f32, f32)| -> f32 {
+        let dpx = p.0 - p0.0;
+        let dpy = p.1 - p0.1;
+        let cross = dpx * dy - dpy * dx;
+        if chord_len > 1e-6 {
+            (cross / chord_len).abs()
+        } else {
+            (dpx * dpx + dpy * dpy).sqrt()
+        }
+    };
+    let perp1 = perp(p1);
+    let perp2 = perp(p2);
+    let max_perp = perp1.max(perp2);
+
+    if depth >= MAX_SUBDIV_DEPTH
+        || (chord_sq <= FLATTEN_TOLERANCE_PX * FLATTEN_TOLERANCE_PX
+            && max_perp <= FLATTEN_TOLERANCE_PX)
+    {
+        out.push(p3);
+        return;
+    }
+
+    // de Casteljau split at t = 0.5.
+    let q0 = ((p0.0 + p1.0) * 0.5, (p0.1 + p1.1) * 0.5);
+    let q1 = ((p1.0 + p2.0) * 0.5, (p1.1 + p2.1) * 0.5);
+    let q2 = ((p2.0 + p3.0) * 0.5, (p2.1 + p3.1) * 0.5);
+    let r0 = ((q0.0 + q1.0) * 0.5, (q0.1 + q1.1) * 0.5);
+    let r1 = ((q1.0 + q2.0) * 0.5, (q1.1 + q2.1) * 0.5);
+    let s = ((r0.0 + r1.0) * 0.5, (r0.1 + r1.1) * 0.5);
+
+    subdivide_cubic(out, p0, q0, r0, s, depth + 1);
+    subdivide_cubic(out, s, r1, q2, p3, depth + 1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

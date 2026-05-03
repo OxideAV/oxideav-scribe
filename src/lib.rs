@@ -35,10 +35,12 @@ pub mod style;
 pub use cache::{CachedGlyph, GlyphCache, GlyphKey};
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use compose::{Composer, RgbaBitmap, StrokeStyle};
-pub use face::Face;
+pub use face::{Face, FaceKind};
 pub use face_chain::{shear_for, FaceChain};
 pub use layout::{run_width, wrap_lines};
-pub use outline::{flatten, flatten_with_shear, FlatBounds, FlatOutline};
+pub use outline::{
+    flatten, flatten_cubic, flatten_cubic_with_shear, flatten_with_shear, FlatBounds, FlatOutline,
+};
 pub use rasterizer::{AlphaBitmap, Rasterizer};
 pub use shaper::{PositionedGlyph, Shaper};
 pub use stroke::{dilate_alpha, dilate_offset};
@@ -51,8 +53,16 @@ pub use style::{
 pub enum Error {
     /// The underlying TTF parser rejected the bytes.
     Ttf(oxideav_ttf::Error),
+    /// The underlying OTF (CFF) parser rejected the bytes.
+    Otf(oxideav_otf::Error),
     /// `size_px` was non-positive (negative or NaN).
     InvalidSize,
+    /// A `with_font` / `with_otf_font` call was made on a face of
+    /// the wrong flavour.
+    WrongFaceKind {
+        expected: FaceKind,
+        actual: FaceKind,
+    },
 }
 
 impl From<oxideav_ttf::Error> for Error {
@@ -61,11 +71,22 @@ impl From<oxideav_ttf::Error> for Error {
     }
 }
 
+impl From<oxideav_otf::Error> for Error {
+    fn from(e: oxideav_otf::Error) -> Self {
+        Self::Otf(e)
+    }
+}
+
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Ttf(e) => write!(f, "ttf error: {e}"),
+            Self::Otf(e) => write!(f, "otf error: {e}"),
             Self::InvalidSize => f.write_str("non-positive font size"),
+            Self::WrongFaceKind { expected, actual } => write!(
+                f,
+                "wrong face kind: expected {expected:?}, got {actual:?}"
+            ),
         }
     }
 }

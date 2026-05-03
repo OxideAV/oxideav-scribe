@@ -15,4 +15,5 @@ categories = ["graphics", "rendering", "text-processing"]
 [dependencies]
 oxideav-core = "0.1"
 oxideav-ttf = "0.0"
+oxideav-otf = "0.0"
 oxideav-pixfmt = "0.1"

@@ -1,14 +1,32 @@
-//! `Face` — owning wrapper around `oxideav_ttf::Font` plus per-face
-//! identity for the glyph-bitmap cache.
+//! `Face` — owning wrapper around `oxideav_ttf::Font` /
+//! `oxideav_otf::Font` plus per-face identity for the glyph-bitmap
+//! cache.
 //!
-//! `Font<'a>` borrows from the input bytes which makes it awkward to
-//! pass around in a higher-level renderer. `Face` owns the bytes via a
-//! boxed slice and re-parses on demand through [`Face::with_font`]. We
-//! deliberately avoid `Pin` / self-referential structs (no third-party
-//! deps allowed); the cost of a one-line re-parse on each call is
-//! ~microseconds and dwarfed by glyph rasterisation.
+//! `Font<'a>` (in either underlying crate) borrows from the input
+//! bytes which makes it awkward to pass around in a higher-level
+//! renderer. `Face` owns the bytes via a boxed slice and re-parses
+//! on demand through [`Face::with_font`] / [`Face::with_otf_font`].
+//! We deliberately avoid `Pin` / self-referential structs (no
+//! third-party deps allowed); the cost of a one-line re-parse on
+//! each call is ~microseconds and dwarfed by glyph rasterisation.
+//!
+//! TTF and OTF cohabit through a [`FaceKind`] tag. The TTF path
+//! returns quadratic-Bezier outlines (`oxideav_ttf::TtOutline`); the
+//! OTF path returns cubic-Bezier outlines (`oxideav_otf::CubicOutline`).
+//! Higher-level rasterisation code can dispatch via
+//! [`Face::flatten_outline`] which converts whichever native form
+//! the face holds into the unified `FlatOutline` polyline.
 
 use crate::Error;
+
+/// Which underlying parser this face wraps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceKind {
+    /// TrueType / quadratic-Bezier outlines (`oxideav-ttf`).
+    Ttf,
+    /// OpenType-CFF / cubic-Bezier outlines (`oxideav-otf`).
+    Otf,
+}
 
 /// Monotonic global id generator for `Face` instances. Used as the
 /// primary key when caching rasterised glyph bitmaps so that two
@@ -19,11 +37,15 @@ fn next_face_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// An owning, re-parseable wrapper around `oxideav_ttf::Font`.
+/// An owning, re-parseable wrapper around either an
+/// `oxideav_ttf::Font` or an `oxideav_otf::Font`. The discriminant
+/// is recorded in [`Face::kind`] so callers can pick the right
+/// outline path.
 #[derive(Debug)]
 pub struct Face {
     bytes: Box<[u8]>,
     id: u64,
+    kind: FaceKind,
     units_per_em: u16,
     ascent: i16,
     descent: i16,
@@ -53,6 +75,7 @@ impl Face {
         Ok(Self {
             bytes,
             id: next_face_id(),
+            kind: FaceKind::Ttf,
             units_per_em,
             ascent,
             descent,
@@ -61,6 +84,49 @@ impl Face {
             italic_angle,
             weight_class,
         })
+    }
+
+    /// Parse an OTF (OpenType-CFF) font from owned bytes. Returns
+    /// a `Face` whose [`Face::kind`] is [`FaceKind::Otf`] and whose
+    /// outlines come back as cubic Beziers via the cubic flattener
+    /// in [`crate::outline`].
+    pub fn from_otf_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
+        let bytes: Box<[u8]> = bytes.into_boxed_slice();
+        let (units_per_em, ascent, descent, line_gap, family) = {
+            let font = oxideav_otf::Font::from_bytes(&bytes).map_err(Error::from)?;
+            (
+                font.units_per_em(),
+                font.ascent(),
+                font.descent(),
+                font.line_gap(),
+                font.family_name().map(|s| s.to_string()),
+            )
+        };
+        Ok(Self {
+            bytes,
+            id: next_face_id(),
+            kind: FaceKind::Otf,
+            units_per_em,
+            ascent,
+            descent,
+            line_gap,
+            family,
+            // OTF (CFF) carries italicAngle in the Top DICT. We
+            // don't surface it through the Font public API in
+            // round 1 — italic synthesis can fall back to the OS/2
+            // (slant) heuristic via weight_class. Defaulting to 0
+            // matches "upright".
+            italic_angle: 0.0,
+            // Round 1 of oxideav-otf doesn't expose OS/2 either;
+            // 400 (Regular) is the safe default that avoids
+            // synthetic-bold heuristics firing.
+            weight_class: 400,
+        })
+    }
+
+    /// Underlying parser flavour for this face.
+    pub fn kind(&self) -> FaceKind {
+        self.kind
     }
 
     /// Stable per-process id for this face. Used as the first component
@@ -113,14 +179,43 @@ impl Face {
         self.weight_class
     }
 
-    /// Run a closure with a freshly-parsed `Font<'_>` view of the
-    /// owned bytes. We re-parse on each call instead of storing a
-    /// self-referential `Font<'static>` (which would require unsafe or
-    /// a third-party crate like `ouroboros`, both of which we avoid).
-    /// Re-parsing is read-only header walking — well under a
-    /// millisecond on any modern font.
+    /// Run a closure with a freshly-parsed `oxideav_ttf::Font<'_>`
+    /// view of the owned bytes. We re-parse on each call instead of
+    /// storing a self-referential `Font<'static>` (which would
+    /// require unsafe or a third-party crate like `ouroboros`, both
+    /// of which we avoid). Re-parsing is read-only header walking —
+    /// well under a millisecond on any modern font.
+    ///
+    /// Returns `Error::WrongFaceKind` if this face was constructed
+    /// from OTF bytes; use [`Face::with_otf_font`] in that case.
     pub fn with_font<R>(&self, f: impl FnOnce(&oxideav_ttf::Font<'_>) -> R) -> Result<R, Error> {
+        if self.kind != FaceKind::Ttf {
+            return Err(Error::WrongFaceKind {
+                expected: FaceKind::Ttf,
+                actual: self.kind,
+            });
+        }
         let font = oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?;
+        Ok(f(&font))
+    }
+
+    /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
+    /// view of the owned bytes. Mirrors [`Face::with_font`] for the
+    /// CFF / cubic-Bezier path.
+    ///
+    /// Returns `Error::WrongFaceKind` if this face was constructed
+    /// from TTF bytes.
+    pub fn with_otf_font<R>(
+        &self,
+        f: impl FnOnce(&oxideav_otf::Font<'_>) -> R,
+    ) -> Result<R, Error> {
+        if self.kind != FaceKind::Otf {
+            return Err(Error::WrongFaceKind {
+                expected: FaceKind::Otf,
+                actual: self.kind,
+            });
+        }
+        let font = oxideav_otf::Font::from_bytes(&self.bytes).map_err(Error::from)?;
         Ok(f(&font))
     }
 }
