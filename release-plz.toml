@@ -8,8 +8,7 @@ semver_check = false
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
-# Disable cargo-semver-checks: in this still-unstable workspace any
-# API change is detected as a "break" and would force a 0.x → 0.y
-# bump, which cascades through every dependent's version pin. Stay
-# patch-only until we deliberately cut 1.0.
-semver_check = false
+# `semver_check = false` (above): cargo-semver-checks treats every
+# 0.x API change as a break, which would force a 0.x → 0.y bump and
+# cascade through every dependent's version pin. Stay patch-only
+# until we deliberately cut 1.0.
