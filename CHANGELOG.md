@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 4, oblique fixture for italic-on-italic suppression (2026-05-04)
+
+- `tests/fixtures/DejaVuSansMono-Oblique.ttf` (252 KB) — DejaVu Sans
+  Mono Oblique with `post.italicAngle = -11.0°`. Shipped under the
+  same Bitstream Vera license as the other DejaVu fixtures
+  (DEJAVU-LICENSE already in tests/fixtures/).
+- New integration test `round4_oblique.rs` verifies that the
+  round-2 deferral is closed:
+  - `Face::italic_angle()` round-trips `-11.0°` from the parser.
+  - `synthetic_italic_shear(Style::italic(), face.italic_angle())`
+    returns 0 on the oblique face — no double-shear synthesis.
+  - `render_text_styled(face, "I", 32, WHITE, Style::REGULAR)` and
+    `render_text_styled(face, "I", 32, WHITE, Style::italic())`
+    produce *bit-identical* RGBA bitmaps on the oblique face.
+  - The same italic() request on the matching upright fixture
+    DOES synthesise a wider 'I' — confirming the asymmetry survives
+    end-to-end.
+  - A REGULAR request on the oblique face still renders the font's
+    own forward slant (top-right quadrant alpha sum exceeds the
+    upright fixture's).
+
 ### Added — round 4, GPOS mark-to-mark stacking (2026-05-04)
 
 - Shaper now runs a 5th pass after mark-to-base: for each consecutive
