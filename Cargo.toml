@@ -1,6 +1,6 @@
 [package]
 name = "oxideav-scribe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -13,7 +13,11 @@ keywords = ["font", "rasterizer", "shaper", "truetype", "text"]
 categories = ["graphics", "rendering", "text-processing"]
 
 [dependencies]
-oxideav-core = "0.1"
+# Round 7 vector-text APIs (`Face::glyph_path` / `glyph_node`,
+# `Shaper::shape_to_paths`) consume `oxideav_core::vector` types
+# (`Path`, `PathCommand`, `Node`, `PathNode`, `ImageRef`,
+# `Transform2D`) introduced in oxideav-core 0.1.14.
+oxideav-core = "0.1.14"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
 oxideav-pixfmt = "0.1"

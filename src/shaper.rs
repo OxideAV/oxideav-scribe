@@ -41,7 +41,9 @@
 //! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
 
 use crate::face::Face;
+use crate::face_chain::FaceChain;
 use crate::Error;
+use oxideav_core::{Node, Transform2D};
 
 /// A single shaped glyph with its position relative to the run's pen
 /// origin. Coordinates are in raster pixels.
@@ -77,6 +79,70 @@ impl Shaper {
             return Ok(Vec::new());
         }
         face.with_font(|font| shape_with_font(font, text, size_px))
+    }
+
+    /// Shape a text run and return positioned **vector glyphs** —
+    /// the primary vector text API. Each tuple is
+    /// `(face_idx, glyph Node, transform)` where:
+    ///
+    /// - `face_idx` is the index into `face_chain` that owns the glyph
+    ///   (matches [`PositionedGlyph::face_idx`]).
+    /// - `glyph` is a self-contained [`Node`] from
+    ///   [`Face::glyph_node`] — outline glyphs become `Node::Path`
+    ///   (Y-down, baked-in size scale, black solid fill); bitmap glyphs
+    ///   (CBDT/sbix) become `Node::Image`. The node's local origin
+    ///   `(0, 0)` is the glyph's pen origin (baseline-left).
+    /// - `transform` is the per-glyph placement: a translation by
+    ///   `(x_int + x_frac, y_baseline + y_offset)` in raster pixels,
+    ///   honouring the round-3 sub-pixel positioning and the
+    ///   round-3/4 mark `(x_offset, y_offset)`. The Y-baseline is
+    ///   chosen so the run sits on `y = 0` — callers wanting a
+    ///   different baseline pre-translate or wrap in a `Group` of
+    ///   their own.
+    ///
+    /// Glyphs that produce no rendering output (whitespace, empty
+    /// outlines) are skipped so the returned `Vec` length is
+    /// `<= shaped.len()`.
+    ///
+    /// Empty strings, zero-glyph runs, and `size_px <= 0` all return
+    /// an empty `Vec`. The full-fidelity `Shaper::shape` path runs
+    /// underneath so GSUB ligatures + GPOS kerning + mark attachment
+    /// + face-chain fallback all apply.
+    pub fn shape_to_paths(
+        face_chain: &FaceChain,
+        text: &str,
+        size_px: f32,
+    ) -> Vec<(usize, Node, Transform2D)> {
+        if text.is_empty() || size_px <= 0.0 || !size_px.is_finite() {
+            return Vec::new();
+        }
+        let glyphs = match face_chain.shape(text, size_px) {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        let mut out: Vec<(usize, Node, Transform2D)> = Vec::with_capacity(glyphs.len());
+        // Pen advances along X; the baseline is at y = 0 (caller can
+        // translate the whole run via a wrapping Group if needed).
+        let mut pen_x = 0.0_f32;
+        for g in &glyphs {
+            let face_idx = g.face_idx as usize;
+            let face = face_chain.face(g.face_idx);
+            // Vector text is resolution-independent, so the full
+            // floating-point target X is the right per-glyph
+            // translation — no need for the round-3 raster
+            // sub-pixel-slot quantisation. The pen sums advances even
+            // for non-rendering glyphs (SPACE, etc) so the next
+            // glyph lands at the correct position.
+            let target_x = pen_x + g.x_offset;
+            pen_x += g.x_advance;
+            let node = match face.glyph_node(g.glyph_id, size_px) {
+                Some(n) => n,
+                None => continue,
+            };
+            let ty = g.y_offset;
+            out.push((face_idx, node, Transform2D::translate(target_x, ty)));
+        }
+        out
     }
 }
 

@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 7, vector-first text export (2026-05-04)
+
+- `Face::glyph_path(glyph_id) -> Option<oxideav_core::Path>` — returns
+  the raw glyph outline as vector commands in the font's native Y-up
+  font-unit coordinate space. TT outlines map to `MoveTo` + `LineTo`
+  + `QuadCurveTo` + `Close` (with the standard implicit-on-curve
+  midpoint reconstruction for adjacent off-curve points). CFF outlines
+  map to `MoveTo` + `LineTo` + `CubicCurveTo` + `Close`, mirroring the
+  Type 2 charstring decode 1:1. Bitmap-only glyphs (CBDT-only fonts)
+  return `None`.
+- `Face::glyph_node(glyph_id, size_px) -> Option<oxideav_core::Node>`
+  — returns a self-contained `Node` ready to be positioned at the pen
+  origin. Outline glyphs come back as `Node::Path(PathNode)` with the
+  Y-flip + size scale baked in (origin at (0, 0) = pen origin, Y grows
+  downward), with a default black solid fill. Bitmap glyphs (CBDT,
+  e.g. Noto Color Emoji) come back as `Node::Image(ImageRef)` carrying
+  the rasterised RGBA bitmap as an `oxideav_core::VideoFrame`, with
+  `bounds` sized to the bitmap's CBDT-declared placement at the
+  strike's native ppem (scaled by `size_px / strike_ppem`). COLRv1
+  layered glyphs fall through to the base outline path for now —
+  round 6 (#356) extends `glyph_node` to return a `Group` of layered
+  PathNodes per COLR layer.
+- `Shaper::shape_to_paths(face_chain, text, size_px) -> Vec<(usize,
+  Node, Transform2D)>` — primary vector text API. Shapes through the
+  full GSUB / GPOS / mark-attachment / face-chain-fallback pipeline,
+  then wraps each glyph in a `Node` and a positioning `Transform2D`
+  (pure translation by the cumulative pen advance + per-glyph
+  kerning / mark x_offset / y_offset). Non-rendering glyphs (SPACE,
+  empty outlines) advance the pen but do not appear in the output
+  vector — the returned length is `<= shaped.len()`.
+- The existing rasterise APIs (`render_text`, `render_text_styled`,
+  `render_text_wrapped`, `Composer::compose_run*`) are **unchanged**
+  in this round — they keep returning `RgbaBitmap`. Removal /
+  rewriting in terms of the vector pipeline is task #354.
+- `oxideav-core` minimum bumped to `0.1.14` for the `vector` module
+  types (`Path`, `PathCommand`, `Node`, `PathNode`, `ImageRef`,
+  `Paint`, `FillRule`, `Transform2D`, `Rect`, `Rgba`, `Point`).
+- New integration tests:
+  - `tests/round7_glyph_path.rs` — DejaVu Sans Mono 'A' must emit
+    `MoveTo` + `Close` + ≥1 `QuadCurveTo` and zero cubics; SPACE
+    returns `None`.
+  - `tests/round7_glyph_path_cff.rs` — Source Sans 3 'A' must emit
+    `MoveTo` + `Close` + ≥1 `CubicCurveTo` and zero quads.
+  - `tests/round7_shape_to_paths.rs` — DejaVu Sans Mono "Hi" must
+    return 2 `PathNode`s with the second translated rightward;
+    "A B" skips the SPACE node and translates 'B' past it.
+  - `tests/round7_bitmap_glyph_node.rs` — Noto Color Emoji
+    `glyph_node('🎉', 96.0)` must be `Node::Image(ImageRef)` with
+    a non-empty RGBA plane and ≥1 non-zero-alpha pixel.
+
 ### Added — round 5, CBDT/CBLC color bitmap glyphs (2026-05-04)
 
 - New `color_glyph` module + `ColorGlyphBitmap { bitmap, bearing_x,
