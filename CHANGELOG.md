@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 5, TTC support + CJK fallback integration test (2026-05-04)
+
+- `Face::from_ttc_bytes(bytes, index)` — construct a face from the
+  `index`-th subfont of a TrueType Collection (TTC / `'ttcf'`). Stores
+  the subfont index on the face so that `with_font` re-parses through
+  `oxideav_ttf::Font::from_collection_bytes(bytes, i)` instead of
+  `from_bytes` and the right subfont is selected each time.
+- `Face::subfont_index() -> Option<u32>` — accessor; `None` for plain
+  sfnt-flavour faces.
+- New dev-dep on `ureq = "3"` for the integration-test fixture
+  downloader (mirrors the `oxideav-msmpeg4` pattern).
+- New `tests/font_fixtures/mod.rs` — shared download-cache-verify
+  helper used by all round-5 integration tests. Caches under
+  `target/test-fixtures/fonts/`, gates first-time downloads behind
+  `OXIDEAV_NETWORK_TESTS=1`, SHA-256 verifies on every load. Skips
+  silently with `eprintln!` when neither cached nor enabled.
+- `tests/round5_cjk_fallback.rs` closes the round-2 deferral
+  ("Two-script-coverage fallback integration test"). Loads
+  NotoSansCJK-Medium.ttc subfont 0 (Japanese cut) as the fallback
+  behind DejaVu Sans Mono, shapes `"hello 日本語 world"` through a
+  `FaceChain`, and asserts:
+  - Each Latin codepoint resolves to face_idx 0 (DejaVu).
+  - Each CJK codepoint resolves to face_idx 1 (Noto CJK) with a
+    non-zero glyph id.
+  - The total run advance is positive and CJK glyphs are on average
+    wider than Latin glyphs (east-asian wide sanity).
+
 ### Added — round 4, oblique fixture for italic-on-italic suppression (2026-05-04)
 
 - `tests/fixtures/DejaVuSansMono-Oblique.ttf` (252 KB) — DejaVu Sans

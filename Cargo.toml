@@ -17,3 +17,12 @@ oxideav-core = "0.1"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
 oxideav-pixfmt = "0.1"
+
+[dev-dependencies]
+# round5_cjk_fallback / round5_emoji integration tests fetch large
+# (~10-20 MB) Noto Sans CJK + Noto Color Emoji fixtures from
+# samples.oxideav.org under target/test-fixtures/fonts/. Cached after
+# first download; gated behind OXIDEAV_NETWORK_TESTS=1; SHA-256
+# verified on every load. Mirrors the oxideav-msmpeg4 microsoft_fixtures
+# pattern.
+ureq = "3"

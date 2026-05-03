@@ -53,6 +53,11 @@ pub struct Face {
     family: Option<String>,
     italic_angle: f32,
     weight_class: u16,
+    /// `Some(i)` when this face was constructed from a TTC subfont via
+    /// `from_ttc_bytes`. `with_font` re-parses through the TTC entry
+    /// point so the right subfont is selected each time. `None` for
+    /// plain sfnt-flavour faces (the common case).
+    subfont_index: Option<u32>,
 }
 
 impl Face {
@@ -83,6 +88,41 @@ impl Face {
             family,
             italic_angle,
             weight_class,
+            subfont_index: None,
+        })
+    }
+
+    /// Parse the `index`-th subfont out of an owned TrueType Collection
+    /// (`.ttc` / `'ttcf'`) byte buffer. Convenience wrapper around
+    /// `oxideav_ttf::Font::from_collection_bytes`. Index is recorded on
+    /// the face so [`Face::with_font`] can re-parse the right subfont.
+    pub fn from_ttc_bytes(bytes: Vec<u8>, index: u32) -> Result<Self, Error> {
+        let bytes: Box<[u8]> = bytes.into_boxed_slice();
+        let (units_per_em, ascent, descent, line_gap, family, italic_angle, weight_class) = {
+            let font =
+                oxideav_ttf::Font::from_collection_bytes(&bytes, index).map_err(Error::from)?;
+            (
+                font.units_per_em(),
+                font.ascent(),
+                font.descent(),
+                font.line_gap(),
+                font.family_name().map(|s| s.to_string()),
+                font.italic_angle(),
+                font.weight_class(),
+            )
+        };
+        Ok(Self {
+            bytes,
+            id: next_face_id(),
+            kind: FaceKind::Ttf,
+            units_per_em,
+            ascent,
+            descent,
+            line_gap,
+            family,
+            italic_angle,
+            weight_class,
+            subfont_index: Some(index),
         })
     }
 
@@ -121,6 +161,7 @@ impl Face {
             // 400 (Regular) is the safe default that avoids
             // synthetic-bold heuristics firing.
             weight_class: 400,
+            subfont_index: None,
         })
     }
 
@@ -195,8 +236,20 @@ impl Face {
                 actual: self.kind,
             });
         }
-        let font = oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?;
+        let font = match self.subfont_index {
+            Some(i) => {
+                oxideav_ttf::Font::from_collection_bytes(&self.bytes, i).map_err(Error::from)?
+            }
+            None => oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?,
+        };
         Ok(f(&font))
+    }
+
+    /// True if this face is the `i`-th subfont of a TrueType Collection
+    /// (the `bytes` buffer holds the WHOLE TTC; the subfont is selected
+    /// at parse-time). Returns `None` for plain sfnt-flavour faces.
+    pub fn subfont_index(&self) -> Option<u32> {
+        self.subfont_index
     }
 
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
