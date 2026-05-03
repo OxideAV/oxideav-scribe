@@ -1,6 +1,6 @@
 [package]
 name = "oxideav-scribe"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -14,6 +14,6 @@ categories = ["graphics", "rendering", "text-processing"]
 
 [dependencies]
 oxideav-core = "0.1"
-oxideav-ttf = "0.0"
-oxideav-otf = "0.0"
+oxideav-ttf = "0.1"
+oxideav-otf = "0.1"
 oxideav-pixfmt = "0.1"
