@@ -14,22 +14,35 @@ use crate::rasterizer::AlphaBitmap;
 /// Cache key. `size_q8` is `(size_px * 256.0).round() as u32` so that
 /// two requests one quarter-pixel apart still hit the same entry,
 /// while distinct integer sizes (the common case) live in separate
-/// slots.
+/// slots. `shear_q14` is the requested italic shear, similarly
+/// quantised, so that synthesised-italic glyphs never collide with
+/// upright ones in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub face_id: u64,
     pub glyph_id: u16,
     pub size_q8: u32,
+    /// Quantised shear (`tan(angle) * 16384` as i32). 0 for upright.
+    /// 14 fractional bits give >0.0001 resolution, well below visible
+    /// quantisation across any sane synthetic-italic angle.
+    pub shear_q14: i32,
 }
 
 impl GlyphKey {
-    /// Build a key from a face id, glyph id, and pixel size.
+    /// Build a key from a face id, glyph id, and pixel size. No shear.
     pub fn new(face_id: u64, glyph_id: u16, size_px: f32) -> Self {
+        Self::new_styled(face_id, glyph_id, size_px, 0.0)
+    }
+
+    /// Build a key with a horizontal shear (synthetic italic).
+    pub fn new_styled(face_id: u64, glyph_id: u16, size_px: f32, shear_x_per_y: f32) -> Self {
         let size_q8 = (size_px * 256.0).round().max(0.0) as u32;
+        let shear_q14 = (shear_x_per_y * 16384.0).round() as i32;
         Self {
             face_id,
             glyph_id,
             size_q8,
+            shear_q14,
         }
     }
 }

@@ -41,6 +41,10 @@ pub struct PositionedGlyph {
     /// Per-glyph horizontal advance, in raster pixels. The pen moves
     /// `x_advance` after this glyph is drawn.
     pub x_advance: f32,
+    /// Index into the [`crate::FaceChain`] that owns the face this
+    /// glyph was sourced from. 0 for the primary face. Round-1 callers
+    /// using the single-face `Shaper::shape` get 0 for every glyph.
+    pub face_idx: u16,
 }
 
 /// Round-1 shaper. Stateless — every call starts from scratch.
@@ -59,14 +63,29 @@ impl Shaper {
 }
 
 fn shape_with_font(font: &oxideav_ttf::Font<'_>, text: &str, size_px: f32) -> Vec<PositionedGlyph> {
-    let upem = font.units_per_em().max(1) as f32;
-    let scale = size_px / upem;
-
     // Step 1: cmap.
     let raw_glyphs: Vec<u16> = text
         .chars()
         .map(|ch| font.glyph_index(ch).unwrap_or(0))
         .collect();
+
+    shape_run_with_font(font, &raw_glyphs, size_px, 0)
+}
+
+/// Shape a *pre-cmap'd* run of glyph ids through GSUB + GPOS using
+/// `font`. Used by [`crate::FaceChain`] which performs cmap fallback
+/// at chain-walk time, then hands a per-face run to this entry point.
+///
+/// Each output glyph is tagged with `face_idx` so the rasterizer knows
+/// which face to fetch the outline from.
+pub fn shape_run_with_font(
+    font: &oxideav_ttf::Font<'_>,
+    raw_glyphs: &[u16],
+    size_px: f32,
+    face_idx: u16,
+) -> Vec<PositionedGlyph> {
+    let upem = font.units_per_em().max(1) as f32;
+    let scale = size_px / upem;
 
     // Step 2: ligature substitution. Walk through and let the font
     // collapse runs of input glyphs into single output glyphs.
@@ -101,6 +120,7 @@ fn shape_with_font(font: &oxideav_ttf::Font<'_>, text: &str, size_px: f32) -> Ve
             x_offset,
             y_offset: 0.0,
             x_advance,
+            face_idx,
         });
     }
 

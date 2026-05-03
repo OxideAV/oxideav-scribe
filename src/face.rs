@@ -29,6 +29,8 @@ pub struct Face {
     descent: i16,
     line_gap: i16,
     family: Option<String>,
+    italic_angle: f32,
+    weight_class: u16,
 }
 
 impl Face {
@@ -36,7 +38,7 @@ impl Face {
     pub fn from_ttf_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
         let bytes: Box<[u8]> = bytes.into_boxed_slice();
         // Snapshot the metadata while we have the borrow.
-        let (units_per_em, ascent, descent, line_gap, family) = {
+        let (units_per_em, ascent, descent, line_gap, family, italic_angle, weight_class) = {
             let font = oxideav_ttf::Font::from_bytes(&bytes).map_err(Error::from)?;
             (
                 font.units_per_em(),
@@ -44,6 +46,8 @@ impl Face {
                 font.descent(),
                 font.line_gap(),
                 font.family_name().map(|s| s.to_string()),
+                font.italic_angle(),
+                font.weight_class(),
             )
         };
         Ok(Self {
@@ -54,6 +58,8 @@ impl Face {
             descent,
             line_gap,
             family,
+            italic_angle,
+            weight_class,
         })
     }
 
@@ -91,6 +97,20 @@ impl Face {
     pub fn line_height_px(&self, size_px: f32) -> f32 {
         let units = self.ascent as i32 - self.descent as i32 + self.line_gap as i32;
         units as f32 * size_px / self.units_per_em as f32
+    }
+
+    /// `post.italicAngle` in degrees (negative for forward slanted
+    /// faces, 0 for upright). Used by [`crate::style`] to decide
+    /// whether to synthesise italic for an upright font or honour the
+    /// font's own slant.
+    pub fn italic_angle(&self) -> f32 {
+        self.italic_angle
+    }
+
+    /// `OS/2.usWeightClass` (100..=1000). 400 if the font has no
+    /// `OS/2` table.
+    pub fn weight_class(&self) -> u16 {
+        self.weight_class
     }
 
     /// Run a closure with a freshly-parsed `Font<'_>` view of the

@@ -40,7 +40,7 @@
 //! they get fixed in round 2.
 
 use crate::face::Face;
-use crate::outline::{flatten, FlatBounds};
+use crate::outline::{flatten_with_shear, FlatBounds};
 use crate::Error;
 
 /// Vertical supersampling factor for AA.
@@ -93,8 +93,22 @@ impl AlphaBitmap {
 pub struct Rasterizer;
 
 impl Rasterizer {
-    /// Rasterise a single glyph at `size_px` pixels per em.
+    /// Rasterise a single glyph at `size_px` pixels per em. No shear
+    /// (upright). Equivalent to `raster_glyph_styled(face, gid,
+    /// size_px, 0.0)`.
     pub fn raster_glyph(face: &Face, glyph_id: u16, size_px: f32) -> Result<AlphaBitmap, Error> {
+        Self::raster_glyph_styled(face, glyph_id, size_px, 0.0)
+    }
+
+    /// Rasterise a single glyph at `size_px` with an optional
+    /// horizontal shear (`shear_x_per_y`, in TT Y-up coordinates) for
+    /// synthetic italic.
+    pub fn raster_glyph_styled(
+        face: &Face,
+        glyph_id: u16,
+        size_px: f32,
+        shear_x_per_y: f32,
+    ) -> Result<AlphaBitmap, Error> {
         if size_px <= 0.0 {
             return Ok(AlphaBitmap::default());
         }
@@ -103,7 +117,7 @@ impl Rasterizer {
 
         // Pull the outline.
         let outline = face.with_font(|font| font.glyph_outline(glyph_id))??;
-        let flat = match flatten(&outline, scale) {
+        let flat = match flatten_with_shear(&outline, scale, shear_x_per_y) {
             Some(f) => f,
             None => return Ok(AlphaBitmap::default()),
         };
@@ -121,13 +135,26 @@ impl Rasterizer {
     /// `top_offset_px = bounds.y_min` (both relative to the glyph
     /// origin, after the Y-flip into raster space).
     pub fn glyph_offset(face: &Face, glyph_id: u16, size_px: f32) -> Result<(f32, f32), Error> {
+        Self::glyph_offset_styled(face, glyph_id, size_px, 0.0)
+    }
+
+    /// Sheared variant of [`Self::glyph_offset`]. Required because the
+    /// bbox of a sheared outline is not the same as the upright bbox —
+    /// applying italic shifts the top of the glyph rightwards, growing
+    /// `bounds.x_max` (and pushing `bounds.x_min` left for descenders).
+    pub fn glyph_offset_styled(
+        face: &Face,
+        glyph_id: u16,
+        size_px: f32,
+        shear_x_per_y: f32,
+    ) -> Result<(f32, f32), Error> {
         if size_px <= 0.0 {
             return Ok((0.0, 0.0));
         }
         let upem = face.units_per_em().max(1) as f32;
         let scale = size_px / upem;
         let outline = face.with_font(|font| font.glyph_outline(glyph_id))??;
-        let flat = match flatten(&outline, scale) {
+        let flat = match flatten_with_shear(&outline, scale, shear_x_per_y) {
             Some(f) => f,
             None => return Ok((0.0, 0.0)),
         };

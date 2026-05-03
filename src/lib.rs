@@ -24,19 +24,27 @@ pub mod cache;
 pub mod color;
 pub mod compose;
 pub mod face;
+pub mod face_chain;
 pub mod layout;
 pub mod outline;
 pub mod rasterizer;
 pub mod shaper;
+pub mod stroke;
+pub mod style;
 
 pub use cache::{CachedGlyph, GlyphCache, GlyphKey};
 pub use color::{Rgba, TRANSPARENT, WHITE};
-pub use compose::{Composer, RgbaBitmap};
+pub use compose::{Composer, RgbaBitmap, StrokeStyle};
 pub use face::Face;
+pub use face_chain::{shear_for, FaceChain};
 pub use layout::{run_width, wrap_lines};
-pub use outline::{flatten, FlatBounds, FlatOutline};
+pub use outline::{flatten, flatten_with_shear, FlatBounds, FlatOutline};
 pub use rasterizer::{AlphaBitmap, Rasterizer};
 pub use shaper::{PositionedGlyph, Shaper};
+pub use stroke::{dilate_alpha, dilate_offset};
+pub use style::{
+    synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,
+};
 
 /// Errors emitted by the scribe pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +74,9 @@ impl std::error::Error for Error {}
 
 /// High-level convenience: shape `text`, rasterise + compose into a
 /// freshly allocated `RgbaBitmap` sized to the run's bounds. The
-/// resulting bitmap uses straight-alpha RGBA.
+/// resulting bitmap uses straight-alpha RGBA. Defaults to upright,
+/// regular weight ([`Style::REGULAR`]); for italic / bold use
+/// [`render_text_styled`].
 ///
 /// Returns an empty bitmap if the run shapes to zero glyphs (or every
 /// glyph is empty / non-rendering — e.g. a string of spaces).
@@ -76,6 +86,21 @@ pub fn render_text(
     size_px: f32,
     color: Rgba,
 ) -> Result<RgbaBitmap, Error> {
+    render_text_styled(face, text, size_px, color, Style::REGULAR)
+}
+
+/// Styled variant of [`render_text`]. Honours `style.italic` (applies
+/// a synthetic horizontal shear when the requested style is italic
+/// and the underlying face is upright; otherwise the font's own slant
+/// is honoured) and `style.weight` (currently informational, baked
+/// into the cache key for round-3 synthesis).
+pub fn render_text_styled(
+    face: &Face,
+    text: &str,
+    size_px: f32,
+    color: Rgba,
+    style: Style,
+) -> Result<RgbaBitmap, Error> {
     if size_px <= 0.0 || !size_px.is_finite() {
         return Err(Error::InvalidSize);
     }
@@ -83,6 +108,8 @@ pub fn render_text(
     if glyphs.is_empty() {
         return Ok(RgbaBitmap::default());
     }
+
+    let shear = synthetic_italic_shear(style, face.italic_angle());
 
     // Pre-rasterise each glyph (once) so we know its bbox + can reuse
     // the bitmap during the compose pass below.
@@ -94,8 +121,8 @@ pub fn render_text(
     let mut prepared: Vec<(PositionedGlyph, AlphaBitmap, f32, f32)> =
         Vec::with_capacity(glyphs.len());
     for g in &glyphs {
-        let bitmap = Rasterizer::raster_glyph(face, g.glyph_id, size_px)?;
-        let (off_x, off_y) = Rasterizer::glyph_offset(face, g.glyph_id, size_px)?;
+        let bitmap = Rasterizer::raster_glyph_styled(face, g.glyph_id, size_px, shear)?;
+        let (off_x, off_y) = Rasterizer::glyph_offset_styled(face, g.glyph_id, size_px, shear)?;
         if !bitmap.is_empty() {
             let glyph_x = pen + g.x_offset + off_x;
             let glyph_y = g.y_offset + off_y;

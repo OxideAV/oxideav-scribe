@@ -87,23 +87,70 @@ impl FlatBounds {
 ///
 /// Returns `None` for empty outlines (e.g. the space glyph).
 pub fn flatten(outline: &TtOutline, scale: f32) -> Option<FlatOutline> {
+    flatten_with_shear(outline, scale, 0.0)
+}
+
+/// Flatten with an optional horizontal shear. `shear_x_per_y` is the
+/// `tan(angle)` value to apply in TT (Y-up) coordinates: each input
+/// point at `(x, y)` becomes `(x + shear * y, y)` *before* the
+/// raster-down conversion. Used by the rasterizer when synthesising
+/// italic for an upright face — see [`crate::style`].
+///
+/// `shear_x_per_y == 0.0` is identical to [`flatten`].
+///
+/// The bounding box is recomputed from the actual mapped points (the
+/// font's cached bbox is invalid once shear is applied).
+pub fn flatten_with_shear(
+    outline: &TtOutline,
+    scale: f32,
+    shear_x_per_y: f32,
+) -> Option<FlatOutline> {
     if outline.contours.is_empty() {
         return None;
     }
-    let raw = outline.bounds?;
-    // Convert TT (Y-up) bounds to raster (Y-down). y_max maps to y=0,
-    // y_min maps to y=height. The flatten step below uses the same
-    // transformation per-point so they stay consistent.
-    let bounds = FlatBounds {
-        x_min: raw.x_min as f32 * scale,
-        y_min: -(raw.y_max as f32) * scale,
-        x_max: raw.x_max as f32 * scale,
-        y_max: -(raw.y_min as f32) * scale,
+
+    // Without shear we can use the font's cached bbox directly (faster +
+    // matches what the original flatten() did exactly so existing tests
+    // don't shift by a sub-pixel rounding).
+    let bounds = if shear_x_per_y == 0.0 {
+        let raw = outline.bounds?;
+        FlatBounds {
+            x_min: raw.x_min as f32 * scale,
+            y_min: -(raw.y_max as f32) * scale,
+            x_max: raw.x_max as f32 * scale,
+            y_max: -(raw.y_min as f32) * scale,
+        }
+    } else {
+        // Sheared: compute bbox from the sheared points themselves.
+        let mut x_min = f32::INFINITY;
+        let mut y_min = f32::INFINITY;
+        let mut x_max = f32::NEG_INFINITY;
+        let mut y_max = f32::NEG_INFINITY;
+        for c in &outline.contours {
+            for p in &c.points {
+                let (sx, sy) = shear_point(p.x as f32, p.y as f32, shear_x_per_y);
+                let rx = sx * scale;
+                let ry = -sy * scale;
+                x_min = x_min.min(rx);
+                y_min = y_min.min(ry);
+                x_max = x_max.max(rx);
+                y_max = y_max.max(ry);
+            }
+        }
+        if !x_min.is_finite() {
+            return None;
+        }
+        FlatBounds {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        }
     };
 
     let mut contours = Vec::with_capacity(outline.contours.len());
     for c in &outline.contours {
-        let pts = flatten_contour(&c.points, scale, &bounds);
+        let pts = flatten_contour(&c.points, scale, &bounds, shear_x_per_y);
         if pts.len() >= 2 {
             contours.push(pts);
         }
@@ -115,13 +162,23 @@ pub fn flatten(outline: &TtOutline, scale: f32) -> Option<FlatOutline> {
     Some(FlatOutline { contours, bounds })
 }
 
+/// Apply horizontal shear in TT (Y-up) coordinates. Italic-positive y
+/// (above the baseline) shifts to the right when `shear_x_per_y > 0`.
+#[inline]
+fn shear_point(x: f32, y: f32, shear_x_per_y: f32) -> (f32, f32) {
+    (x + shear_x_per_y * y, y)
+}
+
 /// Apply scale + Y-flip + bounds-relative translation to a single TT
 /// point so the result is in raster pixels with origin at top-left of
-/// the glyph bbox.
+/// the glyph bbox. Honour an optional horizontal shear (applied in TT
+/// Y-up coordinates BEFORE the Y-flip) so synthesised italic produces
+/// the visually-expected forward slant.
 #[inline]
-fn map_point(x: i16, y: i16, scale: f32, bounds: &FlatBounds) -> (f32, f32) {
-    let rx = x as f32 * scale - bounds.x_min;
-    let ry = -(y as f32) * scale - bounds.y_min;
+fn map_point(x: i16, y: i16, scale: f32, bounds: &FlatBounds, shear_x_per_y: f32) -> (f32, f32) {
+    let (sx, sy) = shear_point(x as f32, y as f32, shear_x_per_y);
+    let rx = sx * scale - bounds.x_min;
+    let ry = -sy * scale - bounds.y_min;
     (rx, ry)
 }
 
@@ -134,7 +191,12 @@ fn map_point(x: i16, y: i16, scale: f32, bounds: &FlatBounds) -> (f32, f32) {
 /// One ordered point in the rotated contour: (x, y, on-curve flag).
 type OrderedPoint = (f32, f32, bool);
 
-fn flatten_contour(pts: &[oxideav_ttf::Point], scale: f32, bounds: &FlatBounds) -> Vec<(f32, f32)> {
+fn flatten_contour(
+    pts: &[oxideav_ttf::Point],
+    scale: f32,
+    bounds: &FlatBounds,
+    shear_x_per_y: f32,
+) -> Vec<(f32, f32)> {
     if pts.is_empty() {
         return Vec::new();
     }
@@ -148,7 +210,7 @@ fn flatten_contour(pts: &[oxideav_ttf::Point], scale: f32, bounds: &FlatBounds) 
         let mut ord: Vec<OrderedPoint> = Vec::with_capacity(n);
         for i in 0..n {
             let p = pts[(s + i) % n];
-            let (x, y) = map_point(p.x, p.y, scale, bounds);
+            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y);
             ord.push((x, y, p.on_curve));
         }
         let s_xy = (ord[0].0, ord[0].1);
@@ -157,15 +219,15 @@ fn flatten_contour(pts: &[oxideav_ttf::Point], scale: f32, bounds: &FlatBounds) 
         // All-off-curve: the start is the midpoint of pts[0]..pts[1].
         let p0 = pts[0];
         let p1 = pts[1 % n];
-        let (x0, y0) = map_point(p0.x, p0.y, scale, bounds);
-        let (x1, y1) = map_point(p1.x, p1.y, scale, bounds);
+        let (x0, y0) = map_point(p0.x, p0.y, scale, bounds, shear_x_per_y);
+        let (x1, y1) = map_point(p1.x, p1.y, scale, bounds, shear_x_per_y);
         let mid = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
         let mut ord: Vec<OrderedPoint> = Vec::with_capacity(n + 1);
         // Insert the synthetic on-curve start, then walk the original
         // ring in order.
         ord.push((mid.0, mid.1, true));
         for p in pts.iter().take(n) {
-            let (x, y) = map_point(p.x, p.y, scale, bounds);
+            let (x, y) = map_point(p.x, p.y, scale, bounds, shear_x_per_y);
             ord.push((x, y, p.on_curve));
         }
         (mid, ord)
