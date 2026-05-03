@@ -48,7 +48,8 @@ pub use rasterizer::{AlphaBitmap, Rasterizer};
 pub use shaper::{PositionedGlyph, Shaper};
 pub use stroke::{dilate_alpha, dilate_offset};
 pub use style::{
-    synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,
+    synthetic_bold_radius, synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG,
+    ITALIC_ANGLE_EPSILON_DEG, SYNTHETIC_BOLD_PX_PER_WEIGHT_STEP_PER_PX, SYNTHETIC_BOLD_THRESHOLD,
 };
 
 /// Errors emitted by the scribe pipeline.
@@ -115,8 +116,10 @@ pub fn render_text(
 /// Styled variant of [`render_text`]. Honours `style.italic` (applies
 /// a synthetic horizontal shear when the requested style is italic
 /// and the underlying face is upright; otherwise the font's own slant
-/// is honoured) and `style.weight` (currently informational, baked
-/// into the cache key for round-3 synthesis).
+/// is honoured) and `style.weight` (when the requested weight exceeds
+/// the face's natural `usWeightClass` by at least
+/// [`SYNTHETIC_BOLD_THRESHOLD`], the rasterised glyph alpha is
+/// dilated for synthetic bold).
 pub fn render_text_styled(
     face: &Face,
     text: &str,
@@ -133,13 +136,16 @@ pub fn render_text_styled(
     }
 
     let shear = synthetic_italic_shear(style, face.italic_angle());
+    let bold_r = crate::style::synthetic_bold_radius(style, face.weight_class(), size_px);
 
     // Pre-rasterise each glyph (once) so we know its bbox + can reuse
     // the bitmap during the compose pass below. Sub-pixel positioning:
     // each glyph is rasterised with the fractional part of its target
     // pen position baked into the outline, so the per-glyph alpha
     // pattern reflects its sub-pixel placement (sharper edges at small
-    // body sizes than naive integer rounding).
+    // body sizes than naive integer rounding). Synthetic-bold (when
+    // `style.weight` > face's natural weight) dilates each bitmap
+    // by `bold_r` pixels — the same path the composer uses.
     let mut pen = 0.0_f32;
     let mut x_min = f32::INFINITY;
     let mut y_min = f32::INFINITY;
@@ -153,9 +159,16 @@ pub fn render_text_styled(
         let frac_x = target - int_x;
         let slot = crate::cache::subpixel_slot(frac_x);
         let sub_x = crate::cache::subpixel_offset(slot);
-        let bitmap = Rasterizer::raster_glyph_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
-        let (off_x, off_y) =
+        let mut bitmap =
+            Rasterizer::raster_glyph_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
+        let (mut off_x, mut off_y) =
             Rasterizer::glyph_offset_subpixel(face, g.glyph_id, size_px, shear, sub_x)?;
+        if bold_r > 0.0 && !bitmap.is_empty() {
+            bitmap = crate::stroke::dilate_alpha(&bitmap, bold_r);
+            let off = crate::stroke::dilate_offset(bold_r) as f32;
+            off_x -= off;
+            off_y -= off;
+        }
         if !bitmap.is_empty() {
             let glyph_x = int_x + off_x;
             let glyph_y = g.y_offset + off_y;

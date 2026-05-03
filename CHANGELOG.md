@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 3, synthetic bold via alpha dilation (2026-05-04)
+
+- `style::synthetic_bold_radius(style, face_weight, size_px) -> f32`
+  — when the requested `style.weight` exceeds the face's natural
+  `usWeightClass` by at least `SYNTHETIC_BOLD_THRESHOLD = 200` (two
+  weight steps), returns the per-side dilation radius in pixels.
+  Formula: `0.0001 * size_px * weight_delta`, clamped up to 1.0 px
+  so the dilation kernel produces visible thickening at small body
+  sizes. For Regular (400) → Bold (700) at 32 px this yields ~1.0
+  px (clamped from 0.96), at 64 px ~1.92 px, matching what
+  Microsoft GDI+ and libass produce for ASS `\b1` against a Regular
+  face.
+- `style::SYNTHETIC_BOLD_THRESHOLD = 200` and
+  `SYNTHETIC_BOLD_PX_PER_WEIGHT_STEP_PER_PX = 0.0001` — tunable
+  constants exposed for callers that need a different aesthetic.
+- `Composer::compose_run` / `compose_run_styled` /
+  `compose_run_with_stroke` — apply the synthetic-bold radius to
+  the cached glyph bitmap on the fly, combined additively with any
+  stroke radius, so a Bold + bordered cue gets a thick stroke
+  surrounding a thick fill.
+- `render_text_styled` — top-level entry point honours synthetic
+  bold via the same dilation path.
+- Caveat: callers that have a real Bold face available SHOULD prefer
+  loading it as a separate `Face`; synthetic bold is the fallback
+  for fonts that ship only one cut. The cache key already includes
+  `weight` indirectly via the face id, so loading a real Bold face
+  produces a separate cache slot from the Regular one.
+
 ### Added — round 3, GPOS mark-to-base attachment (2026-05-04)
 
 - Shaper now runs a 4th pass after kerning: for each `(base, mark)`

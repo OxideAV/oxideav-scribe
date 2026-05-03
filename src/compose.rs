@@ -14,7 +14,7 @@ use crate::face_chain::{shear_for, FaceChain};
 use crate::rasterizer::Rasterizer;
 use crate::shaper::PositionedGlyph;
 use crate::stroke::{dilate_alpha, dilate_offset};
-use crate::style::Style;
+use crate::style::{synthetic_bold_radius, Style};
 use crate::{Error, Rgba};
 
 /// An RGBA8 bitmap with straight alpha. Stride is `width * 4`.
@@ -214,7 +214,12 @@ impl Composer {
 
     /// Core compositing loop. `dilate_radius_px = Some(r)` requests a
     /// stroke pass (each glyph's alpha bitmap is dilated by r before
-    /// blitting); `None` is the normal fill.
+    /// blitting); `None` is the normal fill. Synthetic bold (when
+    /// `style.weight` exceeds the per-face natural weight) is applied
+    /// to BOTH passes by adding the bold radius on top of the stroke
+    /// radius — that way a Bold + bordered cue gets a thick stroke
+    /// surrounding a thick fill, matching how Microsoft GDI+ and
+    /// libass compose synthetic-bold-with-border.
     #[allow(clippy::too_many_arguments)]
     fn compose_run_inner(
         &mut self,
@@ -264,13 +269,14 @@ impl Composer {
                 entry
             };
 
-            // For the stroke pass, dilate the cached alpha bitmap on
-            // the fly. Dilation is NOT cached because radius is
-            // typically a per-cue parameter that varies by ASS style;
-            // the alpha-mask sources stay cached.
-            let (blit_bitmap, blit_dx, blit_dy) = if let Some(r) = dilate_radius_px {
-                let dil = dilate_alpha(&cached.bitmap, r);
-                let off = dilate_offset(r) as f32;
+            // Combine stroke radius (if any) with synthetic-bold
+            // radius (if the requested weight exceeds the face's). A
+            // total radius of 0 skips dilation entirely (cheap path).
+            let bold_r = synthetic_bold_radius(style, face.weight_class(), size_px);
+            let total_r = dilate_radius_px.unwrap_or(0.0) + bold_r;
+            let (blit_bitmap, blit_dx, blit_dy) = if total_r > 0.0 {
+                let dil = dilate_alpha(&cached.bitmap, total_r);
+                let off = dilate_offset(total_r) as f32;
                 (dil, -off, -off)
             } else {
                 (cached.bitmap.clone(), 0.0, 0.0)
