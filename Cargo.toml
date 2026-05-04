@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust font rasterizer + shaper + layout for the oxideav framework — TrueType outline flattening, scanline anti-aliasing, GSUB ligatures, GPOS kerning"
+description = "Pure-Rust vector font shaper + layout for the oxideav framework — TrueType / OTF outline access, GSUB ligatures, GPOS kerning, mark attachment, CBDT colour bitmaps. Pixel pipeline lives in oxideav-raster."
 repository = "https://github.com/OxideAV/oxideav-scribe"
 homepage = "https://github.com/OxideAV/oxideav-scribe"
 readme = "README.md"
@@ -13,7 +13,7 @@ keywords = ["font", "rasterizer", "shaper", "truetype", "text"]
 categories = ["graphics", "rendering", "text-processing"]
 
 [dependencies]
-# Round 7 vector-text APIs (`Face::glyph_path` / `glyph_node`,
+# Vector-text APIs (`Face::glyph_path` / `glyph_node`,
 # `Shaper::shape_to_paths`) consume `oxideav_core::vector` types
 # (`Path`, `PathCommand`, `Node`, `PathNode`, `ImageRef`,
 # `Transform2D`) introduced in oxideav-core 0.1.14. Round 8 / #357
@@ -22,7 +22,6 @@ categories = ["graphics", "rendering", "text-processing"]
 oxideav-core = "0.1.15"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
-oxideav-pixfmt = "0.1"
 # CBDT/CBLC colour-emoji glyphs ship per-glyph PNG byte streams; we
 # decode them to RGBA via the sibling oxideav-png crate. NO external
 # `png` / `image` crate per workspace policy.

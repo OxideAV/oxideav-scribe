@@ -26,7 +26,7 @@
 
 use crate::face::Face;
 use crate::shaper::{shape_run_with_font, PositionedGlyph};
-use crate::style::{synthetic_italic_shear, Style};
+use crate::style::Style;
 use crate::Error;
 
 /// Ordered chain of faces. Index 0 is the primary; index N is consulted
@@ -149,12 +149,6 @@ impl FaceChain {
         }
         Ok(out)
     }
-}
-
-/// Compute the synthetic-italic shear for `face` under `style`. Convenience
-/// wrapper used by the composer + rasterizer.
-pub fn shear_for(face: &Face, style: Style) -> f32 {
-    synthetic_italic_shear(style, face.italic_angle())
 }
 
 #[cfg(test)]

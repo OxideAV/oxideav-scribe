@@ -1,5 +1,5 @@
-//! Round-6 integration tests (#356) for the CBDT bilinear-resample +
-//! composer integration.
+//! Round-6 integration tests (#356) for the CBDT bilinear-resample
+//! pipeline.
 //!
 //! Three things are exercised here:
 //!
@@ -14,10 +14,11 @@
 //!    (round-to-nearest), and whose `bearing_x` / `bearing_y` /
 //!    `advance` are scaled by `size_px / strike_ppem`.
 //!
-//! 3. `Composer::compose_run` against Noto Color Emoji — composing a
-//!    single emoji glyph into an `RgbaBitmap` produces non-zero
-//!    colour pixels (not just alpha), proving the colour-bitmap
-//!    dispatch fires inside the composer.
+//! 3. `Face::glyph_node` against Noto Color Emoji — the emoji glyph
+//!    surfaces as `Node::Image` carrying a `VideoFrame` whose pixels
+//!    include real (non-grayscale) colour, proving the CBDT decode +
+//!    resample land in the vector node ready for `oxideav-raster` to
+//!    blit.
 //!
 //! The Noto-font tests are gated on `OXIDEAV_NETWORK_TESTS=1` via the
 //! shared `font_fixtures` helper; the synthetic test runs unconditionally.
@@ -26,7 +27,9 @@
 mod font_fixtures;
 
 use font_fixtures::{load_fixture, NOTO_COLOR_EMOJI_TTF};
-use oxideav_scribe::{Composer, Face, RgbaBitmap, Shaper, WHITE};
+use oxideav_core::Node;
+use oxideav_scribe::color_glyph::RgbaBitmap;
+use oxideav_scribe::Face;
 
 /// Bilinear resample identity — destination size matches the source,
 /// so every pixel must come back unchanged. Catches sign / off-by-one
@@ -234,37 +237,36 @@ fn raster_color_glyph_at_resamples_to_target_size() {
     assert_eq!(resampled.bearing_y, expected_by);
 }
 
-/// `Composer::compose_run` for a single emoji glyph paints actual
-/// **colour** pixels into the destination — proving the CBDT dispatch
-/// in `compose_run_inner` is wired through. The composer's `color`
-/// parameter is meaningless for colour bitmaps (CBDT carries its own
-/// colour) so we pass white and confirm we get NON-white pixels back.
+/// `Face::glyph_node` for a colour-emoji glyph emits a `Node::Image`
+/// whose `VideoFrame` carries actual **colour** pixels (R != G or G != B),
+/// proving the CBDT decode lands in the vector node ready for
+/// `oxideav-raster` to blit through its image-rendering path.
 #[test]
-fn composer_paints_color_pixels_for_emoji() {
+fn glyph_node_carries_color_pixels_for_emoji() {
     let bytes = match load_fixture(&NOTO_COLOR_EMOJI_TTF) {
         Some(b) => b,
         None => return, // skip silently
     };
     let face = Face::from_ttf_bytes(bytes).expect("Noto Color Emoji parses");
-    let glyphs = Shaper::shape(&face, "\u{1F389}", 32.0).expect("shape");
-    assert!(!glyphs.is_empty(), "shaper produced 0 glyphs for 🎉");
-    eprintln!("[round6-color-bitmap] shaped: {glyphs:#?}");
+    let gid = face
+        .with_font(|f| f.glyph_index('\u{1F389}'))
+        .expect("with_font ok")
+        .expect("U+1F389 must map");
 
-    // Allocate a destination wide enough for the glyph + some slack
-    // around the bearings. 64×64 covers a single 32 px emoji.
-    let mut dst = RgbaBitmap::new(64, 64);
-    let mut composer = Composer::new();
-    // Pen at (8, 40) — leaves room for the negative bearing_y to land
-    // glyph above the baseline within the canvas.
-    composer
-        .compose_run(&glyphs, &face, 32.0, WHITE, &mut dst, 8.0, 40.0)
-        .expect("compose_run ok");
+    let node = face
+        .glyph_node(gid, 32.0)
+        .expect("emoji glyph_node must return Some(Image)");
+    let image = match &node {
+        Node::Image(im) => im,
+        other => panic!("expected Node::Image for emoji, got {other:?}"),
+    };
 
-    // Count colour pixels: any pixel where R != G or G != B (alpha
-    // matters too, but the emoji has lots of pure colour).
+    // Pull the RGBA bytes out of the VideoFrame (always one plane,
+    // 4 B/px straight-alpha — see Face::glyph_node bitmap construction).
+    let plane = &image.frame.planes[0];
     let mut color_pixels = 0usize;
     let mut nonzero_alpha = 0usize;
-    for px in dst.data.chunks_exact(4) {
+    for px in plane.data.chunks_exact(4) {
         if px[3] != 0 {
             nonzero_alpha += 1;
         }
@@ -273,16 +275,16 @@ fn composer_paints_color_pixels_for_emoji() {
         }
     }
     eprintln!(
-        "[round6-color-bitmap] composer painted {nonzero_alpha} non-transparent pixels, \
+        "[round6-color-bitmap] glyph_node carries {nonzero_alpha} non-transparent pixels, \
          {color_pixels} of which are coloured"
     );
     assert!(
         nonzero_alpha > 0,
-        "composer painted zero non-transparent pixels — colour-bitmap dispatch never fired"
+        "glyph_node Image plane has zero non-transparent pixels — colour-bitmap decode failed"
     );
     assert!(
         color_pixels > 0,
-        "composer painted only grayscale pixels — CBDT dispatch produced an alpha mask, \
+        "glyph_node Image plane is grayscale only — CBDT decode produced an alpha mask, \
          not a colour bitmap"
     );
 }

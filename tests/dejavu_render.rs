@@ -2,7 +2,8 @@
 //! The fixture is shipped under `tests/fixtures/` so the standalone
 //! crate package is self-contained for CI / docs.rs.
 
-use oxideav_scribe::{render_text, Face, Rasterizer, Shaper, WHITE};
+use oxideav_core::{Node, PathCommand};
+use oxideav_scribe::{Face, FaceChain, Shaper};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 
@@ -11,27 +12,30 @@ fn load_face() -> Face {
 }
 
 #[test]
-fn rasterise_a_at_32px() {
+fn glyph_path_a_at_32px_emits_outline() {
+    // Vector replacement for the old "rasterise 'A'" smoke test:
+    // `Face::glyph_path` returns the glyph's vector commands; the
+    // raster of the alpha mask is now `oxideav-raster`'s job. We
+    // confirm the path has the expected shape (≥1 contour, ≥1
+    // quadratic curve segment, MoveTo/Close balanced).
     let face = load_face();
     let gid_a = face
         .with_font(|f| f.glyph_index('A'))
         .expect("with_font")
         .expect("'A' is in DejaVu");
-    let bm = Rasterizer::raster_glyph(&face, gid_a, 32.0).expect("raster ok");
-    assert!(!bm.is_empty(), "'A' bitmap must be non-empty");
-    assert!(bm.width >= 10 && bm.width <= 40, "width: {}", bm.width);
-    assert!(bm.height >= 16 && bm.height <= 40, "height: {}", bm.height);
-    let nz = bm.nonzero_pixel_count();
-    assert!(nz > 50, "'A' should have >50 non-zero pixels, got {nz}");
-
-    // Sanity: at least one pixel near the centre column should be
-    // ≥ 200 alpha (a stem of the 'A').
-    let cx = bm.width / 2;
-    let mut max_alpha = 0u8;
-    for y in 0..bm.height {
-        max_alpha = max_alpha.max(bm.get(cx, y));
-    }
-    assert!(max_alpha >= 200, "max stem alpha at cx={cx}: {max_alpha}");
+    let path = face.glyph_path(gid_a).expect("'A' has an outline");
+    let move_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::MoveTo(_)))
+        .count();
+    let close_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::Close))
+        .count();
+    assert!(move_count >= 1, "expected ≥1 MoveTo");
+    assert_eq!(move_count, close_count, "MoveTo / Close must balance");
 }
 
 #[test]
@@ -89,31 +93,42 @@ fn shaper_fi_ligature_collapses_office() {
 }
 
 #[test]
-fn render_text_hello_produces_white_pixels() {
+fn shape_to_paths_hello_emits_one_node_per_visible_glyph() {
+    // Vector replacement for the old "render_text produces white pixels"
+    // smoke test. `Shaper::shape_to_paths` now returns vector glyph
+    // nodes ready for downstream `oxideav-raster` to rasterise; here we
+    // verify the run shape (one node per visible glyph, sequential X
+    // translations).
     let face = load_face();
-    let bm = render_text(&face, "Hello", 16.0, WHITE).expect("render ok");
-    assert!(!bm.is_empty(), "rendered bitmap must be non-empty");
-    let nz = bm.nonzero_alpha_count();
-    assert!(nz > 50, "non-zero alpha pixel count: {nz}");
-
-    // Spot-check: at least one pixel in the bitmap is opaque white-ish.
-    let mut found_strong_white = false;
-    for y in 0..bm.height {
-        for x in 0..bm.width {
-            let p = bm.get(x, y);
-            if p[3] >= 200 && p[0] >= 200 && p[1] >= 200 && p[2] >= 200 {
-                found_strong_white = true;
-                break;
-            }
-        }
-        if found_strong_white {
-            break;
-        }
-    }
-    assert!(
-        found_strong_white,
-        "expected at least one strong-white pixel in 'Hello' render"
+    let chain = FaceChain::new(face);
+    let placed = Shaper::shape_to_paths(&chain, "Hello", 16.0);
+    assert_eq!(
+        placed.len(),
+        5,
+        "expected 5 placed glyphs for 'Hello', got {}",
+        placed.len()
     );
+    // Each placed glyph is a Group(cache_key=Some) wrapping a PathNode.
+    for (i, (face_idx, node, _)) in placed.iter().enumerate() {
+        assert_eq!(*face_idx, 0, "single-face chain → face_idx 0");
+        let Node::Group(g) = node else {
+            panic!("glyph #{i} is not a Group — got {node:?}");
+        };
+        assert!(g.cache_key.is_some(), "glyph #{i} group missing cache_key");
+    }
+    // Translations advance rightward (each glyph past the first sits to
+    // the right of glyph 0 at pen origin X=0).
+    assert_eq!(placed[0].2.e, 0.0, "first glyph at pen origin");
+    for i in 1..placed.len() {
+        assert!(
+            placed[i].2.e > placed[i - 1].2.e,
+            "glyph {} (X={}) should sit right of glyph {} (X={})",
+            i,
+            placed[i].2.e,
+            i - 1,
+            placed[i - 1].2.e,
+        );
+    }
 }
 
 #[test]

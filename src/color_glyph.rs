@@ -1,5 +1,6 @@
 //! Color-glyph rasterizer — bridges `oxideav_ttf::ColorBitmap` (raw
-//! CBDT PNG bytes + per-glyph metrics) to a [`crate::RgbaBitmap`].
+//! CBDT PNG bytes + per-glyph metrics) to a straight-alpha RGBA8
+//! buffer.
 //!
 //! Round-5 scope: CBDT/CBLC color bitmap glyphs (Google's embedded-PNG
 //! emoji format used by Noto Color Emoji and most Android emoji
@@ -28,20 +29,138 @@
 //! CBDT entries carry a per-strike `ppem` (typically 109 or 136 for
 //! Noto Color Emoji). The face picks the closest strike via
 //! [`oxideav_ttf::Font::glyph_color_bitmap`]; if `size_px` doesn't
-//! match the strike exactly, the resulting RGBA is the strike's
-//! native dimensions and the caller is expected to scale during
-//! composition. Round-5 doesn't perform that scale itself — the
-//! emoji test verifies "the right strike was selected and the bitmap
-//! decoded successfully", not "the bitmap was rescaled to size_px".
+//! match the strike exactly, [`Face::raster_color_glyph_at`] runs a
+//! bilinear resample to the requested size before handing the bitmap
+//! back. Once the bitmap reaches `Face::glyph_node` it gets wrapped in
+//! an `oxideav_core::ImageRef` carrying a `VideoFrame` so downstream
+//! `oxideav-raster` blits it through the same image-rendering path it
+//! uses for any other embedded raster.
 //!
 //! No third-party PNG / image crate is used per workspace policy;
 //! `oxideav-png` (a sibling) is the sole PNG dependency.
 
-use crate::compose::RgbaBitmap;
 use crate::face::Face;
 use crate::Error;
 
 use oxideav_core::VideoFrame;
+
+/// A grayscale-irrelevant straight-alpha RGBA8 bitmap. Stride is
+/// `width * 4`. Used internally to carry the decoded colour-glyph
+/// pixels through resampling before they're wrapped in a
+/// `VideoFrame` for the outer `Node::Image`.
+#[derive(Debug, Clone, Default)]
+pub struct RgbaBitmap {
+    /// Bitmap width in pixels.
+    pub width: u32,
+    /// Bitmap height in pixels.
+    pub height: u32,
+    /// Row-major straight-alpha RGBA8 bytes (`width * height * 4`).
+    pub data: Vec<u8>,
+}
+
+impl RgbaBitmap {
+    /// Allocate a fully-transparent (alpha = 0) bitmap.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            data: vec![0; (width as usize) * (height as usize) * 4],
+        }
+    }
+
+    /// True if the bitmap holds zero pixels.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// Read RGBA at `(x, y)`. Out-of-range reads return `[0; 4]`.
+    pub fn get(&self, x: u32, y: u32) -> [u8; 4] {
+        if x >= self.width || y >= self.height {
+            return [0; 4];
+        }
+        let off = ((y as usize) * (self.width as usize) + (x as usize)) * 4;
+        [
+            self.data[off],
+            self.data[off + 1],
+            self.data[off + 2],
+            self.data[off + 3],
+        ]
+    }
+
+    /// Number of pixels with non-zero alpha.
+    pub fn nonzero_alpha_count(&self) -> usize {
+        self.data.chunks_exact(4).filter(|p| p[3] != 0).count()
+    }
+
+    /// Bilinearly resample this bitmap to `(dst_width, dst_height)`.
+    ///
+    /// Used by the colour-bitmap pipeline to scale a CBDT strike
+    /// (typically 109 px or 136 px ppem for Noto Color Emoji) down to
+    /// the requested raster size. Edge sampling clamps at the source
+    /// borders so we never read outside the bitmap. Interpolation is
+    /// performed in **straight-alpha space** independently per channel
+    /// — the simpler model that matches what FreeType's bitmap-strike
+    /// scaling does. Premultiplied interpolation produces sharper
+    /// alpha-edge silhouettes but requires un-premultiplying afterwards
+    /// to keep downstream consumers happy; for emoji glyphs at typical
+    /// body-text sizes the visual difference is imperceptible.
+    ///
+    /// Returns the same bitmap unchanged when `dst_width == self.width`
+    /// and `dst_height == self.height` (cheap pass-through). Returns an
+    /// empty bitmap when either source or destination has a zero
+    /// dimension.
+    pub fn resample_bilinear(&self, dst_width: u32, dst_height: u32) -> RgbaBitmap {
+        if self.is_empty() || dst_width == 0 || dst_height == 0 {
+            return RgbaBitmap::default();
+        }
+        if dst_width == self.width && dst_height == self.height {
+            return self.clone();
+        }
+        let src_w = self.width as usize;
+        let src_h = self.height as usize;
+        let dw = dst_width as usize;
+        let dh = dst_height as usize;
+        let mut out = RgbaBitmap::new(dst_width, dst_height);
+        // Map each destination pixel centre to a source coordinate via
+        // half-pixel offsets so the corner samples land on the source
+        // corner pixel centres (the standard "centre-sample" mapping).
+        let sx = self.width as f32 / dst_width as f32;
+        let sy = self.height as f32 / dst_height as f32;
+        for dy in 0..dh {
+            // Source Y at the destination pixel centre.
+            let src_y = (dy as f32 + 0.5) * sy - 0.5;
+            let y0_f = src_y.floor();
+            let fy = src_y - y0_f;
+            let y0 = (y0_f as i32).clamp(0, src_h as i32 - 1) as usize;
+            let y1 = (y0_f as i32 + 1).clamp(0, src_h as i32 - 1) as usize;
+            for dx in 0..dw {
+                let src_x = (dx as f32 + 0.5) * sx - 0.5;
+                let x0_f = src_x.floor();
+                let fx = src_x - x0_f;
+                let x0 = (x0_f as i32).clamp(0, src_w as i32 - 1) as usize;
+                let x1 = (x0_f as i32 + 1).clamp(0, src_w as i32 - 1) as usize;
+                let off00 = (y0 * src_w + x0) * 4;
+                let off10 = (y0 * src_w + x1) * 4;
+                let off01 = (y1 * src_w + x0) * 4;
+                let off11 = (y1 * src_w + x1) * 4;
+                let dst_off = (dy * dw + dx) * 4;
+                let w00 = (1.0 - fx) * (1.0 - fy);
+                let w10 = fx * (1.0 - fy);
+                let w01 = (1.0 - fx) * fy;
+                let w11 = fx * fy;
+                for c in 0..4 {
+                    let s00 = self.data[off00 + c] as f32;
+                    let s10 = self.data[off10 + c] as f32;
+                    let s01 = self.data[off01 + c] as f32;
+                    let s11 = self.data[off11 + c] as f32;
+                    let mixed = s00 * w00 + s10 * w10 + s01 * w01 + s11 * w11;
+                    out.data[dst_off + c] = mixed.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        out
+    }
+}
 
 /// Result of decoding one CBDT entry — the rasterised RGBA bitmap plus
 /// the per-glyph metrics needed for placement.
@@ -107,7 +226,7 @@ impl Face {
     /// PNG-payload formats).
     ///
     /// Returns `Err(Error::InvalidSize)` if `size_px` is non-positive
-    /// or NaN, mirroring the rest of the rasterizer entry points.
+    /// or NaN, mirroring the rest of the scribe entry points.
     pub fn raster_color_glyph(
         &self,
         glyph_id: u16,

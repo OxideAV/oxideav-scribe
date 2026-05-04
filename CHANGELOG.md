@@ -7,43 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — vector-only refactor (#354)
+
+Scribe is now a pure vector shaper. All pixel-pipeline code moved to
+[`oxideav-raster`](https://github.com/OxideAV/oxideav-raster); consumers
+that need a rasterised text run should call `Shaper::shape_to_paths`,
+wrap the resulting nodes in a `VectorFrame`, and hand it to
+`oxideav_raster::Renderer::render`.
+
+Removed modules: `cache`, `compose`, `outline`, `rasterizer`, `stroke`.
+
+Removed public APIs:
+- `render_text` / `render_text_styled` / `render_text_wrapped`
+- `Composer` / `Composer::compose_run` / `compose_run_styled` /
+  `compose_run_with_stroke` / `with_capacity` / `cache` accessors
+- `StrokeStyle`
+- `Rasterizer` / `Rasterizer::raster_glyph` / `raster_glyph_styled` /
+  `raster_glyph_subpixel` / `glyph_offset*`
+- `AlphaBitmap`
+- `RgbaBitmap` (the public re-export from the crate root — the type
+  itself still lives at `oxideav_scribe::color_glyph::RgbaBitmap` as
+  the carrier for the CBDT decode path; vector consumers will not need it)
+- `outline::flatten` / `flatten_with_shear` / `flatten_with_shear_offset` /
+  `flatten_cubic` / `flatten_cubic_with_shear` / `FlatOutline` / `FlatBounds`
+- `cache::GlyphKey` / `GlyphCache` / `CachedGlyph` /
+  `subpixel_slot` / `subpixel_offset` / `SUBPIXEL_STEPS`
+- `stroke::dilate_alpha` / `dilate_offset`
+- `style::synthetic_bold_radius` /
+  `style::SYNTHETIC_BOLD_THRESHOLD` /
+  `style::SYNTHETIC_BOLD_PX_PER_WEIGHT_STEP_PER_PX`
+- `face_chain::shear_for`
+
+Removed dependency: `oxideav-pixfmt` (the alpha-blit responsibility
+moves to the rasterizer).
+
+`Style` keeps `weight: u16` for downstream rasterizers wanting to
+synthesise bold; scribe itself no longer applies bold dilation.
+
 ## [0.1.4](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.3...v0.1.4) - 2026-05-04
 
 ### Other
 
 - bilinear-resample + composer dispatch for CBDT colour glyphs ([#356](https://github.com/OxideAV/oxideav-scribe/pull/356))
-
-### Added — round 6, CBDT bilinear + composer integration (#356)
-
-- `RgbaBitmap::resample_bilinear(dst_w, dst_h)` — straight-alpha
-  bilinear scaler used by the colour-bitmap pipeline. Identity-,
-  upsample-, downsample- and edge-clamp tested.
-- `Face::raster_color_glyph_at(glyph_id, size_px)` — returns the
-  closest CBDT/CBLC strike pre-resampled to `size_px` (bitmap
-  dimensions and `bearing_x` / `bearing_y` / `advance` all scaled by
-  `size_px / strike_ppem`). Complements the existing
-  `raster_color_glyph` (which keeps the strike's native resolution
-  for callers wanting to do their own sampling).
-- `Composer::compose_run` (and the styled / chain / stroke variants)
-  now dispatch CBDT-bearing glyphs through the colour-bitmap path:
-  the strike is bilinearly resampled to `size_px` and blitted into
-  the destination via Porter-Duff "over" with the CBDT's own colour
-  palette. Outline glyphs continue through the existing alpha-mask
-  path with the run colour. Stroke / synthetic-bold are skipped for
-  colour bitmaps (they're outline-only effects), matching what
-  libass + Chrome's text renderer do for emoji.
-- `Face::glyph_node` (the round-7 vector entry point) now emits the
-  resampled bitmap inside `Node::Image` so `bounds.width` /
-  `.height` match the carried `VideoFrame`'s dimensions 1:1 — no
-  separate scale step needed at render time.
-- Pal8 PNG support in the CBDT decode path. Noto Color Emoji ships
-  PLTE-encoded (colour type 3) PNGs to keep payloads small;
-  `oxideav_png::decode_png_to_frame` returns those as a 1-byte-per-
-  pixel `Pal8` plane, but doesn't surface PLTE/tRNS through the
-  `VideoFrame`. We re-parse those two chunks at the boundary (same
-  pattern as `read_png_dimensions` already used for IHDR) and
-  splice them into the colour conversion. Direct RGBA strikes
-  (Apple Color Emoji, EmojiOne) skip the palette path entirely.
 
 ## [0.1.3](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.2...v0.1.3) - 2026-05-04
 

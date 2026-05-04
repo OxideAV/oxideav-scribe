@@ -1,12 +1,13 @@
-//! End-to-end test that the cubic-Bezier flattener handles a real
-//! CFF/OTF fixture (Source Sans 3 Regular, SIL OFL, ~335 KB,
+//! End-to-end test that the OTF (CFF) face loader handles a real
+//! cubic-Bezier fixture (Source Sans 3 Regular, SIL OFL, ~335 KB,
 //! shipped with the `oxideav-otf` crate).
 //!
 //! We only verify structural sanity (face parses, glyphs decode,
-//! the flattener emits non-empty polylines) — pixel-perfect
-//! rasterisation is the rasterizer crate's concern.
+//! `Face::glyph_path` emits a non-empty cubic-bearing path) — pixel
+//! work belongs to the downstream rasterizer crate.
 
-use oxideav_scribe::{flatten_cubic, Face, FaceKind};
+use oxideav_core::PathCommand;
+use oxideav_scribe::{Face, FaceKind};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/SourceSans3-Regular.otf");
 
@@ -22,27 +23,47 @@ fn from_otf_bytes_round_trip() {
 }
 
 #[test]
-fn cubic_flatten_produces_polyline() {
+fn glyph_path_o_emits_cubics() {
+    // 'O' in Source Sans is a curved oval — the CFF charstring decodes
+    // to a sequence of MoveTo + CubicCurveTo + Close commands. (TT
+    // outlines emit quadratics here; CFF emits cubics 1:1 from the
+    // Type 2 charstring decode — see Face::glyph_path.)
     let face = Face::from_otf_bytes(FIXTURE.to_vec()).expect("face");
-    // Look up 'O' (mostly cubic curves) and flatten at 16 px.
-    face.with_otf_font(|font| {
-        let gid = font.glyph_index('O').expect("'O' must map");
-        let outline = font.glyph_outline(gid).expect("outline");
-        let scale = 16.0_f32 / face.units_per_em() as f32;
-        let flat = flatten_cubic(&outline, scale).expect("flatten produces something");
-        assert!(!flat.contours.is_empty(), "no contours after flatten");
-        // 'O' is a single closed letter (or two, with the inner
-        // counter); each contour should have many subdivision
-        // samples after flattening at 16 px.
-        for c in &flat.contours {
-            assert!(c.len() > 4, "contour too short: {} pts", c.len());
-        }
-        // Bounds should be roughly 16 px tall (depending on glyph
-        // shape; just verify non-trivial extent).
-        assert!(flat.bounds.width() > 1.0);
-        assert!(flat.bounds.height() > 1.0);
-    })
-    .expect("with_otf_font");
+    let gid = face
+        .with_otf_font(|font| font.glyph_index('O').expect("'O' must map"))
+        .expect("with_otf_font");
+    let path = face.glyph_path(gid).expect("'O' has an outline");
+
+    let move_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::MoveTo(_)))
+        .count();
+    let close_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::Close))
+        .count();
+    let cubic_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::CubicCurveTo { .. }))
+        .count();
+    let quad_count = path
+        .commands
+        .iter()
+        .filter(|c| matches!(c, PathCommand::QuadCurveTo { .. }))
+        .count();
+    assert!(move_count >= 1, "expected ≥1 MoveTo");
+    assert_eq!(move_count, close_count, "MoveTo / Close must balance");
+    assert!(
+        cubic_count >= 1,
+        "CFF outline expected to emit ≥1 CubicCurveTo, got {cubic_count}"
+    );
+    assert_eq!(
+        quad_count, 0,
+        "CFF outline must not emit QuadCurveTo, got {quad_count}"
+    );
 }
 
 #[test]
