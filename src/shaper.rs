@@ -290,8 +290,8 @@ pub fn shape_run_with_font(
             // it below for that reason). Total advance from base to
             // mark = sum of advances in (j..i].
             let mut intervening_advance = 0.0_f32;
-            for k in (j + 1)..=i {
-                intervening_advance += out[k].x_advance;
+            for entry in out.iter().take(i + 1).skip(j + 1) {
+                intervening_advance += entry.x_advance;
             }
             // x_offset already encodes any kern; we add the anchor
             // delta minus the cumulative advance.

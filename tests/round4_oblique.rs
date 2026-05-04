@@ -32,7 +32,7 @@ fn oblique_face_reports_negative_italic_angle() {
     let face = load_oblique();
     let angle = face.italic_angle();
     assert!(
-        angle <= -10.0 && angle >= -12.0,
+        (-12.0..=-10.0).contains(&angle),
         "expected ~-11° italic angle, got {angle}"
     );
 }
