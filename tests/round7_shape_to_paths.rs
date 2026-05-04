@@ -1,7 +1,8 @@
 //! Round-7 vector-text test: `Shaper::shape_to_paths` returns one
 //! `(face_idx, Node, Transform2D)` per rendered glyph, with the
 //! second glyph translated to the right of the first (positive
-//! advance), and outline glyphs come back as `Node::Path`.
+//! advance), and outline glyphs come back as `Node::Path` wrapped in
+//! a `Node::Group { cache_key: Some(_), .. }` carrier (round 8 / #357).
 
 use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain, Shaper};
@@ -25,13 +26,26 @@ fn shape_hi_returns_two_path_nodes_with_increasing_x() {
         placed.len()
     );
 
-    // (b) Both nodes are PathNodes (outline glyphs, no bitmaps in
-    // DejaVu Sans Mono).
+    // (b) Both nodes are Group(cache_key=Some, children=[PathNode])
+    // (outline glyphs wrapped in a cache-keyed group; round 8 / #357).
     for (i, (face_idx, node, _)) in placed.iter().enumerate() {
         assert_eq!(*face_idx, 0, "single-face chain → face_idx 0");
+        let Node::Group(g) = node else {
+            panic!("glyph #{i} is not a Group — got {node:?}");
+        };
         assert!(
-            matches!(node, Node::Path(_)),
-            "glyph #{i} is not a PathNode — got {node:?}",
+            g.cache_key.is_some(),
+            "glyph #{i} group missing cache_key (rasterizer cache disabled)",
+        );
+        assert_eq!(
+            g.children.len(),
+            1,
+            "glyph #{i} group should wrap exactly one child node",
+        );
+        assert!(
+            matches!(&g.children[0], Node::Path(_)),
+            "glyph #{i} inner child is not a PathNode — got {:?}",
+            g.children[0],
         );
     }
 
@@ -56,9 +70,14 @@ fn shape_hi_returns_two_path_nodes_with_increasing_x() {
 
     // Sanity: the per-glyph fill is the default black solid; replace
     // it via the consumer's downstream pipeline if a different colour
-    // is needed.
-    if let Node::Path(p) = &placed[0].1 {
-        assert!(p.fill.is_some(), "glyph_node should ship a default fill");
+    // is needed. The fill lives on the inner PathNode inside the
+    // cache-keyed Group wrapper.
+    if let Node::Group(g) = &placed[0].1 {
+        if let Some(Node::Path(p)) = g.children.first() {
+            assert!(p.fill.is_some(), "glyph_node should ship a default fill");
+        } else {
+            panic!("expected inner PathNode, got {:?}", g.children.first());
+        }
     }
 }
 

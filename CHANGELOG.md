@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Face::stable_id()` — content-derived face identity (DefaultHasher
+  digest of the leading sfnt bytes + length + subfont index) that is
+  stable across loads of the same font bytes. Distinct from the
+  per-process `Face::id()` counter, this is the right input for any
+  cache key persisted across renderer instances or program runs.
+- `Shaper::shape_to_paths` now wraps each emitted glyph node in a
+  `Node::Group { cache_key: Some(_), children: vec![glyph_node], .. }`
+  carrier with a deterministic `cache_key` derived from
+  `(face_stable_id, glyph_id, size_q8)`. Combined with oxideav-raster's
+  composite-key bitmap cache (which mixes the producer key with the
+  effective transform), this lets the rasterizer reuse the same
+  bitmap for repeated glyph instances across a run, across renderers,
+  and across program restarts. Closes #357.
+
+### Changed
+
+- Bumped `oxideav-core` minimum to `0.1.15` for the `Group::cache_key`
+  field used by the new `shape_to_paths` wrapper.
+- `tests/round7_shape_to_paths.rs`: updated to expect the new
+  `Node::Group { cache_key: Some(_), children: [PathNode] }`
+  envelope around each glyph instead of the raw `Node::Path`.
+
 ### Fixed
 
 - `tests/round7_glyph_path.rs`: switched test glyph from 'A' to 'O'.

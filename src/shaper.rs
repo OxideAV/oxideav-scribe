@@ -43,7 +43,37 @@
 use crate::face::Face;
 use crate::face_chain::FaceChain;
 use crate::Error;
-use oxideav_core::{Node, Transform2D};
+use oxideav_core::{Group, Node, Transform2D};
+
+/// Compute the producer-side `Group::cache_key` for one positioned
+/// glyph. The hash inputs cover every dimension that can change the
+/// rasterised glyph bitmap **before** placement (the per-glyph
+/// `Transform2D` carries the placement and is mixed in by the
+/// downstream rasterizer's composite key).
+///
+/// Inputs:
+/// - `face_stable_id` — `Face::stable_id()` (content-derived; stable
+///   across program runs).
+/// - `glyph_id` — the gid emitted by the shaper.
+/// - `size_q8` — `(size_px * 256.0).round() as u32`, matching the
+///   raster glyph cache's size quantisation (see [`crate::cache`]).
+/// - `style_bits` — opaque producer-side style flags (italic shear /
+///   bold dilation / fill colour). Pass `0` for the default
+///   `shape_to_paths` output (upright, regular, default black fill).
+fn glyph_cache_key(face_stable_id: u64, glyph_id: u16, size_q8: u32, style_bits: u64) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    // A short version tag lets us evolve the layout without colliding
+    // against historical cache entries (consumers persisting the
+    // composite key across processes shouldn't be common, but this is
+    // cheap insurance).
+    b"oxideav-scribe.glyph_cache_key.v1".hash(&mut h);
+    face_stable_id.hash(&mut h);
+    glyph_id.hash(&mut h);
+    size_q8.hash(&mut h);
+    style_bits.hash(&mut h);
+    h.finish()
+}
 
 /// A single shaped glyph with its position relative to the run's pen
 /// origin. Coordinates are in raster pixels.
@@ -105,9 +135,23 @@ impl Shaper {
     /// `<= shaped.len()`.
     ///
     /// Empty strings, zero-glyph runs, and `size_px <= 0` all return
-    /// an empty `Vec`. The full-fidelity `Shaper::shape` path runs
+    /// an empty `Vec`.  The full-fidelity `Shaper::shape` path runs
     /// underneath so GSUB ligatures + GPOS kerning + mark attachment
     /// + face-chain fallback all apply.
+    ///
+    /// **Cache identity (round 8 / #357).** Each emitted glyph is
+    /// wrapped in a [`Group`] carrying a deterministic
+    /// [`Group::cache_key`] computed from
+    /// `(face_stable_id, glyph_id, size_q8)` (see [`glyph_cache_key`]).
+    /// The downstream [`oxideav-raster`] renderer combines that key
+    /// with the per-glyph `Transform2D` to memoise the rasterised
+    /// glyph, so the same glyph rendered at the same effective
+    /// resolution reuses its bitmap across calls (and across renderer
+    /// instances when bitmap caches are shared). The `Group` carries
+    /// the unmodified [`Node`] from [`Face::glyph_node`] and an
+    /// identity transform — placement stays on the outer
+    /// `Transform2D` so two adjacent glyphs hit the cache regardless
+    /// of pen position.
     pub fn shape_to_paths(
         face_chain: &FaceChain,
         text: &str,
@@ -124,6 +168,9 @@ impl Shaper {
         // Pen advances along X; the baseline is at y = 0 (caller can
         // translate the whole run via a wrapping Group if needed).
         let mut pen_x = 0.0_f32;
+        // Match the raster glyph-cache size quantisation (cache::GlyphKey
+        // uses the same `(size_px * 256.0).round() as u32` formula).
+        let size_q8 = (size_px * 256.0).round().max(0.0) as u32;
         for g in &glyphs {
             let face_idx = g.face_idx as usize;
             let face = face_chain.face(g.face_idx);
@@ -140,7 +187,20 @@ impl Shaper {
                 None => continue,
             };
             let ty = g.y_offset;
-            out.push((face_idx, node, Transform2D::translate(target_x, ty)));
+            // Wrap each glyph in a `Group` carrying a stable cache_key
+            // so oxideav-raster's bitmap cache can memoise the glyph
+            // bitmap across renders. style_bits = 0 because
+            // `shape_to_paths` always uses the upright/regular/black
+            // default fill from `Face::glyph_node`; `render_text_styled`
+            // (which adds shear / bold) goes through a separate
+            // rasterised path and doesn't share this cache key.
+            let cache_key = glyph_cache_key(face.stable_id(), g.glyph_id, size_q8, 0);
+            let group_node = Node::Group(Group {
+                cache_key: Some(cache_key),
+                children: vec![node],
+                ..Group::default()
+            });
+            out.push((face_idx, group_node, Transform2D::translate(target_x, ty)));
         }
         out
     }

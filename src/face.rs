@@ -180,6 +180,38 @@ impl Face {
         self.id
     }
 
+    /// Stable, content-derived identity for this face that is **stable
+    /// across loads of the same font bytes** (in contrast to [`Face::id`]
+    /// which is a per-process counter). Used as the producer-side
+    /// component of the [`oxideav_core::Group::cache_key`] emitted by
+    /// [`crate::Shaper::shape_to_paths`] so the downstream rasterizer's
+    /// bitmap cache reuses the same memoised glyph across renderer
+    /// instances and across program restarts.
+    ///
+    /// Implementation: a `DefaultHasher` digest of the font's leading
+    /// bytes (up to 256) plus the byte length, plus the TTC subfont
+    /// index when applicable. Two faces parsed from the same bytes get
+    /// the same `stable_id`; two distinct fonts almost certainly do
+    /// not.
+    pub fn stable_id(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        // Tag the discriminant + subfont so a TTC's subfont 0 and
+        // subfont 1 (which share the outer byte buffer) end up with
+        // different ids without us having to hash the entire TTC twice.
+        (self.kind as u8).hash(&mut h);
+        self.subfont_index.hash(&mut h);
+        // Include the total byte length so two fonts that share a
+        // common header prefix (rare but possible across stripped
+        // variants of the same family) still distinguish.
+        (self.bytes.len() as u64).hash(&mut h);
+        // Hash the leading bytes — the sfnt header + the table
+        // directory both live here and are highly font-specific.
+        let prefix = &self.bytes[..self.bytes.len().min(256)];
+        prefix.hash(&mut h);
+        h.finish()
+    }
+
     /// Family name from the font's `name` table. May be `None` for
     /// stripped or non-standard fonts.
     pub fn family_name(&self) -> Option<&str> {
