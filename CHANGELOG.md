@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.2...v0.1.3) - 2026-05-04
+
+### Other
+
+- wrap shape_to_paths glyphs in cache-keyed Group ([#357](https://github.com/OxideAV/oxideav-scribe/pull/357))
+- implement trapezoidal horizontal coverage for sub-pixel AA
+- re-enable round4 double-diacritic, assert acute < circumflex
+- re-enable round7 path test, switch glyph 'A' -> 'O'
+
 ### Added
 
 - `Face::stable_id()` — content-derived face identity (DefaultHasher
