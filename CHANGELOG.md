@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.1...v0.1.2) - 2026-05-04
+
+### Other
+
+- ignore round-7 'A' QuadCurveTo assertion ([#6](https://github.com/OxideAV/oxideav-scribe/pull/6))
+- ignore round-4 double-diacritic y_offset assertion ([#5](https://github.com/OxideAV/oxideav-scribe/pull/5))
+- ignore round-3 sub-pixel bitmap tests pending horizontal AA ([#4](https://github.com/OxideAV/oxideav-scribe/pull/4))
+- silence rust 1.95 needless_range_loop + manual_range_contains
+- re-land round 5: CBDT/CBLC color bitmap glyphs
+
 ### Added — round 7, vector-first text export (2026-05-04)
 
 - `Face::glyph_path(glyph_id) -> Option<oxideav_core::Path>` — returns
