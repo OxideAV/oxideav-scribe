@@ -1,11 +1,12 @@
-//! Scanline rasterizer with 4× vertical supersampling.
+//! Scanline rasterizer with 4× vertical supersampling and analytical
+//! horizontal edge coverage.
 //!
 //! # Algorithm
 //!
 //! The flattened outline (a set of closed polygonal contours from
 //! [`crate::outline::flatten`]) is rasterised at 4× vertical
-//! resolution into a temporary single-bit buffer using the
-//! standard *active edge list* scanline fill algorithm:
+//! resolution using the standard *active edge list* scanline fill
+//! algorithm:
 //!
 //! 1. Build an "edge table": one entry per outline segment with its
 //!    `y_min`, `y_max`, `x` at `y_min`, and `dx/dy` slope.
@@ -16,14 +17,20 @@
 //!    - Drop edges with `y_max == scanline` from the active list.
 //!    - Sort the active list by current `x`.
 //!    - Pair adjacent x-coordinates → fill pixels between each pair
-//!      (even-odd rule).
+//!      (even-odd rule). At each pair the per-pixel horizontal
+//!      coverage is computed analytically as the length of the
+//!      `[x0, x1]` interval that overlaps each integer pixel column,
+//!      stored as a 0..=255 fractional value (this is the "trapezoidal
+//!      coverage" model: one row of the slab × the pixel-overlap width
+//!      gives the area cut out of the cell). This replaces the older
+//!      binary floor/ceil fill which had no horizontal AA.
 //!    - Step every active edge by its slope.
 //!
 //! The supersampled buffer is then box-averaged 4 rows down to produce
-//! 8-bit alpha. This trades ~2× memory for clean anti-aliasing without
-//! any of the trig (perpendicular distance, signed area) that fancier
-//! analytical AA rasterisers use; the output is visually
-//! indistinguishable at typical type sizes.
+//! 8-bit alpha. Vertical AA comes from the 4× supersample; horizontal
+//! AA comes from the analytical per-pixel coverage. The combination
+//! produces sub-pixel-distinct bitmaps when the outline is shifted by
+//! a fractional pixel (round 3 sub-pixel positioning).
 //!
 //! # Coordinate convention
 //!
@@ -263,10 +270,11 @@ fn rasterise_flat(flat: &crate::outline::FlatOutline) -> AlphaBitmap {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Allocate the supersampled coverage buffer (one bit per cell, but
-    // we use a Vec<u8> packed at one byte per row-cell for simplicity;
-    // memory cost is 4× the final bitmap, easily affordable for
-    // glyphs).
+    // Allocate the supersampled coverage buffer. Each cell holds a
+    // *fractional* coverage value in 0..=255 — `0` is no coverage,
+    // `255` is full coverage, intermediate values are the analytical
+    // horizontal coverage of the pair-fill at that supersample row.
+    // Memory cost is 4× the final bitmap (one byte per ss-cell).
     let mut coverage: Vec<u8> = vec![0; (w as usize) * (ss_h as usize)];
 
     // Active edge list — re-built per scanline.
@@ -301,23 +309,51 @@ fn rasterise_flat(flat: &crate::outline::FlatOutline) -> AlphaBitmap {
         // Sort by current x.
         active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Pair-fill (even-odd).
+        // Pair-fill (even-odd) with analytical per-pixel coverage.
+        //
+        // For each pair (x0, x1) we have a 1-row-tall horizontal slab
+        // from x0 to x1 inside this supersample row. The coverage that
+        // slab cuts out of integer pixel column `px` (covering
+        // `[px, px+1]`) is the length of the overlap:
+        //
+        //   cov(px) = clamp(min(x1, px+1) - max(x0, px), 0, 1)
+        //
+        // We accumulate that coverage into the cell — saturating at
+        // 255 — so overlapping spans (rare; usually a sign of a
+        // mis-wound contour) don't overflow.
         let row = &mut coverage[(ss_y as usize) * (w as usize)..(ss_y as usize + 1) * (w as usize)];
         let n = active.len();
+        let w_f = w as f32;
         let mut i = 0;
         while i + 1 < n {
-            let x0 = active[i].x;
-            let x1 = active[i + 1].x;
-            let lo = x0.max(0.0).floor() as i64;
-            let hi = (x1.min(w as f32)).ceil() as i64;
-            if hi > lo {
-                let lo = lo.max(0) as usize;
-                let hi = (hi as usize).min(w as usize);
-                if hi > lo {
-                    for px in &mut row[lo..hi] {
-                        *px = 1;
-                    }
+            // Clamp the span to the bitmap horizontally; outside the
+            // bitmap there's nothing to do.
+            let x0 = active[i].x.max(0.0);
+            let x1 = active[i + 1].x.min(w_f);
+            if x1 <= x0 {
+                i += 2;
+                continue;
+            }
+            // Integer pixel range the span covers (inclusive). The
+            // floor/ceil here is just a *loop bound* — coverage inside
+            // the loop is fully fractional.
+            let px_lo = x0.floor() as i64;
+            let px_hi = x1.ceil() as i64;
+            let px_lo_u = px_lo.max(0) as usize;
+            let px_hi_u = (px_hi as usize).min(w as usize);
+            for (px, cell) in row.iter_mut().enumerate().take(px_hi_u).skip(px_lo_u) {
+                let pf = px as f32;
+                let lhs = x0.max(pf);
+                let rhs = x1.min(pf + 1.0);
+                let cov = rhs - lhs;
+                if cov <= 0.0 {
+                    continue;
                 }
+                // Map fractional coverage [0, 1] to byte [0, 255] with
+                // round-to-nearest. Saturating add to handle overlap.
+                let add = (cov * 255.0 + 0.5) as u32;
+                let new = (*cell as u32) + add;
+                *cell = new.min(255) as u8;
             }
             i += 2;
         }
@@ -328,8 +364,11 @@ fn rasterise_flat(flat: &crate::outline::FlatOutline) -> AlphaBitmap {
         }
     }
 
-    // Box-average the supersampled buffer down to 8-bit AA.
+    // Box-average the supersampled buffer down to 8-bit AA. Each
+    // ss-cell is already a fractional coverage in 0..=255; averaging
+    // 4 vertical samples gives the final per-pixel alpha.
     let mut bitmap = AlphaBitmap::new(w, h);
+    let half = SUPERSAMPLE / 2;
     for y in 0..h {
         for x in 0..w {
             let mut sum = 0u32;
@@ -338,9 +377,8 @@ fn rasterise_flat(flat: &crate::outline::FlatOutline) -> AlphaBitmap {
                 let idx = row * (w as usize) + (x as usize);
                 sum += coverage[idx] as u32;
             }
-            // Each cell is 0 or 1 → sum in 0..=SUPERSAMPLE → scale to
-            // 0..=255 with rounding.
-            let alpha = (sum * 255 + (SUPERSAMPLE / 2)) / SUPERSAMPLE;
+            // Average with round-to-nearest.
+            let alpha = (sum + half) / SUPERSAMPLE;
             bitmap.data[(y * w + x) as usize] = alpha.min(255) as u8;
         }
     }

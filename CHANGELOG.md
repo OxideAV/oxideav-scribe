@@ -24,6 +24,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   would attach both marks to the base at the same anchor (overlap).
   Test re-enabled.
 
+### Changed
+
+- Rasterizer: replaced binary `floor`/`ceil` horizontal scanline fill
+  with **analytical trapezoidal coverage**. Each non-vertical active-
+  edge pair now contributes per-pixel fractional coverage
+  `clamp(min(x1, px+1) - max(x0, px), 0, 1)` (mapped to a 0..=255
+  byte), accumulated into the supersample buffer instead of a hard
+  `0`/`1`. The 4× vertical supersample is unchanged. Effect: 16
+  sub-pixel x-slots now produce 16 visually distinct glyph bitmaps
+  (previously they collapsed to ~2 because horizontal edges were
+  binary). Re-enables `round3_subpixel::different_slots_produce_*` and
+  `each_slot_produces_a_distinct_bitmap`.
+- `outline::flatten_with_shear_offset`: consolidated bbox computation
+  so the bitmap dimensions are *independent* of `x_subpixel`. The
+  bitmap left edge is always `floor(raw.x_min * scale)` and the bitmap
+  right edge always reserves a 1-px slack column for the trapezoidal
+  rightmost partial-coverage. Without this every sub-pixel slot would
+  pick a different bitmap width as the silhouette spilled across pixel
+  boundaries. Glyph bitmaps are typically 1 px wider than before
+  (round-2 callers see at most a 1-column right-edge zero pad).
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.1...v0.1.2) - 2026-05-04
 
 ### Other

@@ -43,15 +43,6 @@ fn slot_zero_matches_round2_path() {
     assert_eq!(legacy.data, slot0.data, "slot 0 must match round-2 path");
 }
 
-#[ignore = "rasterizer does not yet do horizontal AA — see #4. \
-            The scanline pair-fill at rasterizer.rs:308 does floor/ceil \
-            on the active-edge x coordinates, producing binary horizontal \
-            coverage. As a result, sub-pixel x_subpixel offsets only \
-            change the bitmap when they push the right edge across an \
-            integer pixel boundary; otherwise all 16 slots produce \
-            bit-identical output. Fixing requires either horizontal \
-            supersampling (4×4 = 16× memory) or trapezoidal/exact-area \
-            edge coverage. Re-enable once horizontal AA lands."]
 #[test]
 fn different_slots_produce_different_bitmaps() {
     // Pick a glyph with crisp vertical edges where sub-pixel shift will
@@ -80,10 +71,6 @@ fn different_slots_produce_different_bitmaps() {
     );
 }
 
-#[ignore = "rasterizer does not yet do horizontal AA — see #4. \
-            Same root cause as `different_slots_produce_different_bitmaps`: \
-            16 sub-pixel slots collapse to ~2 distinct bitmaps because \
-            the horizontal scanline fill is integer-coverage only."]
 #[test]
 fn each_slot_produces_a_distinct_bitmap() {
     // Walk all SUBPIXEL_STEPS slots and verify that consecutive slots

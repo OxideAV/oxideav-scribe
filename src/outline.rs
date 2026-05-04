@@ -129,32 +129,34 @@ pub fn flatten_with_shear_offset(
         return None;
     }
 
-    // Without shear or sub-pixel shift we can use the font's cached
-    // bbox directly (faster + bit-identical to the round-1 path).
-    let bounds = if shear_x_per_y == 0.0 && x_subpixel == 0.0 {
+    // Without shear: derive bbox from the font's cached bbox. The
+    // bitmap LEFT edge is pixel-aligned at `floor(raw.x_min * scale)`
+    // and the bitmap WIDTH is `(raw.x_max - raw.x_min).ceil() + 1` so
+    // every fractional sub_x slot ends up with the same dimensions
+    // (round-3 invariant) and the analytical rightmost
+    // partial-coverage column always lands inside the bitmap. The +1 px
+    // slack is required by the trapezoidal coverage path at sub_x > 0
+    // (and harmless at sub_x = 0 — the rightmost pixel just stays 0).
+    let bounds = if shear_x_per_y == 0.0 {
         let raw = outline.bounds?;
+        let raw_xmin = raw.x_min as f32 * scale;
+        let raw_xmax = raw.x_max as f32 * scale;
+        let xmin_aligned = raw_xmin.floor();
+        let xmax_aligned = (raw_xmax - xmin_aligned).ceil() + xmin_aligned + 1.0;
         FlatBounds {
-            x_min: raw.x_min as f32 * scale,
+            x_min: xmin_aligned,
             y_min: -(raw.y_max as f32) * scale,
-            x_max: raw.x_max as f32 * scale,
-            y_max: -(raw.y_min as f32) * scale,
-        }
-    } else if shear_x_per_y == 0.0 {
-        // Sub-pixel only: derive from cached bbox, shift right by
-        // `x_subpixel`. Round x_min DOWN so the bitmap left edge stays
-        // pixel-aligned (the sub-pixel slot is encoded in where the
-        // glyph silhouette sits within the same-sized bitmap).
-        let raw = outline.bounds?;
-        let xmin = raw.x_min as f32 * scale + x_subpixel;
-        let xmax = raw.x_max as f32 * scale + x_subpixel;
-        FlatBounds {
-            x_min: xmin.floor(),
-            y_min: -(raw.y_max as f32) * scale,
-            x_max: xmax,
+            x_max: xmax_aligned,
             y_max: -(raw.y_min as f32) * scale,
         }
     } else {
-        // Sheared: compute bbox from the sheared points themselves.
+        // Sheared: compute bbox from the sheared points themselves
+        // (the cached font bbox is invalid once shear is applied). The
+        // bitmap LEFT edge is pixel-aligned and we leave a 1-px right-
+        // hand slack column for the trapezoidal coverage's rightmost
+        // partial fill — same rule as the unsheared branch.
+        // Importantly, compute the bbox *without* the x_subpixel shift
+        // so all sub-pixel slots produce the same dims.
         let mut x_min = f32::INFINITY;
         let mut y_min = f32::INFINITY;
         let mut x_max = f32::NEG_INFINITY;
@@ -162,7 +164,7 @@ pub fn flatten_with_shear_offset(
         for c in &outline.contours {
             for p in &c.points {
                 let (sx, sy) = shear_point(p.x as f32, p.y as f32, shear_x_per_y);
-                let rx = sx * scale + x_subpixel;
+                let rx = sx * scale;
                 let ry = -sy * scale;
                 x_min = x_min.min(rx);
                 y_min = y_min.min(ry);
@@ -173,18 +175,12 @@ pub fn flatten_with_shear_offset(
         if !x_min.is_finite() {
             return None;
         }
-        // Round x_min DOWN so the bitmap left edge is pixel-aligned;
-        // the sub-pixel offset is encoded in the silhouette position
-        // within the bitmap.
-        let xmin_floor = if x_subpixel != 0.0 {
-            x_min.floor()
-        } else {
-            x_min
-        };
+        let xmin_aligned = x_min.floor();
+        let xmax_aligned = (x_max - xmin_aligned).ceil() + xmin_aligned + 1.0;
         FlatBounds {
-            x_min: xmin_floor,
+            x_min: xmin_aligned,
             y_min,
-            x_max,
+            x_max: xmax_aligned,
             y_max,
         }
     };
