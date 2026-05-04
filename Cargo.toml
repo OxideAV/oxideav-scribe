@@ -15,17 +15,22 @@ categories = ["graphics", "rendering", "text-processing"]
 [dependencies]
 # Round 7 vector-text APIs (`Face::glyph_path` / `glyph_node`,
 # `Shaper::shape_to_paths`) consume `oxideav_core::vector` types
-# (`Path`, `PathCommand`, `Node`, `PathNode`, `Transform2D`)
-# introduced in oxideav-core 0.1.14.
+# (`Path`, `PathCommand`, `Node`, `PathNode`, `ImageRef`,
+# `Transform2D`) introduced in oxideav-core 0.1.14.
 oxideav-core = "0.1.14"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
 oxideav-pixfmt = "0.1"
+# CBDT/CBLC colour-emoji glyphs ship per-glyph PNG byte streams; we
+# decode them to RGBA via the sibling oxideav-png crate. NO external
+# `png` / `image` crate per workspace policy.
+oxideav-png = "0.1"
 
 [dev-dependencies]
-# round5_cjk_fallback integration test fetches a ~10 MB Noto Sans CJK
-# fixture from samples.oxideav.org under target/test-fixtures/fonts/.
-# Cached after first download; gated behind OXIDEAV_NETWORK_TESTS=1;
-# SHA-256 verified on every load. Mirrors the oxideav-msmpeg4
-# microsoft_fixtures pattern.
+# round5_cjk_fallback / round5_emoji integration tests fetch large
+# (~10-20 MB) Noto Sans CJK + Noto Color Emoji fixtures from
+# samples.oxideav.org under target/test-fixtures/fonts/. Cached after
+# first download; gated behind OXIDEAV_NETWORK_TESTS=1; SHA-256
+# verified on every load. Mirrors the oxideav-msmpeg4 microsoft_fixtures
+# pattern.
 ureq = "3"
