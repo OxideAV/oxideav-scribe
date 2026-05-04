@@ -92,7 +92,14 @@ impl Face {
     }
 
     /// Rasterise the colour bitmap for `glyph_id` at the strike whose
-    /// `ppem_y` is closest to `size_px.round()`.
+    /// `ppem_y` is closest to `size_px.round()`, **at the strike's
+    /// native pixel dimensions**.
+    ///
+    /// The returned bitmap is the un-scaled CBDT strike — typically
+    /// 109 px or 136 px on a side for Noto Color Emoji even when the
+    /// caller asked for `size_px = 32`. Use
+    /// [`Face::raster_color_glyph_at`] when you want the bitmap
+    /// pre-resampled to `size_px`.
     ///
     /// Returns `Ok(None)` if the face has no CBDT/CBLC, or no strike
     /// covers the glyph, or the per-glyph CBDT entry is in a format we
@@ -144,7 +151,18 @@ impl Face {
             Some(d) => d,
             None => return Ok(None),
         };
-        let bitmap = videoframe_to_rgba(&frame, png_w, png_h);
+        // Noto Color Emoji ships PLTE-encoded (colour type 3) PNGs —
+        // smaller payload than direct RGBA. `oxideav_png::decode_png_to_frame`
+        // hands those back as a 1-byte-per-pixel `Pal8` plane, with the
+        // PLTE/tRNS chunks NOT exposed through the `VideoFrame`. We
+        // re-parse those two tiny chunks here at the boundary (same
+        // pattern as `read_png_dimensions` already does for IHDR) and
+        // splice them into the conversion. Direct RGBA strikes (Apple
+        // Color Emoji, EmojiOne) skip the palette path entirely —
+        // `read_png_palette` returns `None` and we fall through to the
+        // existing colour-type sniff in `videoframe_to_rgba`.
+        let palette = read_png_palette(&png_bytes);
+        let bitmap = videoframe_to_rgba(&frame, png_w, png_h, palette.as_ref());
         Ok(Some(ColorGlyphBitmap {
             bitmap,
             bearing_x: bx as i32,
@@ -153,24 +171,83 @@ impl Face {
             ppem,
         }))
     }
+
+    /// Rasterise the colour bitmap for `glyph_id`, **bilinearly
+    /// resampled** to the requested `size_px`.
+    ///
+    /// Walks CBLC → CBDT to find the closest strike, decodes the PNG to
+    /// straight-alpha RGBA8 (via [`Face::raster_color_glyph`]), then
+    /// runs [`RgbaBitmap::resample_bilinear`] to scale the bitmap to
+    /// the dimensions matching `size_px` at the strike's aspect ratio.
+    /// The returned [`ColorGlyphBitmap::bearing_x`] / `bearing_y` /
+    /// `advance` are also pre-scaled by `size_px / ppem` (rounded),
+    /// and `ppem` reports the requested raster size (not the strike's
+    /// native ppem) so the caller can use the metrics directly without
+    /// a second-stage scale.
+    ///
+    /// Returns the same `Ok(None)` / `Err(Error::InvalidSize)` cases as
+    /// [`Face::raster_color_glyph`].
+    pub fn raster_color_glyph_at(
+        &self,
+        glyph_id: u16,
+        size_px: f32,
+    ) -> Result<Option<ColorGlyphBitmap>, Error> {
+        let native = match self.raster_color_glyph(glyph_id, size_px)? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        if native.bitmap.is_empty() || native.ppem == 0 {
+            return Ok(Some(native));
+        }
+        let strike_scale = size_px / native.ppem as f32;
+        let new_w = (native.bitmap.width as f32 * strike_scale).round().max(1.0) as u32;
+        let new_h = (native.bitmap.height as f32 * strike_scale)
+            .round()
+            .max(1.0) as u32;
+        let resampled = native.bitmap.resample_bilinear(new_w, new_h);
+        let new_bx = (native.bearing_x as f32 * strike_scale).round() as i32;
+        let new_by = (native.bearing_y as f32 * strike_scale).round() as i32;
+        let new_adv = (native.advance as f32 * strike_scale).round().max(0.0) as u32;
+        // Clamp the reported "ppem" to a u8 (CBDT spec range) — at
+        // size_px > 255 we cap rather than wrap. Callers wanting the
+        // exact requested raster size should use `size_px` directly.
+        let reported_ppem = size_px.round().clamp(1.0, 255.0) as u8;
+        Ok(Some(ColorGlyphBitmap {
+            bitmap: resampled,
+            bearing_x: new_bx,
+            bearing_y: new_by,
+            advance: new_adv,
+            ppem: reported_ppem,
+        }))
+    }
 }
 
 /// Convert a VideoFrame from `oxideav-png` into a straight-alpha RGBA8
 /// [`RgbaBitmap`] given the PNG's true pixel dimensions (recovered
-/// from the IHDR chunk by [`read_png_dimensions`]).
+/// from the IHDR chunk by [`read_png_dimensions`]) and an optional
+/// palette (recovered from PLTE + tRNS chunks by
+/// [`read_png_palette`]).
 ///
 /// Handles the four PNG output flavours we'll ever see from a CBDT
 /// entry — derived from `plane.stride / width`:
 ///
-/// - 4 B/px → `Rgba` (common case): copy through unchanged.
+/// - 4 B/px → `Rgba` (common case for Apple Color Emoji, EmojiOne):
+///   copy through unchanged.
 /// - 3 B/px → `Rgb24` (some glyphs ship without alpha): pad to opaque.
 /// - 2 B/px → `Ya8` (grayscale + alpha): splat luma into RGB.
-/// - 1 B/px → `Gray8` / `Pal8` index (atypical for CBDT): splat luma,
-///   opaque alpha. We don't apply palette lookup; the result is a
-///   grayscale view of the index byte. CBDT-PNG never ships Pal8
-///   in practice (Noto Color Emoji is colour type 6).
+/// - 1 B/px → `Gray8` (no `palette`) OR `Pal8` (`palette` is `Some`):
+///   - When `palette` is supplied, do a per-pixel palette lookup (Noto
+///     Color Emoji ships colour type 3 PNGs — palette + per-entry
+///     alpha via tRNS — for compactness).
+///   - Otherwise splat the byte as grayscale + opaque alpha (grayscale
+///     CBDT PNGs are rare but spec-legal).
 /// - any other ratio → empty bitmap (the composer skips empty glyphs).
-fn videoframe_to_rgba(frame: &VideoFrame, width: u32, height: u32) -> RgbaBitmap {
+fn videoframe_to_rgba(
+    frame: &VideoFrame,
+    width: u32,
+    height: u32,
+    palette: Option<&PngPalette>,
+) -> RgbaBitmap {
     if frame.planes.is_empty() || width == 0 || height == 0 {
         return RgbaBitmap::default();
     }
@@ -219,17 +296,111 @@ fn videoframe_to_rgba(frame: &VideoFrame, width: u32, height: u32) -> RgbaBitmap
                     out.data[dst_off + 3] = a;
                 }
                 1 => {
-                    let y = plane.data[src_off];
-                    out.data[dst_off] = y;
-                    out.data[dst_off + 1] = y;
-                    out.data[dst_off + 2] = y;
-                    out.data[dst_off + 3] = 255;
+                    let idx = plane.data[src_off];
+                    if let Some(p) = palette {
+                        let rgba = p.lookup(idx);
+                        out.data[dst_off] = rgba[0];
+                        out.data[dst_off + 1] = rgba[1];
+                        out.data[dst_off + 2] = rgba[2];
+                        out.data[dst_off + 3] = rgba[3];
+                    } else {
+                        out.data[dst_off] = idx;
+                        out.data[dst_off + 1] = idx;
+                        out.data[dst_off + 2] = idx;
+                        out.data[dst_off + 3] = 255;
+                    }
                 }
                 _ => unreachable!(),
             }
         }
     }
     out
+}
+
+/// PNG palette parsed from the PLTE + tRNS chunks. PLTE always carries
+/// 1..=256 RGB triplets; tRNS (when present, ≤ palette length) carries
+/// per-entry alpha bytes for the leading entries (entries past tRNS's
+/// length are opaque).
+#[derive(Debug, Clone)]
+struct PngPalette {
+    /// Per-index RGBA. `entries.len()` matches PLTE's entry count
+    /// (1..=256).
+    entries: Vec<[u8; 4]>,
+}
+
+impl PngPalette {
+    /// Look up an index. Out-of-range indices return transparent black
+    /// (matching what FreeType + libpng do for malformed palettes).
+    fn lookup(&self, idx: u8) -> [u8; 4] {
+        self.entries
+            .get(idx as usize)
+            .copied()
+            .unwrap_or([0, 0, 0, 0])
+    }
+}
+
+/// Walk PNG chunks looking for `PLTE` + `tRNS`. Returns `Some(palette)`
+/// when both PLTE is present (palette PNGs only) — the tRNS chunk is
+/// optional (without it every entry is opaque). For non-palette PNGs
+/// (no PLTE chunk in the stream) returns `None` so the caller falls
+/// back to the existing colour-type heuristic in
+/// [`videoframe_to_rgba`].
+///
+/// Chunk format per PNG §5.3: `length (u32 BE) + type (4 ASCII) +
+/// data + CRC (u32 BE)`. The 8-byte signature precedes the first
+/// chunk. Walking is bounds-checked against the slice length on every
+/// step.
+fn read_png_palette(bytes: &[u8]) -> Option<PngPalette> {
+    if bytes.len() < 8 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let mut off = 8usize;
+    let mut plte: Option<&[u8]> = None;
+    let mut trns: Option<&[u8]> = None;
+    while off + 12 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+            as usize;
+        let chunk_end = off.checked_add(8).and_then(|x| x.checked_add(len))?;
+        // CRC is 4 bytes after data; total chunk footprint = 12 + len.
+        let total_end = chunk_end.checked_add(4)?;
+        if total_end > bytes.len() {
+            break;
+        }
+        let chunk_type = &bytes[off + 4..off + 8];
+        let chunk_data = &bytes[off + 8..chunk_end];
+        match chunk_type {
+            b"PLTE" => plte = Some(chunk_data),
+            b"tRNS" => trns = Some(chunk_data),
+            b"IDAT" => {
+                // IDAT comes after PLTE/tRNS per PNG ordering; once we
+                // hit it we know we won't find any more colour-type-3
+                // metadata. Bail early to keep the walk bounded.
+                break;
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        off = total_end;
+    }
+    let plte = plte?;
+    if plte.is_empty() || plte.len() % 3 != 0 || plte.len() > 256 * 3 {
+        return None;
+    }
+    let n = plte.len() / 3;
+    let mut entries: Vec<[u8; 4]> = Vec::with_capacity(n);
+    for i in 0..n {
+        entries.push([plte[i * 3], plte[i * 3 + 1], plte[i * 3 + 2], 255]);
+    }
+    if let Some(t) = trns {
+        // Per spec the tRNS chunk for colour type 3 carries up to N
+        // alpha bytes (one per palette entry); entries past tRNS's
+        // length stay opaque.
+        let m = t.len().min(n);
+        for (i, &alpha) in t.iter().take(m).enumerate() {
+            entries[i][3] = alpha;
+        }
+    }
+    Some(PngPalette { entries })
 }
 
 /// Read `(width, height)` from the IHDR chunk of a PNG byte stream.
@@ -282,7 +453,7 @@ mod tests {
                 ],
             }],
         };
-        let bm = videoframe_to_rgba(&frame, 2, 2);
+        let bm = videoframe_to_rgba(&frame, 2, 2, None);
         assert_eq!(bm.width, 2);
         assert_eq!(bm.height, 2);
         assert_eq!(bm.get(0, 0), [255, 0, 0, 255]);
@@ -303,7 +474,7 @@ mod tests {
                 ],
             }],
         };
-        let bm = videoframe_to_rgba(&frame, 2, 1);
+        let bm = videoframe_to_rgba(&frame, 2, 1, None);
         assert_eq!(bm.width, 2);
         assert_eq!(bm.height, 1);
         assert_eq!(bm.get(0, 0), [255, 0, 0, 255]);
@@ -316,7 +487,7 @@ mod tests {
             pts: None,
             planes: vec![],
         };
-        let bm = videoframe_to_rgba(&frame, 0, 0);
+        let bm = videoframe_to_rgba(&frame, 0, 0, None);
         assert!(bm.is_empty());
     }
 
@@ -347,5 +518,115 @@ mod tests {
 
         // Truncated → None.
         assert!(read_png_dimensions(&buf[..16]).is_none());
+    }
+
+    /// Build a synthetic PNG with PLTE + tRNS, walk it via
+    /// `read_png_palette`. Verifies (a) the chunk walker traverses past
+    /// IHDR + PLTE + tRNS to the entries, (b) the palette/alpha pairing
+    /// is correct, (c) the bail at IDAT works, (d) palette-less PNGs
+    /// return `None`.
+    #[test]
+    fn read_png_palette_extracts_plte_and_trns() {
+        // Construct: signature + IHDR + PLTE + tRNS + IDAT + IEND.
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        // IHDR (length 13)
+        buf.extend_from_slice(&13u32.to_be_bytes());
+        buf.extend_from_slice(b"IHDR");
+        buf.extend_from_slice(&8u32.to_be_bytes()); // width
+        buf.extend_from_slice(&8u32.to_be_bytes()); // height
+        buf.extend_from_slice(&[8, 3, 0, 0, 0]); // depth, ct=3 (palette)
+        buf.extend_from_slice(&[0u8; 4]); // CRC stub
+                                          // PLTE: 3 entries (red, green, blue)
+        buf.extend_from_slice(&9u32.to_be_bytes()); // length 9
+        buf.extend_from_slice(b"PLTE");
+        buf.extend_from_slice(&[
+            255, 0, 0, // red
+            0, 255, 0, // green
+            0, 0, 255, // blue
+        ]);
+        buf.extend_from_slice(&[0u8; 4]); // CRC stub
+                                          // tRNS: 2 entries (red opaque, green half-alpha) — the third
+                                          // palette entry stays opaque.
+        buf.extend_from_slice(&2u32.to_be_bytes()); // length 2
+        buf.extend_from_slice(b"tRNS");
+        buf.extend_from_slice(&[255, 128]);
+        buf.extend_from_slice(&[0u8; 4]); // CRC stub
+                                          // IDAT placeholder so the walker bails before IEND.
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(b"IDAT");
+        buf.extend_from_slice(&[0u8; 4]); // CRC stub
+
+        let pal = read_png_palette(&buf).expect("palette");
+        assert_eq!(pal.entries.len(), 3);
+        assert_eq!(pal.lookup(0), [255, 0, 0, 255]);
+        assert_eq!(pal.lookup(1), [0, 255, 0, 128]);
+        assert_eq!(pal.lookup(2), [0, 0, 255, 255]);
+        // Out-of-range index → transparent black.
+        assert_eq!(pal.lookup(3), [0, 0, 0, 0]);
+
+        // Drop PLTE → None.
+        let mut nopal = Vec::new();
+        nopal.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        nopal.extend_from_slice(&13u32.to_be_bytes());
+        nopal.extend_from_slice(b"IHDR");
+        nopal.extend_from_slice(&[0u8; 13]);
+        nopal.extend_from_slice(&[0u8; 4]);
+        assert!(
+            read_png_palette(&nopal).is_none(),
+            "palette-less PNG must return None"
+        );
+
+        // Wrong signature → None.
+        let mut bad = buf.clone();
+        bad[0] = 0;
+        assert!(read_png_palette(&bad).is_none());
+    }
+
+    /// `videoframe_to_rgba` with a palette translates the 1-byte plane
+    /// indices into the right RGBA values.
+    #[test]
+    fn videoframe_pal8_to_bitmap_via_palette() {
+        let frame = VideoFrame {
+            pts: None,
+            planes: vec![VideoPlane {
+                stride: 2, // 2 px * 1 B
+                data: vec![
+                    0, 1, // (0,0) idx 0, (1,0) idx 1
+                    2, 1, // (0,1) idx 2, (1,1) idx 1
+                ],
+            }],
+        };
+        let pal = PngPalette {
+            entries: vec![
+                [255, 0, 0, 255], // 0 → red opaque
+                [0, 255, 0, 128], // 1 → green half-alpha
+                [0, 0, 255, 255], // 2 → blue opaque
+            ],
+        };
+        let bm = videoframe_to_rgba(&frame, 2, 2, Some(&pal));
+        assert_eq!(bm.get(0, 0), [255, 0, 0, 255]);
+        assert_eq!(bm.get(1, 0), [0, 255, 0, 128]);
+        assert_eq!(bm.get(0, 1), [0, 0, 255, 255]);
+        assert_eq!(bm.get(1, 1), [0, 255, 0, 128]);
+    }
+
+    /// `videoframe_to_rgba` with no palette continues to splat the
+    /// 1-byte plane as grayscale (Gray8 path) — back-compat for
+    /// non-palette grayscale PNGs.
+    #[test]
+    fn videoframe_gray8_to_bitmap_without_palette() {
+        let frame = VideoFrame {
+            pts: None,
+            planes: vec![VideoPlane {
+                stride: 2,
+                data: vec![100, 200, 50, 25],
+            }],
+        };
+        let bm = videoframe_to_rgba(&frame, 2, 2, None);
+        assert_eq!(bm.get(0, 0), [100, 100, 100, 255]);
+        assert_eq!(bm.get(1, 0), [200, 200, 200, 255]);
+        assert_eq!(bm.get(0, 1), [50, 50, 50, 255]);
+        assert_eq!(bm.get(1, 1), [25, 25, 25, 255]);
     }
 }

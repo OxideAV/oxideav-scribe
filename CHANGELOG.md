@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — round 6, CBDT bilinear + composer integration (#356)
+
+- `RgbaBitmap::resample_bilinear(dst_w, dst_h)` — straight-alpha
+  bilinear scaler used by the colour-bitmap pipeline. Identity-,
+  upsample-, downsample- and edge-clamp tested.
+- `Face::raster_color_glyph_at(glyph_id, size_px)` — returns the
+  closest CBDT/CBLC strike pre-resampled to `size_px` (bitmap
+  dimensions and `bearing_x` / `bearing_y` / `advance` all scaled by
+  `size_px / strike_ppem`). Complements the existing
+  `raster_color_glyph` (which keeps the strike's native resolution
+  for callers wanting to do their own sampling).
+- `Composer::compose_run` (and the styled / chain / stroke variants)
+  now dispatch CBDT-bearing glyphs through the colour-bitmap path:
+  the strike is bilinearly resampled to `size_px` and blitted into
+  the destination via Porter-Duff "over" with the CBDT's own colour
+  palette. Outline glyphs continue through the existing alpha-mask
+  path with the run colour. Stroke / synthetic-bold are skipped for
+  colour bitmaps (they're outline-only effects), matching what
+  libass + Chrome's text renderer do for emoji.
+- `Face::glyph_node` (the round-7 vector entry point) now emits the
+  resampled bitmap inside `Node::Image` so `bounds.width` /
+  `.height` match the carried `VideoFrame`'s dimensions 1:1 — no
+  separate scale step needed at render time.
+- Pal8 PNG support in the CBDT decode path. Noto Color Emoji ships
+  PLTE-encoded (colour type 3) PNGs to keep payloads small;
+  `oxideav_png::decode_png_to_frame` returns those as a 1-byte-per-
+  pixel `Pal8` plane, but doesn't surface PLTE/tRNS through the
+  `VideoFrame`. We re-parse those two chunks at the boundary (same
+  pattern as `read_png_dimensions` already used for IHDR) and
+  splice them into the colour conversion. Direct RGBA strikes
+  (Apple Color Emoji, EmojiOne) skip the palette path entirely.
+
 ## [0.1.3](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.2...v0.1.3) - 2026-05-04
 
 ### Other

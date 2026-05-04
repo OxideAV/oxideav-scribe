@@ -382,8 +382,18 @@ impl Face {
         // (typical for emoji codepoints) wins over any empty-outline
         // fallback. CBDT-only fonts have no outline at all so this
         // branch is the only path that produces a renderable glyph.
+        //
+        // Round 6 (#356): use `raster_color_glyph_at` so the bitmap is
+        // bilinearly resampled to `size_px` at decode-time. The
+        // resulting `Node::Image` carries a bitmap whose dimensions
+        // match `bounds.width / .height` 1:1 — downstream rasterizers
+        // can blit it without a separate scale step. (Pre-resampling at
+        // the decode boundary is also where the cache-key story lives:
+        // a 32 px bitmap derived from the 109 px strike is the same
+        // every time and can be memoised by callers via the wrapping
+        // `Group::cache_key` from `Shaper::shape_to_paths`.)
         if matches!(self.kind, FaceKind::Ttf) && self.has_color_bitmaps() {
-            if let Ok(Some(cgb)) = self.raster_color_glyph(glyph_id, size_px) {
+            if let Ok(Some(cgb)) = self.raster_color_glyph_at(glyph_id, size_px) {
                 if !cgb.bitmap.is_empty() {
                     let w = cgb.bitmap.width;
                     let h = cgb.bitmap.height;
@@ -396,22 +406,13 @@ impl Face {
                             data: cgb.bitmap.data.clone(),
                         }],
                     };
-                    // CBDT bearing_x / bearing_y describe the glyph
-                    // box at the strike's native ppem (ppem). Convert
-                    // to the requested raster size by `size_px / ppem`.
-                    let strike_scale = if cgb.ppem > 0 {
-                        size_px / cgb.ppem as f32
-                    } else {
-                        1.0
-                    };
-                    // Pen-relative placement: the bitmap left edge sits
-                    // bearing_x px right of the pen, the bitmap top
-                    // edge sits bearing_y px ABOVE the pen (so in
-                    // Y-down space, top-edge Y = -bearing_y).
-                    let bx = cgb.bearing_x as f32 * strike_scale;
-                    let by = -(cgb.bearing_y as f32) * strike_scale;
-                    let bw = w as f32 * strike_scale;
-                    let bh = h as f32 * strike_scale;
+                    // bearing_x / bearing_y / advance from
+                    // raster_color_glyph_at are already in raster pixels
+                    // at `size_px` (pre-scaled by `size_px / strike_ppem`).
+                    let bx = cgb.bearing_x as f32;
+                    let by = -(cgb.bearing_y as f32);
+                    let bw = w as f32;
+                    let bh = h as f32;
                     return Some(Node::Image(ImageRef {
                         frame: Box::new(frame),
                         bounds: Rect {
