@@ -11,6 +11,14 @@
 //! - **Shaper** — `cmap` + GSUB type 4 (ligatures) + GPOS type 2
 //!   (pair kerning) + mark-to-base / mark-to-mark, enough for Latin /
 //!   Cyrillic / Greek / basic CJK / Vietnamese / polytonic Greek.
+//! - **Arabic contextual joining (round 7)** — `shaping::arabic`
+//!   computes the joining form per character using the Unicode joining
+//!   classes + an adjacency state machine; `FaceChain::shape` then
+//!   translates Arabic letters into their Arabic Presentation Forms-B
+//!   equivalents (U+FE70..U+FEFF) before cmap, so a font that ships
+//!   the PF-B block (DejaVuSans, Noto Sans Arabic, Amiri) renders
+//!   visually-correct contextual shapes — including LAM-ALEF
+//!   ligatures via the existing GSUB pass.
 //! - **`Face::glyph_path` / `glyph_node`** — TrueType + OTF (CFF)
 //!   outlines as `oxideav_core::Path`; CBDT/sbix colour bitmaps as
 //!   `Node::Image` carrying a `VideoFrame`.
@@ -34,6 +42,7 @@ pub mod face;
 pub mod face_chain;
 pub mod layout;
 pub mod shaper;
+pub mod shaping;
 pub mod style;
 
 pub use color::{Rgba, TRANSPARENT, WHITE};
@@ -42,6 +51,10 @@ pub use face::{Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{run_width, wrap_lines};
 pub use shaper::{PositionedGlyph, Shaper};
+pub use shaping::{
+    compute_forms, feature_tags_for_run, joining_class, presentation_form, script_of, JoiningClass,
+    JoiningForm, Script,
+};
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,
 };

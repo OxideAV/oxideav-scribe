@@ -26,6 +26,8 @@
 
 use crate::face::Face;
 use crate::shaper::{shape_run_with_font, PositionedGlyph};
+use crate::shaping::arabic::{compute_forms, script_of, Script};
+use crate::shaping::arabic_pf::presentation_form;
 use crate::style::Style;
 use crate::Error;
 
@@ -130,18 +132,44 @@ impl FaceChain {
     /// the chain and pick the first face whose `glyph_index` returns a
     /// non-zero glyph id. If none does, fall back to face 0 with glyph
     /// 0 (.notdef) — measurement still works, the user sees tofu.
+    ///
+    /// **Round 7 — Arabic contextual joining.** Before cmap lookup the
+    /// input chars are run through the joining state machine in
+    /// [`crate::shaping::arabic`] and Arabic letters are translated to
+    /// their Presentation Forms-B equivalents (U+FE70..U+FEFF). Forms
+    /// the active face doesn't have a glyph for fall back to the
+    /// original base codepoint — so the worst case is "render in
+    /// isolated form" (the round-6 behaviour), which is the right
+    /// graceful degradation for a font that ships only base glyphs.
     fn assign_codepoints(&self, text: &str) -> Result<Vec<(u16, u16)>, Error> {
-        let mut out: Vec<(u16, u16)> = Vec::with_capacity(text.len());
-        for ch in text.chars() {
+        let chars: Vec<char> = text.chars().collect();
+        let shaped_chars = apply_arabic_joining(&chars);
+        let mut out: Vec<(u16, u16)> = Vec::with_capacity(shaped_chars.len());
+        for (orig_idx, ch) in shaped_chars.iter().enumerate() {
             let mut found: Option<(u16, u16)> = None;
             for (idx, face) in self.faces.iter().enumerate() {
-                let g = face.with_font(|font| font.glyph_index(ch))?;
+                let g = face.with_font(|font| font.glyph_index(*ch))?;
                 match g {
                     Some(gid) if gid != 0 => {
                         found = Some((idx as u16, gid));
                         break;
                     }
                     _ => continue,
+                }
+            }
+            // If the substituted presentation-form is missing in every
+            // face, retry with the original (base) codepoint — this is
+            // the graceful fallback the doc-comment describes.
+            if found.is_none() && *ch != chars[orig_idx] {
+                let orig = chars[orig_idx];
+                for (idx, face) in self.faces.iter().enumerate() {
+                    let g = face.with_font(|font| font.glyph_index(orig))?;
+                    if let Some(gid) = g {
+                        if gid != 0 {
+                            found = Some((idx as u16, gid));
+                            break;
+                        }
+                    }
                 }
             }
             // No face had it — render as primary's .notdef.
@@ -151,8 +179,76 @@ impl FaceChain {
     }
 }
 
+/// Pre-cmap Arabic shaping pass: walk `chars`, find contiguous runs of
+/// Arabic codepoints, run the joining state machine on each run, and
+/// translate joining-aware base letters to their Arabic Presentation
+/// Forms-B equivalents. Non-Arabic codepoints pass through untouched.
+///
+/// This sits *before* face-chain cmap lookup so a font that only
+/// supports the FE70..FEFF block (most desktop fonts) still gets
+/// visually-correct contextual shapes. Faces that lack the
+/// presentation-form glyph fall back via the retry path in
+/// [`FaceChain::assign_codepoints`].
+fn apply_arabic_joining(chars: &[char]) -> Vec<char> {
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // Walk a maximal Arabic-only run starting at `i`.
+        let run_start = i;
+        while i < chars.len() && script_of(chars[i]) == Script::Arabic {
+            i += 1;
+        }
+        if i > run_start {
+            let run = &chars[run_start..i];
+            let forms = compute_forms(run);
+            for (k, &ch) in run.iter().enumerate() {
+                let translated = presentation_form(ch, forms[k]).unwrap_or(ch);
+                out.push(translated);
+            }
+        }
+        // Pass non-Arabic chars through unchanged.
+        if i < chars.len() && script_of(chars[i]) != Script::Arabic {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    use super::apply_arabic_joining;
+
+    #[test]
+    fn ascii_passes_through_unchanged() {
+        let chars: Vec<char> = "Hello".chars().collect();
+        assert_eq!(apply_arabic_joining(&chars), chars);
+    }
+
+    #[test]
+    fn arabic_run_translates_to_presentation_forms() {
+        // BEH BEH BEH → Init Medi Fina presentation forms.
+        // 0x0628 BEH → init 0xFE91, medi 0xFE92, fina 0xFE90.
+        let chars = vec!['\u{0628}', '\u{0628}', '\u{0628}'];
+        let out = apply_arabic_joining(&chars);
+        assert_eq!(out, vec!['\u{FE91}', '\u{FE92}', '\u{FE90}']);
+    }
+
+    #[test]
+    fn arabic_run_with_ascii_separator() {
+        // BEH BEH SPACE BEH BEH → first BEHs become Init/Fina, space
+        // unchanged, second BEHs become Init/Fina.
+        let chars = vec!['\u{0628}', '\u{0628}', ' ', '\u{0628}', '\u{0628}'];
+        let out = apply_arabic_joining(&chars);
+        assert_eq!(
+            out,
+            vec!['\u{FE91}', '\u{FE90}', ' ', '\u{FE91}', '\u{FE90}']
+        );
+    }
+
     // Mock-style tests are covered in the integration test file, where
     // we build a 2-face chain and verify face_idx routing. Unit-level
     // testing here is awkward because Face requires real TTF bytes.

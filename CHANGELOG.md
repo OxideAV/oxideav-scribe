@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Arabic contextual joining (round 7)
+
+New `shaping` module covering Arabic / Hebrew RTL contextual shaping:
+
+- `shaping::arabic` — Unicode joining-class lookup (`JoiningClass::{U,
+  L, R, D, C, T}`) covering the Arabic + Syriac + Arabic Supplement +
+  Arabic Extended-A blocks plus combining-mark transparents, and the
+  joining-adjacency state machine `compute_forms(&[char]) ->
+  Vec<JoiningForm>` that picks `Isol` / `Init` / `Medi` / `Fina` per
+  character (transparent marks inherit the form of the preceding base;
+  ZWJ acts as joining-causing; ZWNJ breaks the chain).
+- `shaping::arabic::script_of(char) -> Script` and
+  `feature_tags_for_run(Script) -> Vec<[u8; 4]>` — script
+  classification + the OpenType feature-tag list for a run (Arabic gets
+  `isol` / `init` / `medi` / `fina`).
+- `shaping::arabic_pf::presentation_form(base, JoiningForm) ->
+  Option<char>` — translates an Arabic base codepoint + chosen form
+  into its Arabic Presentation Forms-B equivalent (U+FE70..U+FEFF) per
+  the UCD `UnicodeData.txt` `<initial>` / `<medial>` / `<final>` /
+  `<isolated>` decomposition tags.
+- `FaceChain::shape` (and `shape_styled`) now run a pre-cmap shaping
+  pass that finds Arabic codepoint runs, picks the contextual form per
+  letter, and rewrites to the PF-B equivalent before face-chain cmap
+  lookup. The shaper's existing GSUB ligature pass then collapses
+  LAM-medi + ALEF-fina into the LAM-ALEF FINAL ligature (U+FEFC) for
+  fonts that ship it (DejaVuSans does). Faces that lack a PF-B glyph
+  fall back to the original base codepoint — the shaper degrades to
+  the round-6 isolated-form behaviour rather than emitting `.notdef`.
+
+The substitution is a clean-room implementation of the algorithm
+described in Unicode core specification §9.2 and the OpenType layout
+spec for the four Arabic feature tags. No HarfBuzz / FreeType / pango
+/ ICU layout source consulted.
+
+Integration test (`tests/round7_arabic_joining.rs`) shapes "السلام"
+against DejaVuSans and asserts the resulting glyph IDs match the
+PF-B + LAM-ALEF-ligature gids, demonstrably differing from the naive
+isolated-form lookup.
+
+Followup tasks deferred:
+- Full feature-tagged GSUB lookup table (lookup type 1 single
+  substitution) — needed for fonts that don't ship the PF-B block but
+  do ship feature lookups (e.g. modern Noto Sans Arabic UI).
+- Mark reordering + GPOS mark-attachment per Arabic shaper rules.
+- Indic complex-script shaping (round 8 candidate).
+
 ### Removed — vector-only refactor (#354)
 
 Scribe is now a pure vector shaper. All pixel-pipeline code moved to
