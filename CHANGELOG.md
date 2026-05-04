@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.3...v0.1.4) - 2026-05-04
+
+### Other
+
+- bilinear-resample + composer dispatch for CBDT colour glyphs ([#356](https://github.com/OxideAV/oxideav-scribe/pull/356))
+
 ### Added — round 6, CBDT bilinear + composer integration (#356)
 
 - `RgbaBitmap::resample_bilinear(dst_w, dst_h)` — straight-alpha
