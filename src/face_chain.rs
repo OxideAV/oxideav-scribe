@@ -28,6 +28,7 @@ use crate::face::Face;
 use crate::shaper::{shape_run_with_font, PositionedGlyph};
 use crate::shaping::arabic::{compute_forms, script_of, Script};
 use crate::shaping::arabic_pf::presentation_form;
+use crate::shaping::indic::{cluster_boundaries, reorder_cluster};
 use crate::style::Style;
 use crate::Error;
 
@@ -141,9 +142,25 @@ impl FaceChain {
     /// original base codepoint — so the worst case is "render in
     /// isolated form" (the round-6 behaviour), which is the right
     /// graceful degradation for a font that ships only base glyphs.
+    ///
+    /// **Round 8 — Devanagari cluster reorder.** Devanagari runs are
+    /// segmented into clusters (one base consonant with its halant
+    /// chains, matras, and modifiers) and each cluster is rewritten
+    /// to its visual order: pre-base matras (U+093F) move to the
+    /// front of the cluster so a cmap-only font still draws the
+    /// cluster correctly. Reph identification is performed but the
+    /// actual glyph substitution is gated on the `rphf` GSUB feature
+    /// (followup once `oxideav-ttf` exposes feature-tagged single
+    /// substitution).
     fn assign_codepoints(&self, text: &str) -> Result<Vec<(u16, u16)>, Error> {
         let chars: Vec<char> = text.chars().collect();
-        let shaped_chars = apply_arabic_joining(&chars);
+        // Two pre-cmap shaping passes: Arabic joining → Devanagari
+        // cluster reorder. The two scripts are disjoint so the order
+        // doesn't matter for either one, but we run Arabic first to
+        // match the round-7 behaviour exactly when no Devanagari is
+        // present.
+        let arabic_shaped = apply_arabic_joining(&chars);
+        let shaped_chars = apply_devanagari_reorder(&arabic_shaped);
         let mut out: Vec<(u16, u16)> = Vec::with_capacity(shaped_chars.len());
         for (orig_idx, ch) in shaped_chars.iter().enumerate() {
             let mut found: Option<(u16, u16)> = None;
@@ -158,16 +175,33 @@ impl FaceChain {
                 }
             }
             // If the substituted presentation-form is missing in every
-            // face, retry with the original (base) codepoint — this is
-            // the graceful fallback the doc-comment describes.
-            if found.is_none() && *ch != chars[orig_idx] {
-                let orig = chars[orig_idx];
-                for (idx, face) in self.faces.iter().enumerate() {
-                    let g = face.with_font(|font| font.glyph_index(orig))?;
-                    if let Some(gid) = g {
-                        if gid != 0 {
-                            found = Some((idx as u16, gid));
-                            break;
+            // face, retry with the corresponding original (base)
+            // codepoint — this is the graceful fallback the doc-comment
+            // describes. The Devanagari pass only reorders (no
+            // substitution), so the original char is already present
+            // somewhere in `chars`; the Arabic pass substitutes 1:1
+            // so `chars[orig_idx]` is the right base when the
+            // permutation is identity. Use position equality where
+            // possible, fall back to char-value lookup otherwise.
+            if found.is_none() {
+                let orig = if orig_idx < chars.len() && *ch != chars[orig_idx] {
+                    Some(chars[orig_idx])
+                } else if !chars.contains(ch) {
+                    None
+                } else {
+                    // The shaped char is present in the original input
+                    // — no substitution happened, so the retry is a
+                    // no-op (the same lookup we already did failed).
+                    None
+                };
+                if let Some(orig) = orig {
+                    for (idx, face) in self.faces.iter().enumerate() {
+                        let g = face.with_font(|font| font.glyph_index(orig))?;
+                        if let Some(gid) = g {
+                            if gid != 0 {
+                                found = Some((idx as u16, gid));
+                                break;
+                            }
                         }
                     }
                 }
@@ -177,6 +211,40 @@ impl FaceChain {
         }
         Ok(out)
     }
+}
+
+/// Pre-cmap Devanagari shaping pass: walk `chars`, segment into Indic
+/// clusters via [`cluster_boundaries`], and apply
+/// [`reorder_cluster`] to each Devanagari cluster (pre-base matra
+/// reorder + reph flagging). Non-Devanagari characters pass through
+/// untouched.
+///
+/// Round 8 only handles the reorder; the reph glyph substitution (the
+/// `rphf` GSUB feature) is deferred until `oxideav-ttf` exposes
+/// feature-tagged single substitution.
+fn apply_devanagari_reorder(chars: &[char]) -> Vec<char> {
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let bounds = cluster_boundaries(chars);
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    for (s, e) in bounds {
+        let cluster = &chars[s..e];
+        // Only rewrite clusters that contain at least one Devanagari
+        // codepoint. Mixed Latin / non-Indic clusters fall through
+        // identical (the cluster machine treats them as single-char
+        // clusters anyway, so this is just a fast-path check).
+        let has_devanagari = cluster
+            .iter()
+            .any(|&c| (0x0900..=0x097F).contains(&(c as u32)));
+        if has_devanagari {
+            let (reordered, _flags) = reorder_cluster(cluster);
+            out.extend_from_slice(&reordered);
+        } else {
+            out.extend_from_slice(cluster);
+        }
+    }
+    out
 }
 
 /// Pre-cmap Arabic shaping pass: walk `chars`, find contiguous runs of
@@ -220,12 +288,52 @@ fn apply_arabic_joining(chars: &[char]) -> Vec<char> {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_arabic_joining;
+    use super::{apply_arabic_joining, apply_devanagari_reorder};
 
     #[test]
     fn ascii_passes_through_unchanged() {
         let chars: Vec<char> = "Hello".chars().collect();
         assert_eq!(apply_arabic_joining(&chars), chars);
+    }
+
+    #[test]
+    fn devanagari_pre_base_matra_moves_to_front_of_cluster() {
+        // "कि" = KA + sign-i → sign-i + KA after Devanagari reorder.
+        let chars = vec!['\u{0915}', '\u{093F}'];
+        let out = apply_devanagari_reorder(&chars);
+        assert_eq!(out, vec!['\u{093F}', '\u{0915}']);
+    }
+
+    #[test]
+    fn devanagari_two_clusters_each_reorder_independently() {
+        // "किकि" → two clusters; each reorders its matra to the front.
+        let chars = vec!['\u{0915}', '\u{093F}', '\u{0915}', '\u{093F}'];
+        let out = apply_devanagari_reorder(&chars);
+        assert_eq!(out, vec!['\u{093F}', '\u{0915}', '\u{093F}', '\u{0915}']);
+    }
+
+    #[test]
+    fn devanagari_conjunct_reorder_keeps_halant_chain_intact() {
+        // "क्षि" = KA + halant + SSA + sign-i. Conjunct stays in
+        // logical order; matra moves to front.
+        let chars = vec!['\u{0915}', '\u{094D}', '\u{0937}', '\u{093F}'];
+        let out = apply_devanagari_reorder(&chars);
+        assert_eq!(out, vec!['\u{093F}', '\u{0915}', '\u{094D}', '\u{0937}']);
+    }
+
+    #[test]
+    fn ascii_passes_through_devanagari_reorder_unchanged() {
+        // Sanity: non-Indic input must not be touched.
+        let chars: Vec<char> = "Hello".chars().collect();
+        assert_eq!(apply_devanagari_reorder(&chars), chars);
+    }
+
+    #[test]
+    fn mixed_latin_and_devanagari_reorders_only_devanagari_clusters() {
+        // "Aकि" → Latin A passes through; Devanagari cluster reorders.
+        let chars = vec!['A', '\u{0915}', '\u{093F}'];
+        let out = apply_devanagari_reorder(&chars);
+        assert_eq!(out, vec!['A', '\u{093F}', '\u{0915}']);
     }
 
     #[test]

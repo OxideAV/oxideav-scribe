@@ -19,6 +19,15 @@
 //!   the PF-B block (DejaVuSans, Noto Sans Arabic, Amiri) renders
 //!   visually-correct contextual shapes — including LAM-ALEF
 //!   ligatures via the existing GSUB pass.
+//! - **Devanagari complex-script shaping (round 8)** — `shaping::indic`
+//!   classifies Devanagari (U+0900..U+097F) codepoints into syllabic
+//!   categories, segments runs into orthographic clusters, and
+//!   applies the round-8 cluster transformations: pre-base matra
+//!   reorder (U+093F moves visually before its base consonant) and
+//!   reph identification (leading RA + halant + consonant). The
+//!   `FaceChain::shape` pipeline now applies the reorder before
+//!   cmap so cmap-only Devanagari fonts render simple clusters
+//!   like "कि" with the matra in the correct visual position.
 //! - **`Face::glyph_path` / `glyph_node`** — TrueType + OTF (CFF)
 //!   outlines as `oxideav_core::Path`; CBDT/sbix colour bitmaps as
 //!   `Node::Image` carrying a `VideoFrame`.
@@ -52,8 +61,9 @@ pub use face_chain::FaceChain;
 pub use layout::{run_width, wrap_lines};
 pub use shaper::{PositionedGlyph, Shaper};
 pub use shaping::{
-    compute_forms, feature_tags_for_run, joining_class, presentation_form, script_of, JoiningClass,
-    JoiningForm, Script,
+    cluster_boundaries, compute_forms, devanagari_category, devanagari_feature_tags,
+    feature_tags_for_run, joining_class, presentation_form, reorder_cluster, ClusterFlags,
+    IndicCategory, JoiningClass, JoiningForm, Script,
 };
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,

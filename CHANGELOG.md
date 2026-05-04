@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Devanagari complex-script shaping (round 8)
+
+New `shaping::indic` module covering Devanagari (Hindi / Marathi /
+Sanskrit / Nepali) cluster-based shaping:
+
+- `shaping::indic::IndicCategory` + `devanagari_category(char)` —
+  Devanagari syllabic categorisation derived from the Unicode
+  `IndicSyllabicCategory.txt` + `IndicPositionalCategory.txt`
+  properties, condensed to the categories the cluster machine
+  distinguishes (Consonant, Vowel, Halant, PreBaseMatra, Matra,
+  Nukta, Bindu, Symbol, Other).
+- `shaping::indic::cluster_boundaries(&[char]) -> Vec<(usize, usize)>`
+  — segments the input into Devanagari orthographic clusters.
+  Halant glues the next consonant into the same cluster (forming a
+  conjunct); independent vowels and consonants without a preceding
+  halant start new clusters; danda + non-Indic codepoints always
+  form cluster boundaries.
+- `shaping::indic::reorder_cluster(&[char]) -> (Vec<char>, ClusterFlags)`
+  — applies the round-8 cluster transformations: pre-base matra
+  reordering (U+093F moves to the front of the cluster, ahead of its
+  base consonant) and reph identification (a leading
+  RA + halant + consonant sets `ClusterFlags::has_reph`).
+- `shaping::indic::devanagari_feature_tags()` — the spec-mandated
+  Devanagari OpenType feature tag list in application order
+  (`locl`, `ccmp`, `nukt`, `akhn`, `rphf`, `blwf`, `half`, `vatu`,
+  `cjct`, `init`, `pres`, `abvs`, `blws`, `psts`, `haln`).
+  Returned as `Vec<[u8; 4]>` so the future GSUB feature-lookup pass
+  can iterate without re-deriving the order.
+- `Script::Devanagari` — added to `shaping::arabic::Script`. The
+  shared `script_of(char)` classifier now returns it for the
+  U+0900..U+097F block; `feature_tags_for_run(Script::Devanagari)`
+  returns the Devanagari feature-tag list.
+- `FaceChain::shape` (and `shape_styled`) gained a second pre-cmap
+  shaping pass that runs after the round-7 Arabic substitution.
+  Devanagari runs are segmented into clusters and each cluster's
+  characters are reordered into visual order before face-chain cmap
+  lookup. A simple cmap-only Devanagari font therefore renders
+  "कि" (KA + sign-i) with the matra correctly placed visually before
+  the base consonant — without needing feature-tagged GSUB lookups.
+
+The reph glyph substitution (the `rphf` GSUB feature) is *flagged*
+but not yet emitted; the substitution requires `oxideav-ttf` to
+expose feature-tagged GSUB lookup type 1 (single substitution),
+which is being implemented in parallel. Once that lands, scribe will
+consume the `has_reph` flag plus the `devanagari_feature_tags()`
+feature list to drive the substitution.
+
+The implementation is a clean-room reading of:
+
+- Unicode 15.1 Standard Annex #15 (Indic syllabic categories)
+- Unicode 15.1 Standard Annex #29 (text segmentation)
+- Microsoft OpenType Layout — *Creating and supporting OpenType
+  fonts for the Devanagari script*
+
+No HarfBuzz / FreeType / pango / ICU layout source consulted.
+
+Integration test (`tests/round8_devanagari_cluster.rs`) is in place
+but *skips* on the current vendored fonts — DejaVuSans does not
+cover the Devanagari block. Adding `NotoSansDevanagari-Regular.ttf`
+(OFL-licensed; ~280 KB) to the `samples.oxideav.org/fonts/`
+network-fetch CDN via the `font_fixtures` helper will activate the
+test. Unit tests cover the cluster machine + reorder
+exhaustively (26 new tests in `shaping::indic::tests` plus 5 in
+`face_chain::tests`).
+
+Followup tasks deferred:
+- Other Indic scripts (Bengali U+0980..U+09FF, Gurmukhi U+0A00..U+0A7F,
+  Gujarati U+0A80..U+0AFF, Tamil U+0B80..U+0BFF, Telugu U+0C00..U+0C7F,
+  Kannada U+0C80..U+0CFF, Malayalam U+0D00..U+0D7F) — same broad
+  cluster-machine shape but per-script categories, pre-base
+  reordering matras, and feature lists.
+- Reph glyph substitution via `rphf` GSUB once `oxideav-ttf`
+  exposes feature-tagged GSUB lookup type 1.
+- Vertical text (`vert` / `vrt2` features for CJK).
+- GPOS cursive attachment (`curs` feature) — needed for proper
+  Arabic / Devanagari mark positioning beyond simple anchor delta.
+
 ### Added — Arabic contextual joining (round 7)
 
 New `shaping` module covering Arabic / Hebrew RTL contextual shaping:

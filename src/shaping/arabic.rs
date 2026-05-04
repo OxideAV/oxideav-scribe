@@ -99,8 +99,8 @@ impl JoiningForm {
 }
 
 /// Coarse script classification used to decide which feature tag list
-/// the shaper applies to a run. Round-7 only distinguishes the scripts
-/// that need contextual joining; everything else collapses to `Other`.
+/// the shaper applies to a run. Only the scripts that need contextual
+/// shaping are enumerated; everything else collapses to `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Script {
     /// Arabic block + supplements + presentation forms (U+0600..U+06FF,
@@ -109,13 +109,18 @@ pub enum Script {
     /// Hebrew block + Alphabetic Presentation Forms-A Hebrew range
     /// (U+0590..U+05FF, U+FB1D..U+FB4F).
     Hebrew,
+    /// Devanagari block (U+0900..U+097F). Hindi / Marathi / Sanskrit /
+    /// Nepali. Round 8 added cluster-based shaping — see
+    /// [`super::indic`] for the cluster machine and
+    /// [`super::indic::devanagari_feature_tags`] for the
+    /// substitution-feature application order.
+    Devanagari,
     /// Anything else — Latin, CJK, Cyrillic, Greek, etc.
     Other,
 }
 
-/// Detect the script of `ch` for round-7 purposes. Returns
-/// [`Script::Other`] for any codepoint not in the Arabic or Hebrew
-/// ranges enumerated above.
+/// Detect the script of `ch`. Returns [`Script::Other`] for any
+/// codepoint not in one of the explicitly-handled blocks.
 pub fn script_of(ch: char) -> Script {
     let cp = ch as u32;
     if (0x0600..=0x06FF).contains(&cp)
@@ -129,22 +134,23 @@ pub fn script_of(ch: char) -> Script {
     if (0x0590..=0x05FF).contains(&cp) || (0xFB1D..=0xFB4F).contains(&cp) {
         return Script::Hebrew;
     }
+    if (0x0900..=0x097F).contains(&cp) {
+        return Script::Devanagari;
+    }
     Script::Other
 }
 
 /// Feature tags the shaper should attempt to apply for a run of the
-/// given script. The round-7 list is the four Arabic joining features;
-/// future rounds will append `liga` / `kern` / `ccmp` / etc. once those
-/// reach feature-tagged GSUB lookups.
+/// given script. Arabic returns the four joining features; Devanagari
+/// returns the spec-mandated Indic substitution + presentation feature
+/// chain (round 8); Hebrew exposes `ccmp` so future mark-composition
+/// lookups can hook in. The shape pipeline ignores tags it doesn't
+/// know how to apply.
 pub fn feature_tags_for_run(script: Script) -> Vec<[u8; 4]> {
     match script {
         Script::Arabic => vec![*b"isol", *b"init", *b"medi", *b"fina"],
-        // Hebrew uses far less contextual shaping than Arabic — only
-        // a handful of final forms (sofit) which the BMP already
-        // encodes as separate codepoints. We still expose `ccmp` here
-        // so future mark-composition lookups can hook in; the round-7
-        // shape pipeline ignores tags it doesn't know how to apply.
         Script::Hebrew => vec![*b"ccmp"],
+        Script::Devanagari => super::indic::devanagari_feature_tags(),
         Script::Other => Vec::new(),
     }
 }
