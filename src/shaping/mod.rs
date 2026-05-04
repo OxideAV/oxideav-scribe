@@ -7,9 +7,12 @@
 //!   Arabic Presentation Forms-B translation table.
 //! - Round 8: [`indic`] — Devanagari complex-script cluster machine
 //!   (cluster boundaries + pre-base matra reorder + reph
-//!   identification). Other Indic scripts (Bengali, Tamil, etc.) follow
-//!   the same broad pattern with distinct categories and feature lists
-//!   and will land in future rounds.
+//!   identification).
+//! - Round 10: [`indic`] now also covers Bengali (U+0980..U+09FF) and
+//!   Tamil (U+0B80..U+0BFF). Bengali shares Devanagari's reph rule and
+//!   adds two more pre-base matras (U+09C7 / U+09C8); Tamil's cluster
+//!   machine omits reph (no superscript RA) and conjunct formation,
+//!   keeping only pre-base matra reorder for U+0BC6 / U+0BC7 / U+0BC8.
 
 pub mod arabic;
 pub mod arabic_pf;
@@ -21,6 +24,8 @@ pub use arabic::{
 };
 pub use arabic_pf::presentation_form;
 pub use indic::{
-    cluster_boundaries, devanagari_category, devanagari_feature_tags, reorder_cluster,
-    ClusterFlags, IndicCategory,
+    bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
+    devanagari_category, devanagari_feature_tags, reorder_cluster, reorder_cluster_with,
+    script_indic_tags, tamil_category, tamil_feature_tags, ClusterFlags, IndicCategory,
+    ReorderRules, BENGALI_RULES, DEVANAGARI_RULES, TAMIL_RULES,
 };

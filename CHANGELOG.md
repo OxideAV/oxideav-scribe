@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Bengali + Tamil shaping + reph GSUB wiring (round 10)
+
+Round 10 extends Indic complex-script shaping beyond Devanagari
+(round 8 baseline) to two more scripts and wires the long-deferred
+reph GSUB substitution.
+
+- `shaping::indic::bengali_category(char) -> IndicCategory` — Bengali
+  (U+0980..U+09FF) syllabic categorisation. Bengali shares
+  Devanagari's structural shape (halant U+09CD glues consonants into
+  conjuncts; bindus attach to the cluster end) but has THREE pre-base
+  reordering matras (U+09BF "i", U+09C7 "e", U+09C8 "ai") instead of
+  Devanagari's one. The reph rule is the same — RA U+09B0 + halant +
+  consonant.
+- `shaping::indic::tamil_category(char) -> IndicCategory` — Tamil
+  (U+0B80..U+0BFF) syllabic categorisation. Minimal cluster machine:
+  no nukta (no U+0BBC slot), no reph (Tamil RA does not form a
+  superscript), no conjunct formation in the modern orthography.
+  Three pre-base matras (U+0BC6 / U+0BC7 / U+0BC8 — e / ee / ai).
+- `shaping::indic::ReorderRules { category, ra_codepoint, reph_enabled }`
+  + `DEVANAGARI_RULES` / `BENGALI_RULES` / `TAMIL_RULES` constants —
+  per-script reorder rule descriptors. The cluster machine
+  (`reorder_cluster_with`) and segmenter (`cluster_boundaries_with`)
+  are now generic over a `ReorderRules` reference, so adding
+  Telugu / Gujarati / Gurmukhi / Kannada / Malayalam / Oriya in
+  future rounds is a one-table change rather than a re-implementation.
+- `shaping::indic::bengali_feature_tags()` /
+  `shaping::indic::tamil_feature_tags()` — per-script OpenType GSUB
+  feature application order. Bengali shares Devanagari's tag list
+  one-to-one (same Indic family rules); Tamil's list omits `rphf` /
+  `cjct` / `vatu` and adds the Tamil-specific `pref` (pre-base form,
+  reorders the pre-base component of a precomposed two-part vowel
+  sign).
+- `shaping::indic::script_indic_tags(Script) -> Option<([u8; 4], [u8; 4])>`
+  — maps a script to its `(modern, legacy)` OpenType script tag pair
+  (`dev2` / `deva`, `bng2` / `beng`, `tml2` / `taml`). The `rphf`
+  feature lookup walks BOTH tags so older fonts that only ship the
+  v1 tag still get the reph substitution.
+- `Script::Bengali` / `Script::Tamil` — added to
+  `shaping::arabic::Script`. The shared `script_of(char)` classifier
+  now returns them for the U+0980..U+09FF / U+0B80..U+0BFF blocks;
+  `feature_tags_for_run(Script::Bengali / Script::Tamil)` returns
+  the matching tag list.
+- `FaceChain::shape` (and `shape_styled`) gained a generalised
+  pre-cmap pass `apply_indic_reorder` that finds contiguous Indic
+  runs of one script at a time and dispatches per-script reorder
+  rules. The previous round-8 `apply_devanagari_reorder` is replaced.
+- **Reph GSUB substitution wired (round 8 followup).** When the
+  cluster machine flags `ClusterFlags::has_reph` AND the face
+  assigned to the RA glyph publishes a `rphf` GSUB feature for the
+  active script, `Font::gsub_apply_lookup_type_1` is applied to the
+  RA glyph; on success, the RA gid is replaced with the reph form
+  and the halant glyph is removed from the run. Faces without an
+  `rphf` lookup fall back to in-line RA + halant + base rendering
+  (the round-8 behaviour). The substitution is back-to-front order
+  so multiple reph clusters in one run don't shift the indexing of
+  pending marks.
+
+The implementations are clean-room readings of:
+
+- Unicode 15.1 Standard Annex #15 (Indic syllabic categories).
+- Microsoft OpenType Layout — *Creating and supporting OpenType
+  fonts for Indic scripts* (Bengali / Tamil / Telugu / Gujarati /
+  Gurmukhi / Kannada / Malayalam / Oriya).
+
+No HarfBuzz / FreeType / pango / ICU layout source consulted.
+
+Test coverage:
+- `shaping::indic::tests` — 21 new unit tests covering Bengali +
+  Tamil categorisation, per-script pre-base matra reorder, Bengali
+  reph identification, Tamil reph-disabled assertion, per-script
+  feature-tag lists, and `script_indic_tags` mapping. Total
+  `shaping::indic` test count: 49 (up from 26).
+- `face_chain::tests` — 7 new unit tests covering the multi-script
+  pre-cmap pass: Bengali pre-base matra reorder, Bengali reph mark
+  with the right script tag, Tamil pre-base reorder, Tamil
+  no-reph-mark assertion, Devanagari reph mark indexing (with and
+  without a coexisting pre-base matra reorder), and a mixed
+  Devanagari + Bengali run that segments cleanly at the script
+  boundary.
+- `tests/round10_bengali_cluster.rs` /
+  `tests/round10_tamil_cluster.rs` — integration tests skip with
+  `eprintln!` on the current vendored fonts (DejaVuSans does not
+  cover Bengali / Tamil), exactly mirroring the round-8 Devanagari
+  pattern. Activates once `NotoSansBengali-Regular.ttf` (~290 KB,
+  OFL) / `NotoSansTamil-Regular.ttf` (~330 KB, OFL) lands in
+  `samples.oxideav.org/fonts/` via the `font_fixtures` helper.
+
+Followup tasks deferred:
+- **Devanagari fixture font on the CDN.** Activating the round-8
+  `ki_cluster_reorders_pre_base_matra_before_base` integration test
+  needs `NotoSansDevanagari-Regular.ttf` (~280 KB, OFL) on
+  `samples.oxideav.org/fonts/`. The `font_fixtures` helper plumbing
+  is in place — adding the fixture is one entry in the `pub const`
+  table plus a `tests/round8_devanagari_cluster.rs` switch from
+  `include_bytes!` to `load_fixture(..)`. Same for the round-10
+  Bengali / Tamil tests.
+- **Remaining Indic scripts.** Telugu (U+0C00..U+0C7F — split
+  vowels including U+0C46 + U+0C56), Gujarati (U+0A80..U+0AFF —
+  closest to Devanagari), Gurmukhi (U+0A00..U+0A7F), Kannada
+  (U+0C80..U+0CFF), Malayalam (U+0D00..U+0D7F), Oriya
+  (U+0B00..U+0B7F). Each is a per-script categorisation table +
+  `ReorderRules` constant.
+- **Other GSUB features (`pref`, `pres`, `blwf`, `blws`, `half`,
+  `cjct`, etc.).** Round 10 wires only `rphf`. The remaining
+  Indic substitution features follow the same gsub_features_for_script
+  + `gsub_apply_lookup_type_1` pattern but need cluster-position
+  awareness (e.g. `half` only applies to non-final consonants).
+
 ### Added — variable-font axis selection in shaping (round 9)
 
 scribe now lets callers shape a run against a specific

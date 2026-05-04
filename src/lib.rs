@@ -19,15 +19,21 @@
 //!   the PF-B block (DejaVuSans, Noto Sans Arabic, Amiri) renders
 //!   visually-correct contextual shapes — including LAM-ALEF
 //!   ligatures via the existing GSUB pass.
-//! - **Devanagari complex-script shaping (round 8)** — `shaping::indic`
-//!   classifies Devanagari (U+0900..U+097F) codepoints into syllabic
-//!   categories, segments runs into orthographic clusters, and
-//!   applies the round-8 cluster transformations: pre-base matra
-//!   reorder (U+093F moves visually before its base consonant) and
-//!   reph identification (leading RA + halant + consonant). The
-//!   `FaceChain::shape` pipeline now applies the reorder before
-//!   cmap so cmap-only Devanagari fonts render simple clusters
-//!   like "कि" with the matra in the correct visual position.
+//! - **Indic complex-script shaping (rounds 8 + 10)** —
+//!   `shaping::indic` classifies Devanagari (U+0900..U+097F), Bengali
+//!   (U+0980..U+09FF), and Tamil (U+0B80..U+0BFF) codepoints into
+//!   syllabic categories, segments runs into orthographic clusters,
+//!   and applies per-script cluster transformations: pre-base matra
+//!   reorder (Devanagari U+093F; Bengali U+09BF / U+09C7 / U+09C8;
+//!   Tamil U+0BC6 / U+0BC7 / U+0BC8) plus reph identification
+//!   (Devanagari + Bengali only — Tamil RA does not form a reph).
+//!   The `FaceChain::shape` pipeline applies the reorder before cmap
+//!   so cmap-only Indic fonts render simple clusters like "कি" /
+//!   "কি" / "கெ" with the matra in the correct visual position.
+//!   When the active face publishes a `rphf` GSUB lookup for the
+//!   script, identified reph clusters get the leading RA glyph
+//!   substituted to its reph-form and the halant glyph dropped via
+//!   `Font::gsub_apply_lookup_type_1`.
 //! - **`Face::glyph_path` / `glyph_node`** — TrueType + OTF (CFF)
 //!   outlines as `oxideav_core::Path`; CBDT/sbix colour bitmaps as
 //!   `Node::Image` carrying a `VideoFrame`.
@@ -62,9 +68,11 @@ pub use layout::{run_width, wrap_lines};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
 pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
 pub use shaping::{
-    cluster_boundaries, compute_forms, devanagari_category, devanagari_feature_tags,
-    feature_tags_for_run, joining_class, presentation_form, reorder_cluster, ClusterFlags,
-    IndicCategory, JoiningClass, JoiningForm, Script,
+    bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
+    compute_forms, devanagari_category, devanagari_feature_tags, feature_tags_for_run,
+    joining_class, presentation_form, reorder_cluster, reorder_cluster_with, script_indic_tags,
+    tamil_category, tamil_feature_tags, ClusterFlags, IndicCategory, JoiningClass, JoiningForm,
+    ReorderRules, Script, BENGALI_RULES, DEVANAGARI_RULES, TAMIL_RULES,
 };
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,

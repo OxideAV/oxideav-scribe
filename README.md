@@ -57,13 +57,20 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   (U+FE70..U+FEFF) before cmap so cmap-only fonts render the
   visually-correct contextual shapes (including LAM-ALEF ligatures
   via the existing GSUB pass).
-- **Devanagari complex-script shaping (round 8)** — `shaping::indic`
-  classifies Devanagari (U+0900..U+097F) codepoints, segments runs
-  into orthographic clusters, applies pre-base matra reorder
-  (U+093F moves visually before its base consonant), and identifies
-  reph (leading RA + halant + consonant). Reph glyph substitution
-  via `rphf` GSUB is gated on `oxideav-ttf` exposing feature-tagged
-  GSUB lookup type 1.
+- **Indic complex-script shaping (rounds 8 + 10)** — `shaping::indic`
+  classifies Devanagari (U+0900..U+097F), Bengali (U+0980..U+09FF),
+  and Tamil (U+0B80..U+0BFF) codepoints, segments runs into
+  orthographic clusters, applies per-script pre-base matra reorder
+  (Devanagari U+093F; Bengali U+09BF / U+09C7 / U+09C8; Tamil
+  U+0BC6 / U+0BC7 / U+0BC8), and identifies reph (leading RA +
+  halant + consonant — Devanagari + Bengali only; Tamil RA does not
+  form a reph). When the active face publishes a `rphf` GSUB lookup
+  for the active script, the leading RA glyph is rewritten to its
+  reph form via `Font::gsub_apply_lookup_type_1` and the halant
+  glyph is dropped (round 10). Per-script reorder rules are
+  exposed as `DEVANAGARI_RULES` / `BENGALI_RULES` / `TAMIL_RULES`
+  for callers wanting to reuse the cluster machine on additional
+  Indic scripts.
 - **Variable fonts (round 9)** — `Face::set_variation_coords` /
   `variation_axes` / `named_instances` / `is_variable` surface the
   font's `fvar` declarations and let callers shape against a custom
@@ -96,10 +103,12 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **other Indic scripts** (Bengali, Tamil, etc.),
-  **variable-font metrics** (`MVAR` / `HVAR` / `VVAR` / `STAT`),
-  **CFF2 variable fonts**, **TrueType bytecode hinting**, **subpixel
-  LCD filtering**, **GPOS cursive attachment** — deferred.
+- **Bidi (UAX #9)**, **remaining Indic scripts** (Telugu, Gujarati,
+  Gurmukhi, Kannada, Malayalam, Oriya — same pattern as Bengali /
+  Tamil with per-script categorisation tables), **variable-font
+  metrics** (`MVAR` / `HVAR` / `VVAR` / `STAT`), **CFF2 variable
+  fonts**, **TrueType bytecode hinting**, **subpixel LCD filtering**,
+  **GPOS cursive attachment** — deferred.
 
 ## Test fixtures
 

@@ -115,6 +115,17 @@ pub enum Script {
     /// [`super::indic::devanagari_feature_tags`] for the
     /// substitution-feature application order.
     Devanagari,
+    /// Bengali block (U+0980..U+09FF). Bengali / Assamese / Manipuri.
+    /// Round 10 added cluster-based shaping — same broad shape as
+    /// Devanagari (halant-driven conjuncts, reph rule for RA U+09B0,
+    /// pre-base matra reorder) but Bengali has THREE pre-base matras
+    /// (U+09BF / U+09C7 / U+09C8) instead of Devanagari's one.
+    Bengali,
+    /// Tamil block (U+0B80..U+0BFF). Tamil. Round 10 added
+    /// minimal cluster-based shaping: pre-base matra reorder (U+0BC6 /
+    /// U+0BC7 / U+0BC8) only — no reph (Tamil RA renders in-line),
+    /// no nukta, no conjunct formation in the modern orthography.
+    Tamil,
     /// Anything else — Latin, CJK, Cyrillic, Greek, etc.
     Other,
 }
@@ -137,6 +148,12 @@ pub fn script_of(ch: char) -> Script {
     if (0x0900..=0x097F).contains(&cp) {
         return Script::Devanagari;
     }
+    if (0x0980..=0x09FF).contains(&cp) {
+        return Script::Bengali;
+    }
+    if (0x0B80..=0x0BFF).contains(&cp) {
+        return Script::Tamil;
+    }
     Script::Other
 }
 
@@ -151,6 +168,8 @@ pub fn feature_tags_for_run(script: Script) -> Vec<[u8; 4]> {
         Script::Arabic => vec![*b"isol", *b"init", *b"medi", *b"fina"],
         Script::Hebrew => vec![*b"ccmp"],
         Script::Devanagari => super::indic::devanagari_feature_tags(),
+        Script::Bengali => super::indic::bengali_feature_tags(),
+        Script::Tamil => super::indic::tamil_feature_tags(),
         Script::Other => Vec::new(),
     }
 }
