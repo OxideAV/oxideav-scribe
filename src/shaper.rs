@@ -98,6 +98,16 @@ pub struct PositionedGlyph {
 }
 
 /// Round-1 shaper. Stateless — every call starts from scratch.
+///
+/// Round 9 (variable fonts): the unit-struct stateless API is preserved
+/// for the static / default-coords case. Callers that want to shape
+/// against a specific variation-coord vector (e.g. `wght=600 / wdth=125`
+/// on Inter) construct a [`ShaperBuilder`] via
+/// [`Shaper::with_variation_coords`] and call its
+/// [`ShaperBuilder::shape_to_paths`] / [`ShaperBuilder::shape`] methods,
+/// which apply the coords to the primary face for the duration of the
+/// call and restore them on drop. See also
+/// [`Shaper::named_instances`] for picking a coord vector by name.
 #[derive(Debug)]
 pub struct Shaper;
 
@@ -203,6 +213,130 @@ impl Shaper {
             out.push((face_idx, group_node, Transform2D::translate(target_x, ty)));
         }
         out
+    }
+
+    /// Build a [`ShaperBuilder`] that will apply `coords` to the primary
+    /// face on each shape call, then restore the previous coords. The
+    /// vector is in user-space units and is silently length-capped /
+    /// clamped per [`crate::Face::set_variation_coords`].
+    ///
+    /// ```ignore
+    /// let placed = Shaper::with_variation_coords(vec![900.0, 14.0])
+    ///     .shape_to_paths(&mut chain, "Hello", 32.0)?;
+    /// ```
+    pub fn with_variation_coords(coords: Vec<f32>) -> ShaperBuilder {
+        ShaperBuilder { coords }
+    }
+
+    /// Named instances published by the face at `face_index` of
+    /// `face_chain`. Convenience entry point so callers can pick a
+    /// pre-defined coordinate vector (e.g. "Light" / "Regular" / "Bold")
+    /// without first walking the chain.
+    ///
+    /// Each [`crate::NamedInstance`] carries a `coords` vector that
+    /// matches [`crate::Face::variation_axes`] one-to-one. Callers
+    /// pass the chosen `coords` to either [`crate::Face::set_variation_coords`]
+    /// directly or to [`Shaper::with_variation_coords`] for the
+    /// per-call override path.
+    ///
+    /// Returns an empty vec for static / OTF faces or when `face_index`
+    /// is out of range.
+    pub fn named_instances(
+        face_chain: &crate::FaceChain,
+        face_index: usize,
+    ) -> Vec<crate::NamedInstance> {
+        face_chain.named_instances(face_index)
+    }
+}
+
+/// Variation-coord-aware shaper handle returned by
+/// [`Shaper::with_variation_coords`]. Carries the coord vector and
+/// delegates to the existing [`Shaper`] entry points after temporarily
+/// installing the coords on the primary face.
+///
+/// Construction:
+///
+/// ```ignore
+/// let builder = Shaper::with_variation_coords(vec![700.0]);
+/// let placed  = builder.shape_to_paths(&mut chain, "Bold!", 24.0)?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct ShaperBuilder {
+    coords: Vec<f32>,
+}
+
+impl ShaperBuilder {
+    /// Replace the stored coord vector. Builder-style.
+    #[must_use]
+    pub fn with_variation_coords(mut self, coords: Vec<f32>) -> Self {
+        self.coords = coords;
+        self
+    }
+
+    /// The coord vector this builder will install before each shape
+    /// call. Unmodified copy of what was passed in — clamping happens
+    /// inside [`crate::Face::set_variation_coords`] at install time.
+    pub fn variation_coords(&self) -> &[f32] {
+        &self.coords
+    }
+
+    /// Variation-coords-aware mirror of [`Shaper::shape`]. Installs the
+    /// builder's coords on the primary face, runs the shape, then
+    /// restores the face's previous coords. Returns the shape result
+    /// (or any error from coord installation).
+    pub fn shape(
+        &self,
+        face_chain: &mut crate::FaceChain,
+        text: &str,
+        size_px: f32,
+    ) -> Result<Vec<PositionedGlyph>, Error> {
+        let prev = face_chain.primary().variation_coords().to_vec();
+        face_chain.set_variation_coords(&self.coords)?;
+        let result = face_chain.shape(text, size_px);
+        // Restore — even on error — so the chain is left untouched.
+        // An empty `prev` means the caller never installed coords on
+        // the chain directly; re-clearing keeps the post-call state
+        // observably indistinguishable from the pre-call state.
+        let restore_err = if prev.is_empty() {
+            face_chain.face_mut(0).clear_variation_coords();
+            None
+        } else {
+            face_chain.face_mut(0).set_variation_coords(&prev).err()
+        };
+        match (result, restore_err) {
+            (Ok(v), None) => Ok(v),
+            (Ok(_), Some(e)) => Err(e),
+            (Err(e), _) => Err(e),
+        }
+    }
+
+    /// Variation-coords-aware mirror of [`Shaper::shape_to_paths`].
+    /// Installs the builder's coords on the primary face, runs the
+    /// vector-text pipeline, then restores the previous coords. Returns
+    /// an empty vec on any error (matching the static
+    /// `Shaper::shape_to_paths` contract — errors from the variation
+    /// install are swallowed because the static path also swallows
+    /// shape errors).
+    pub fn shape_to_paths(
+        &self,
+        face_chain: &mut crate::FaceChain,
+        text: &str,
+        size_px: f32,
+    ) -> Vec<(usize, Node, Transform2D)> {
+        let prev = face_chain.primary().variation_coords().to_vec();
+        if face_chain.set_variation_coords(&self.coords).is_err() {
+            return Vec::new();
+        }
+        let result = Shaper::shape_to_paths(face_chain, text, size_px);
+        // Mirror the `shape` method's restore logic: an empty `prev`
+        // means the chain had never been touched, so re-clearing keeps
+        // the post-call state byte-equal to the pre-call state.
+        if prev.is_empty() {
+            face_chain.face_mut(0).clear_variation_coords();
+        } else {
+            let _ = face_chain.face_mut(0).set_variation_coords(&prev);
+        }
+        result
     }
 }
 

@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — variable-font axis selection in shaping (round 9)
+
+scribe now lets callers shape a run against a specific
+`fvar`-axis-coord vector, so a single Inter Variable / Roboto Flex /
+Source Sans 3 VF font can be rendered at e.g. `wght=600 / wdth=125`
+without loading a separate static cut. The path-output reflects the
+gvar deltas applied at the chosen coords.
+
+- `Face::is_variable()` / `Face::variation_axes()` /
+  `Face::named_instances()` / `Face::variation_coords()` /
+  `Face::set_variation_coords(coords)` / `Face::clear_variation_coords()`
+  — variation-coord state lives on `Face`. The vector is stored
+  alongside the owned font bytes and re-applied on every
+  `Face::with_font` re-parse so subsequent `glyph_path` /
+  `glyph_node` / `glyph_advance` lookups see the gvar-blended
+  outline. `set_variation_coords` round-trips through the underlying
+  parser to preserve its `[min, max]` clamp + per-axis length cap.
+- `FaceChain::set_variation_coords(coords)` /
+  `FaceChain::variation_axes(face_index)` /
+  `FaceChain::named_instances(face_index)` /
+  `FaceChain::face_mut(idx)` — chain-level mirrors. The setter
+  targets the **primary** face only; fallback faces typically cover a
+  different script and are loaded from a static cut, so flipping a
+  fallback's coords requires `chain.face_mut(idx).set_variation_coords(..)`
+  explicitly.
+- `Shaper::with_variation_coords(Vec<f32>) -> ShaperBuilder` —
+  per-call override builder. `ShaperBuilder::shape` /
+  `ShaperBuilder::shape_to_paths` install the coords on the primary
+  face for the duration of the call, run the shape, then restore the
+  pre-call coord vector (or clear it when the chain had never had
+  any). The static `Shaper::shape` / `Shaper::shape_to_paths` entry
+  points are unchanged — they continue to use whatever coords are
+  currently installed on the chain (axis defaults if none).
+- `Shaper::named_instances(face_chain, face_index)` — convenience
+  pass-through accessor that returns `Vec<NamedInstance>` for the
+  chosen face. Each `NamedInstance` carries a `coords` vector that
+  matches the face's `variation_axes` one-to-one; callers pick the
+  vector that defines "Regular" / "Bold" / etc and pass it to
+  `Face::set_variation_coords` or `Shaper::with_variation_coords`.
+  Resolving the human-readable subfamily label requires reading the
+  `name` table directly via `Face::with_font` — scribe deliberately
+  doesn't surface a `name_id → string` accessor (the underlying ttf
+  `Font::name` field is private).
+- `oxideav_ttf::VariationAxis` and `oxideav_ttf::NamedInstance` are
+  re-exported from the crate root so callers don't need to depend on
+  `oxideav-ttf` directly.
+
+The implementation is a clean-room consumer of `oxideav-ttf`'s
+existing `fvar` / `avar` / `gvar` stack (which was a clean-room
+implementation of OpenType 1.9 §6.2 / §6.3 / §6.5). No HarfBuzz /
+FreeType / fontTools / Skia variable-font source consulted.
+
+Integration test (`tests/round9_variable_font.rs`) loads
+`InterVariable.ttf` (vendored OFL fixture) and verifies:
+- Axes / named-instance counts match Inter (2 axes, 9 instances).
+- `with_variation_coords([opsz_default, 400.0]).shape_to_paths(..)`
+  vs `[opsz_default, 900.0]` produces glyph outlines whose
+  per-coordinate points differ (gvar deltas applied).
+- The chain's pre-call coord vector is restored after the builder
+  returns (empty stays empty).
+- A `Shaper::named_instances` lookup picks out the instance whose
+  coords match every axis default (the canonical "Regular").
+- `Face::set_variation_coords` clamps below-min / above-max coords
+  to each axis's `[min, max]` and leaves in-range values untouched.
+- Shaping against the explicit axis-default coords reproduces the
+  static `Shaper::shape_to_paths` output bit-exactly.
+
+Followup tasks deferred:
+- Variable-CFF2 / OTF support — `Face::set_variation_coords` rejects
+  OTF faces (`WrongFaceKind`) until `oxideav-otf` exposes a CFF2
+  variation pipeline.
+- Variable-font *metrics* (`MVAR`, `HVAR`, `VVAR`, `STAT`) —
+  `Face::ascent_px` / `descent_px` / `line_height_px` /
+  `glyph_advance` (via the shaper) currently use `head` / `hhea` /
+  `OS/2` static values. Once `oxideav-ttf` exposes `MVAR` / `HVAR`
+  blending, scribe will route these through the same coord vector.
+- Per-fallback-face variation coords convenience — currently
+  callers reach through `FaceChain::face_mut(idx)`.
+
+Test fixture: `tests/fixtures/InterVariable.ttf` — a copy of the
+same Inter Variable cut vendored by `oxideav-ttf/tests/fixtures/`,
+plus the matching `INTER-OFL-LICENSE.txt`. ~843 KB.
+
 ### Added — Devanagari complex-script shaping (round 8)
 
 New `shaping::indic` module covering Devanagari (Hindi / Marathi /

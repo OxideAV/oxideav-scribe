@@ -22,6 +22,7 @@ use oxideav_core::{
     FillRule, ImageRef, Node, Paint, Path, PathCommand, PathNode, Point, Rect, Rgba, Transform2D,
     VideoFrame, VideoPlane,
 };
+use oxideav_ttf::{NamedInstance, VariationAxis};
 
 /// Which underlying parser this face wraps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,13 @@ pub struct Face {
     /// point so the right subfont is selected each time. `None` for
     /// plain sfnt-flavour faces (the common case).
     subfont_index: Option<u32>,
+    /// Current variation coordinates (one entry per `fvar` axis, in
+    /// declaration order, in user-space units). Empty for static fonts
+    /// or until [`Face::set_variation_coords`] is called. When non-empty
+    /// and the font is variable, [`Face::with_font`] re-applies the
+    /// vector to every freshly-parsed `Font<'_>` so glyph outline
+    /// lookups consume the gvar-blended outline.
+    var_coords: Vec<f32>,
 }
 
 impl Face {
@@ -93,6 +101,7 @@ impl Face {
             italic_angle,
             weight_class,
             subfont_index: None,
+            var_coords: Vec::new(),
         })
     }
 
@@ -127,6 +136,7 @@ impl Face {
             italic_angle,
             weight_class,
             subfont_index: Some(index),
+            var_coords: Vec::new(),
         })
     }
 
@@ -166,6 +176,10 @@ impl Face {
             // synthetic-bold heuristics firing.
             weight_class: 400,
             subfont_index: None,
+            // OTF / CFF2 variation support is out of scope for the
+            // initial round; any caller setting variation coords on an
+            // OTF face is a no-op (with_otf_font does not reapply).
+            var_coords: Vec::new(),
         })
     }
 
@@ -272,12 +286,19 @@ impl Face {
                 actual: self.kind,
             });
         }
-        let font = match self.subfont_index {
+        let mut font = match self.subfont_index {
             Some(i) => {
                 oxideav_ttf::Font::from_collection_bytes(&self.bytes, i).map_err(Error::from)?
             }
             None => oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?,
         };
+        // Re-apply any caller-set variation coords after the parse so
+        // glyph_outline (and downstream advances / kerning that consume
+        // it) reflect the gvar-blended outline. No-op for static fonts
+        // (the underlying setter short-circuits when there is no fvar).
+        if !self.var_coords.is_empty() {
+            font.set_variation_coords(&self.var_coords);
+        }
         Ok(f(&font))
     }
 
@@ -286,6 +307,127 @@ impl Face {
     /// at parse-time). Returns `None` for plain sfnt-flavour faces.
     pub fn subfont_index(&self) -> Option<u32> {
         self.subfont_index
+    }
+
+    // ---- variable fonts (fvar / avar / gvar) -----------------------------
+
+    /// `true` if the underlying font ships an `fvar` table — i.e. it
+    /// exposes one or more variation axes. `false` for OTF faces and
+    /// for static TTF faces.
+    pub fn is_variable(&self) -> bool {
+        if self.kind != FaceKind::Ttf {
+            return false;
+        }
+        self.with_font(|f| f.is_variable()).unwrap_or(false)
+    }
+
+    /// All variation axes the font publishes, cloned out of the
+    /// underlying `fvar`. Empty for static / OTF faces. Each
+    /// [`VariationAxis`] carries `min` / `default` / `max` plus the
+    /// `tag` (`b"wght"` / `b"wdth"` / `b"opsz"` / …) and the `name_id`
+    /// for the human-readable axis label.
+    pub fn variation_axes(&self) -> Vec<VariationAxis> {
+        if self.kind != FaceKind::Ttf {
+            return Vec::new();
+        }
+        self.with_font(|f| f.variation_axes().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// All named instances (pre-defined axis vectors like "Light",
+    /// "Regular", "Bold") the font publishes, in declaration order.
+    /// Empty for static / OTF faces. Each [`NamedInstance`] carries
+    /// `subfamily_name_id` (a `name`-table id for the subfamily label),
+    /// `coords` (one `f32` per axis matching [`Self::variation_axes`]),
+    /// and an optional `post_script_name_id`.
+    ///
+    /// Callers that want to pick an instance by axis vector (e.g. "the
+    /// instance whose `wght=900`") iterate this slice and inspect
+    /// `coords`. Resolving the human-readable subfamily label requires
+    /// reading the `name` table directly via [`Self::with_font`] —
+    /// scribe deliberately doesn't surface a bespoke
+    /// `name_id → string` accessor.
+    pub fn named_instances(&self) -> Vec<NamedInstance> {
+        if self.kind != FaceKind::Ttf {
+            return Vec::new();
+        }
+        self.with_font(|f| f.named_instances().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Current user-space variation coordinates (one entry per axis,
+    /// in `fvar` declaration order). Empty before any
+    /// [`Self::set_variation_coords`] call AND for static / OTF faces.
+    pub fn variation_coords(&self) -> &[f32] {
+        &self.var_coords
+    }
+
+    /// Set the user-space variation coordinates that scribe will
+    /// re-apply on every [`Self::with_font`] re-parse, so subsequent
+    /// glyph outline lookups consume the gvar-blended outline at those
+    /// coords. Each entry is in **user-space** units (e.g. `wght` is
+    /// 100..900 on Inter).
+    ///
+    /// The vector is silently length-normalised against the axis count
+    /// — shorter vectors leave the trailing axes at their previous
+    /// value (or each axis's default for a fresh face), longer vectors
+    /// are truncated. Out-of-range values are clamped to each axis's
+    /// `[min, max]` *via the underlying parser*, so the value visible
+    /// on a subsequent [`Self::variation_coords`] call may differ from
+    /// what was passed in. No-op for static / OTF faces.
+    ///
+    /// Pre-condition: this method works for [`FaceKind::Ttf`] faces
+    /// only. Calling it on an OTF face returns `Err(WrongFaceKind)`
+    /// (variable CFF2 / OTF is out of scope for the initial round).
+    pub fn set_variation_coords(&mut self, coords: &[f32]) -> Result<(), Error> {
+        if self.kind != FaceKind::Ttf {
+            return Err(Error::WrongFaceKind {
+                expected: FaceKind::Ttf,
+                actual: self.kind,
+            });
+        }
+        // Round-trip through a freshly-parsed parser so the per-axis
+        // length cap + `[min, max]` clamp the underlying setter applies
+        // is preserved on round-trip. The freshly-parsed `Font` is
+        // discarded after the round-trip — we only persist the clamped
+        // f32 vector so subsequent `with_font` re-applies it.
+        let mut font = match self.subfont_index {
+            Some(i) => {
+                oxideav_ttf::Font::from_collection_bytes(&self.bytes, i).map_err(Error::from)?
+            }
+            None => oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?,
+        };
+        // Seed with whatever the parser exposes as the current vector
+        // (axis defaults on a fresh face; the previously-set vector if
+        // we re-set with a partial `coords` argument). Then merge the
+        // caller-supplied entries on top, then call the parser to
+        // clamp + length-cap.
+        let mut working = font.variation_coords().to_vec();
+        if !self.var_coords.is_empty() {
+            for (i, &v) in self.var_coords.iter().enumerate() {
+                if i >= working.len() {
+                    break;
+                }
+                working[i] = v;
+            }
+        }
+        for (i, &v) in coords.iter().enumerate() {
+            if i >= working.len() {
+                break;
+            }
+            working[i] = v;
+        }
+        font.set_variation_coords(&working);
+        self.var_coords = font.variation_coords().to_vec();
+        Ok(())
+    }
+
+    /// Reset the variation coordinates to the empty vector — i.e.
+    /// subsequent `with_font` re-parses fall back to each axis's
+    /// `default` value (the static-font baseline). No-op when no
+    /// coords were ever set.
+    pub fn clear_variation_coords(&mut self) {
+        self.var_coords.clear();
     }
 
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`

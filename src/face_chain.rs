@@ -80,6 +80,47 @@ impl FaceChain {
         &self.faces[0]
     }
 
+    /// Mutably borrow face at `idx`. Used to flip per-face state like
+    /// variation coordinates without rebuilding the chain. Panics if
+    /// `idx >= len()`.
+    pub fn face_mut(&mut self, idx: usize) -> &mut Face {
+        &mut self.faces[idx]
+    }
+
+    /// Set the variation coordinates on the **primary face** (index 0).
+    /// Convenience wrapper around [`Face::set_variation_coords`] for
+    /// the common case of "shape this run at `wght=600 / wdth=125`".
+    /// Mirrors [`Face::set_variation_coords`]'s clamp + length cap and
+    /// returns its error variant unchanged.
+    ///
+    /// Fallback faces in the chain are NOT touched — call
+    /// [`FaceChain::face_mut`] explicitly if a fallback also needs
+    /// variation coords (rare in practice; fallback faces typically
+    /// cover a different script and are loaded from a static cut).
+    pub fn set_variation_coords(&mut self, coords: &[f32]) -> Result<(), Error> {
+        self.faces[0].set_variation_coords(coords)
+    }
+
+    /// Named instances published by the face at `face_index`. Empty
+    /// vec when the face is static / OTF, or when the index is out of
+    /// range. Mirrors [`Face::named_instances`] for the chosen face.
+    pub fn named_instances(&self, face_index: usize) -> Vec<crate::NamedInstance> {
+        self.faces
+            .get(face_index)
+            .map(|f| f.named_instances())
+            .unwrap_or_default()
+    }
+
+    /// Variation axes published by the face at `face_index`. Empty vec
+    /// when the face is static / OTF, or when the index is out of
+    /// range. Mirrors [`Face::variation_axes`] for the chosen face.
+    pub fn variation_axes(&self, face_index: usize) -> Vec<crate::VariationAxis> {
+        self.faces
+            .get(face_index)
+            .map(|f| f.variation_axes())
+            .unwrap_or_default()
+    }
+
     /// Shape `text` with full chain fallback at default style (upright,
     /// regular).
     pub fn shape(&self, text: &str, size_px: f32) -> Result<Vec<PositionedGlyph>, Error> {

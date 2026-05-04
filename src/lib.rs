@@ -59,7 +59,8 @@ pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{run_width, wrap_lines};
-pub use shaper::{PositionedGlyph, Shaper};
+pub use oxideav_ttf::{NamedInstance, VariationAxis};
+pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
 pub use shaping::{
     cluster_boundaries, compute_forms, devanagari_category, devanagari_feature_tags,
     feature_tags_for_run, joining_class, presentation_form, reorder_cluster, ClusterFlags,

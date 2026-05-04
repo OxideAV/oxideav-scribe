@@ -64,6 +64,17 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   reph (leading RA + halant + consonant). Reph glyph substitution
   via `rphf` GSUB is gated on `oxideav-ttf` exposing feature-tagged
   GSUB lookup type 1.
+- **Variable fonts (round 9)** — `Face::set_variation_coords` /
+  `variation_axes` / `named_instances` / `is_variable` surface the
+  font's `fvar` declarations and let callers shape against a custom
+  axis-coord vector (e.g. `wght=600 / wdth=125` on Inter Variable).
+  `Shaper::with_variation_coords(vec![..]).shape_to_paths(&mut chain,
+  text, size_px)` is the per-call override path: it installs the
+  coords on the primary face, runs the shape, then restores. Glyph
+  outlines flow through `oxideav-ttf`'s gvar interpolator so the
+  emitted `Path` carries the blended deltas. CFF2 / OTF variable
+  fonts are deferred until `oxideav-otf` exposes a CFF2 variation
+  pipeline.
 - **Vector text API** — `Shaper::shape_to_paths` returns one
   `(face_idx, Node, Transform2D)` per visible glyph. Each node is
   wrapped in an `oxideav_core::Group { cache_key: Some(_), .. }` so the
@@ -86,15 +97,18 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
 - **Bidi (UAX #9)**, **other Indic scripts** (Bengali, Tamil, etc.),
-  **variable fonts**, **TrueType bytecode hinting**, **subpixel LCD
-  filtering**, **GPOS cursive attachment** — deferred.
+  **variable-font metrics** (`MVAR` / `HVAR` / `VVAR` / `STAT`),
+  **CFF2 variable fonts**, **TrueType bytecode hinting**, **subpixel
+  LCD filtering**, **GPOS cursive attachment** — deferred.
 
 ## Test fixtures
 
 Reuses `crates/oxideav-ttf/tests/fixtures/DejaVuSans.ttf` plus
-`DejaVuSansMono.ttf` (Bitstream Vera license) and
-`crates/oxideav-otf/tests/fixtures/SourceSans3-Regular.otf` (SIL OFL).
-Network-gated emoji/CJK fixtures fetch on demand; see
+`DejaVuSansMono.ttf` (Bitstream Vera license),
+`crates/oxideav-otf/tests/fixtures/SourceSans3-Regular.otf` (SIL OFL),
+and a vendored copy of `InterVariable.ttf` (SIL OFL — see
+`tests/fixtures/INTER-OFL-LICENSE.txt`) for the round-9 variable-font
+suite. Network-gated emoji/CJK fixtures fetch on demand; see
 `tests/font_fixtures/` and run with `OXIDEAV_NETWORK_TESTS=1`.
 
 ## License
