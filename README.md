@@ -50,6 +50,20 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   kerning) + GPOS type 4/5/6 (mark-to-base, mark-to-mark stacking),
   enough for Latin / Cyrillic / Greek / basic CJK / Vietnamese /
   polytonic Greek.
+- **Arabic contextual joining (round 7)** — `shaping::arabic`
+  picks `isol` / `init` / `medi` / `fina` per character via the
+  Unicode joining-class state machine; `FaceChain::shape` rewrites
+  Arabic letters into their Presentation Forms-B equivalents
+  (U+FE70..U+FEFF) before cmap so cmap-only fonts render the
+  visually-correct contextual shapes (including LAM-ALEF ligatures
+  via the existing GSUB pass).
+- **Devanagari complex-script shaping (round 8)** — `shaping::indic`
+  classifies Devanagari (U+0900..U+097F) codepoints, segments runs
+  into orthographic clusters, applies pre-base matra reorder
+  (U+093F moves visually before its base consonant), and identifies
+  reph (leading RA + halant + consonant). Reph glyph substitution
+  via `rphf` GSUB is gated on `oxideav-ttf` exposing feature-tagged
+  GSUB lookup type 1.
 - **Vector text API** — `Shaper::shape_to_paths` returns one
   `(face_idx, Node, Transform2D)` per visible glyph. Each node is
   wrapped in an `oxideav_core::Group { cache_key: Some(_), .. }` so the
@@ -71,9 +85,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **Arabic shaping**, **Indic conjunct formation**,
+- **Bidi (UAX #9)**, **other Indic scripts** (Bengali, Tamil, etc.),
   **variable fonts**, **TrueType bytecode hinting**, **subpixel LCD
-  filtering** — deferred.
+  filtering**, **GPOS cursive attachment** — deferred.
 
 ## Test fixtures
 
