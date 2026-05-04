@@ -1,38 +1,35 @@
-//! Round-7 vector-text test: TrueType `Face::glyph_path('A')` must
+//! Round-7 vector-text test: TrueType `Face::glyph_path('O')` must
 //! return a non-empty path with at least one MoveTo + Close + a
 //! quadratic curve segment.
 //!
-//! 'A' is universally an outlined glyph (no font ships a bitmap-only
-//! capital A) so this is a stable assertion across DejaVu Sans Mono
-//! revs. The glyph silhouette is a triangle with a horizontal cross-bar
-//! — a real font subdivides the diagonals into a couple of quadratic
-//! segments at the apex (where the stem joins) so we can also assert
-//! that ≥1 QuadCurveTo lives in the command list.
+//! 'O' is a curved oval glyph (no font ships it as a polygon) so this
+//! is a stable assertion across DejaVu Sans Mono revs. The outer and
+//! inner contours are each a series of quadratic segments (TT spline
+//! representation), so we can also assert that ≥1 QuadCurveTo lives in
+//! the command list.
+//!
+//! Rationale for not using 'A': DejaVu Sans Mono's 'A' is a pure
+//! 13-command polygon (triangle + crossbar) with zero curves. Many
+//! "geometric" capital letters are flat-sided and lose curves entirely
+//! at the monospace weight. 'O' is the canonical curve-bearing glyph.
 
 use oxideav_core::PathCommand;
 use oxideav_scribe::Face;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
-#[ignore = "DejaVu Sans Mono's 'A' is a pure-polygon glyph (13 \
-            line/move/close commands, zero curves) so the \
-            QuadCurveTo ≥ 1 assertion fails. Author's premise \
-            'a real font subdivides the diagonals into a couple of \
-            quadratic segments at the apex' is wrong for monospaced \
-            fonts. Switch the test glyph to 'O' (oval, guaranteed \
-            quadratic on TT fonts) — see #6."]
 #[test]
-fn dejavu_a_emits_quadratic_path() {
+fn dejavu_o_emits_quadratic_path() {
     let face = Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans Mono parses");
     let gid = face
-        .with_font(|f| f.glyph_index('A'))
+        .with_font(|f| f.glyph_index('O'))
         .expect("with_font ok")
-        .expect("'A' must map");
-    assert!(gid != 0, "'A' resolved to .notdef");
+        .expect("'O' must map");
+    assert!(gid != 0, "'O' resolved to .notdef");
 
-    let path = face.glyph_path(gid).expect("'A' has an outline");
+    let path = face.glyph_path(gid).expect("'O' has an outline");
     eprintln!(
-        "[round7-glyph-path] DejaVu 'A' path: {} commands",
+        "[round7-glyph-path] DejaVu 'O' path: {} commands",
         path.commands.len()
     );
 
@@ -58,7 +55,7 @@ fn dejavu_a_emits_quadratic_path() {
         close_count >= 1,
         "expected ≥1 Close, got {close_count}; contours don't terminate"
     );
-    // 'A' has 1 outer + 1 inner counter contour. MoveTo and Close
+    // 'O' has 1 outer + 1 inner counter contour. MoveTo and Close
     // counts should match (one per contour).
     assert_eq!(
         move_count, close_count,
@@ -87,7 +84,7 @@ fn dejavu_a_emits_quadratic_path() {
     );
 
     // Sanity: y-up (font units) means at least one MoveTo has y > 0
-    // (above the baseline) since 'A' rises above the baseline.
+    // (above the baseline) since 'O' rises above the baseline.
     let max_y = path
         .commands
         .iter()
@@ -100,7 +97,7 @@ fn dejavu_a_emits_quadratic_path() {
         .fold(f32::NEG_INFINITY, f32::max);
     assert!(
         max_y > 0.0,
-        "expected y-up font units; max y = {max_y} should be > 0 for 'A'",
+        "expected y-up font units; max y = {max_y} should be > 0 for 'O'",
     );
 }
 

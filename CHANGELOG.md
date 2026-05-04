@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `tests/round7_glyph_path.rs`: switched test glyph from 'A' to 'O'.
+  DejaVu Sans Mono's 'A' is a pure 13-command polygon (zero curves),
+  so the `QuadCurveTo ≥ 1` assertion never held. 'O' is the canonical
+  curve-bearing glyph and exercises the TT quadratic outline path.
+  Test re-enabled.
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.1...v0.1.2) - 2026-05-04
 
 ### Other
