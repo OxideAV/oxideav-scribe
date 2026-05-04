@@ -26,24 +26,29 @@ fn load_face() -> Face {
     Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans must parse")
 }
 
-#[ignore = "test asserts `circumflex.y_offset < 0` but the DejaVu Sans \
-            (e, combining-circumflex) anchor pair has identical TT-Y on \
-            both anchors, so dy = 0 and the shaper correctly returns \
-            y_offset = 0. The mark-to-mark stack itself works (the acute \
-            sits 7.7 px above the circumflex per glyph dump), but the \
-            test conflates 'mark visually above baseline' with \
-            'y_offset numerically negative'. See #5 for the rewrite \
-            plan."]
 #[test]
 fn double_diacritic_stacks_above_first() {
     // 'e' + COMBINING CIRCUMFLEX ACCENT (U+0302) + COMBINING ACUTE
     // ACCENT (U+0301). This is the NFD decomposition of Vietnamese
     // 'ế' (e with circumflex and acute). DejaVu Sans ships:
     //   - mark-to-base anchor for ('e', circumflex)
-    //   - mark-to-mark anchor for (circumflex, acute) at +493 fu on Y
+    //   - mark-to-mark anchor for (circumflex, acute) at a strictly
+    //     greater (more-negative-in-raster-space) Y than the
+    //     mark-to-base anchor for ('e', circumflex).
     //
     // Without mark-to-mark, the acute would attach to 'e' directly
     // and overlap the circumflex (same anchor, same height).
+    //
+    // NOTE on `y_offset` semantics: the shaper returns `y_offset` as a
+    // *delta from the natural pen position* — NOT an absolute raster Y.
+    // For DejaVu Sans the (e, combining-circumflex) anchor pair has
+    // both anchors at TT-Y=1174, so the dy is exactly 0 and the shaper
+    // correctly returns `circumflex.y_offset == 0`. The mark still
+    // visually sits above the baseline because the glyph's own outline
+    // is above the baseline; the y_offset is the *additional* nudge
+    // applied by GPOS. So the right invariant to assert here is
+    // `acute.y_offset < circumflex.y_offset` (acute lifted further than
+    // the circumflex), not `circumflex.y_offset < 0`.
     let face = load_face();
     let glyphs =
         Shaper::shape(&face, "e\u{0302}\u{0301}", 32.0).expect("shape e + circumflex + acute");
@@ -77,22 +82,26 @@ fn double_diacritic_stacks_above_first() {
          without it the round-4 path can't be exercised"
     );
 
-    // Both marks lifted above baseline (Y-down, so y_offset < 0).
+    // Both marks share the base's pen X (mark-to-base put them on top of
+    // 'e' first; mark-to-mark only adjusts y).
     assert!(
-        circumflex.y_offset < 0.0,
-        "circumflex y_offset should be negative: got {}",
-        circumflex.y_offset
-    );
-    assert!(
-        acute.y_offset < 0.0,
-        "acute y_offset should be negative: got {}",
-        acute.y_offset
+        (circumflex.x_offset - acute.x_offset).abs() < 1e-3,
+        "marks should be horizontally co-located: cx={} acute={}",
+        circumflex.x_offset,
+        acute.x_offset
     );
 
     // The acute should sit STRICTLY ABOVE the circumflex (more
-    // negative Y in raster space). If the round-3 fallback ran instead
-    // of the round-4 path, the acute would attach to 'e' at the same
-    // anchor as the circumflex (overlapping it).
+    // negative y_offset in raster space). If the round-3 fallback ran
+    // instead of the round-4 path, the acute would attach to 'e' at the
+    // SAME anchor as the circumflex, leaving acute.y_offset ==
+    // circumflex.y_offset (overlap).
+    //
+    // For DejaVu Sans @ 32 px the empirical values are
+    //   circumflex.y_offset = 0.0
+    //   acute.y_offset      ≈ -7.70  (acute lifted ~7.7 px above)
+    // i.e. the gap is non-trivial and matches the +493 fu mark-to-mark
+    // anchor in the font's GPOS table (493 fu × 32/2048 ≈ 7.7 px).
     assert!(
         acute.y_offset < circumflex.y_offset,
         "acute should sit ABOVE circumflex: acute_y={} circumflex_y={}",

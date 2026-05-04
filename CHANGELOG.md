@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the `QuadCurveTo ≥ 1` assertion never held. 'O' is the canonical
   curve-bearing glyph and exercises the TT quadratic outline path.
   Test re-enabled.
+- `tests/round4_marks.rs::double_diacritic_stacks_above_first`: replaced
+  the `circumflex.y_offset < 0` assertion (which was incorrect — the
+  shaper's `y_offset` is a *delta* from the natural pen position, not an
+  absolute raster Y, and DejaVu Sans's (e, circumflex) anchor pair has
+  dy = 0) with `acute.y_offset < circumflex.y_offset`. This is the
+  actual round-4 invariant: the second mark stacks STRICTLY above the
+  first via the (mark1, mark2) anchor, vs. the round-3 fallback which
+  would attach both marks to the base at the same anchor (overlap).
+  Test re-enabled.
 
 ## [0.1.2](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.1...v0.1.2) - 2026-05-04
 
