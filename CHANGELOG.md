@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — variable-font metrics + style attributes (round 14, #454)
+
+Round 14 closes the variable-font metrics gap that the round-9 outline
+work left open. The four metric-variation tables now have first-class
+parsers + per-coord lookup methods on `Face`:
+
+- **MVAR** (Metrics Variations) — `Face::mvar()` parses the table;
+  `Face::metric_delta(b"hasc")` returns the ascender delta in font
+  units at the current variation coords (similar accessors via tag
+  for `cpht` cap-height, `xhgt` x-height, `undo` underline offset,
+  `unds` underline size, `strs` strikeout size, `stro` strikeout
+  offset, etc. — every tag in the OpenType MVAR ValueTag registry).
+- **HVAR** (Horizontal-Advance Variations) — `Face::hvar()` parses
+  the table; `Face::h_advance_delta(gid)` returns the per-glyph
+  advance-width delta. The implicit `glyphID → (0, glyphID)`
+  identity (used by HVAR tables that omit the optional
+  advanceWidthMapping) is handled transparently.
+- **VVAR** (Vertical-Advance Variations) — `Face::vvar()` /
+  `v_advance_delta(gid)` mirrors HVAR for vertical layout. Returns
+  `None` / `0.0` for the horizontal-only fonts that omit VVAR
+  (the common case for Latin fonts).
+- **STAT** (Style Attributes) — `Face::stat()` parses the table;
+  `stat_axes()` enumerates the design axes (each carries a `name`-
+  table id for the axis label); `stat_axis_values()` enumerates
+  every axis-value record across all four spec formats:
+  `Single` (one named point on one axis — e.g. `wght=400 →
+  "Regular"`), `Range` (e.g. `wght 600..700 → "SemiBold/Bold"`),
+  `Linked` (named value plus a "linked" value used for the
+  bold/italic toggle), and `Combined` (multi-axis named
+  combinations — e.g. `wght=700 + wdth=75 → "Bold Condensed"`).
+
+The four metric tables share two pieces of plumbing:
+
+- **`ItemVariationStore`** — the OpenType-spec delta-storage
+  primitive. One ItemVariationStore can hold multiple sub-tables;
+  each sub-table publishes a region-index list, a delta-set count,
+  and a packed delta array. `resolve_delta(outer, inner, &coords)`
+  walks the regions, computes the per-region scalar via the
+  spec's "(coord - start) / (peak - start)" ramp + sign / zero
+  rules, and accumulates the scaled delta sum.
+- **`DeltaSetIndexMap`** — short (format 0) + long (format 1)
+  variants both supported. Resolves an item key (glyph id for
+  HVAR/VVAR, or an implicit 0 for MVAR's per-tag lookup) into
+  an `(outer_index, inner_index)` pair that addresses the IVS.
+
+`Face::name_id(nid)` resolves any `name`-table id to the
+highest-ranked Unicode string, with the same priority the
+underlying TTF parser uses (Windows English first, Mac Roman
+English second, anything Unicode-y after, then any remaining
+record). Closes the surface for callers that consumed an
+`axis_name_id` / `subfamily_name_id` (from `fvar`) or a
+`value_name_id` (from STAT) and need the human-readable label —
+they no longer have to reach into `Face::with_font` for it.
+
+`Face::cff2()` parses the CFF2 INDEX walker (header + Top DICT
++ Global Subrs + CharStrings INDEX) and reports the table's
+glyph count + variation-axis count + `has_charstrings` boolean.
+Full Type 2 v3 charstring evaluation under variations (with the
+`blend` operator) is the deferred follow-up; once the underlying
+`oxideav-otf` crate exposes a CFF2 charstring interpreter,
+scribe will lift it onto `Face::glyph_path` for OTF / CFF2
+variable fonts the same way it does for TT / gvar today.
+
+All variation tables are parsed locally in scribe (`crate::variations`)
+from raw font bytes obtained via `Face::raw_bytes()` rather than from
+new APIs on `oxideav-ttf` / `oxideav-otf` — keeps the round
+self-contained without coordination on the producer crates' release
+cadence.
+
+Test coverage:
+- `crate::variations::tests` — 5 new unit tests (synthetic-bytes
+  coverage of `ItemVariationStore`, `DeltaSetIndexMap`, `StatTable`
+  format-1 round-trip, `NameTableSnapshot` UTF-16 decode, `CFF2`
+  INDEX walker on empty + non-empty INDEX bytes).
+- `tests/round14_variable_metrics.rs` — 16 new integration tests
+  against `tests/fixtures/InterVariable.ttf` (Inter ships MVAR +
+  HVAR + STAT with two `fvar` axes — `wght` 100..900 + `opsz`
+  14..32 — plus 9 named instances). MVAR enumerates well-known
+  metric tags and produces a non-zero delta at `wght=900`. HVAR
+  produces a non-zero per-glyph advance delta at `wght=900`.
+  VVAR is correctly absent (Inter is horizontal-only). STAT
+  enumerates ≥ 2 design axes (`wght` + `opsz`), with at least
+  one Single-format record on the wght axis. `name_id` resolves
+  the family name, every `axis_name_id`, and at least one named-
+  instance subfamily label. CFF2 is correctly absent (Inter is
+  TT-flavoured). Plus 2 OTF-flavour tests against
+  `tests/fixtures/SourceSans3-Regular.otf` confirming the
+  `name_id` resolver works on OTF magic and that a static OTF
+  font reports `mvar / hvar / vvar / stat / cff2 == None`.
+
+The implementations are clean-room readings of:
+
+- Microsoft OpenType §"MVAR — Metrics Variations Table".
+- Microsoft OpenType §"HVAR — Horizontal Metrics Variations Table".
+- Microsoft OpenType §"VVAR — Vertical Metrics Variations Table".
+- Microsoft OpenType §"STAT — Style Attributes Table".
+- Microsoft OpenType §"Item Variation Store Header and Item Variation
+  Subtables".
+- Microsoft OpenType §"Delta Set Index Map Table".
+- Microsoft OpenType §"name — Naming Table".
+- Adobe Technical Note #5176 §"CFF2 charstring format" and TN5177.
+
+No HarfBuzz / FreeType / fontTools / pango source consulted.
+
 ## [0.1.7](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.6...v0.1.7) - 2026-05-05
 
 ### Other
