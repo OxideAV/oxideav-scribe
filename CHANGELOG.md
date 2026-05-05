@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — six more Indic scripts + cluster-position GSUB wiring (round 11)
+
+Round 11 brings the remaining Indic scripts under the same cluster
+machine + adds cluster-position-aware GSUB feature dispatch on top of
+the round-10 `rphf` pattern.
+
+- **Six new scripts.** `shaping::indic::{gurmukhi,gujarati,telugu,
+  kannada,malayalam,oriya}_category(char) -> IndicCategory` per-script
+  syllabic categorisation tables, plus matching
+  `{GURMUKHI,GUJARATI,TELUGU,KANNADA,MALAYALAM,ORIYA}_RULES`
+  `ReorderRules` constants and `*_feature_tags()` functions:
+  - **Gurmukhi** (U+0A00..U+0A7F) — Punjabi. Halant-driven (U+0A4D)
+    + pre-base matra "i" U+0A3F + reph rule on RA U+0A30 (rare in
+    modern usage; `rphf` lookup fires only when the font ships one).
+  - **Gujarati** (U+0A80..U+0AFF) — closest to Devanagari. Halant
+    U+0ACD + pre-base matra "i" U+0ABF + reph on RA U+0AB0.
+  - **Telugu** (U+0C00..U+0C7F) — pre-base matras U+0C46 / U+0C47 /
+    U+0C48 (e / ee / ai); reph on RA U+0C30; halant U+0C4D.
+    Feature-tag list adds `pref` / `pstf` / `abvf` (the
+    Telugu/Kannada/Malayalam family per-position GSUB features) on
+    top of the Devanagari list.
+  - **Kannada** (U+0C80..U+0CFF) — same Telugu family with own
+    codepoints + halant U+0CCD; pre-base matras U+0CC6 / U+0CC7 /
+    U+0CC8.
+  - **Malayalam** (U+0D00..U+0D7F) — pre-base matras U+0D46 / U+0D47 /
+    U+0D48; halant U+0D4D; chillu (independent half-form)
+    characters U+0D7A..U+0D7F classified as `Consonant` (NFC-stable
+    in modern orthography). `reph_enabled = false` because chillu
+    replaces the historic reph rendering — the feature-tag list
+    drops `rphf`.
+  - **Oriya** (U+0B00..U+0B7F) — pre-base matras U+0B47 / U+0B48 plus
+    the precomposed o / au matras U+0B4B / U+0B4C (which carry
+    pre-base components after canonical decomposition); reph on RA
+    U+0B30; halant U+0B4D.
+- **`Script::{Gurmukhi,Gujarati,Telugu,Kannada,Malayalam,Oriya}`** —
+  added to the `shaping::arabic::Script` enum. The shared
+  `script_of(char)` classifier now returns the right variant for
+  every codepoint in U+0A00..U+0D7F (the contiguous Indic range).
+- **`script_indic_tags`** extended to map each new `Script` variant
+  to its `(modern_indic2_tag, legacy_v1_tag)` OpenType script tag
+  pair: `(gur2, guru)` / `(gjr2, gujr)` / `(tel2, telu)` /
+  `(knd2, knda)` / `(mlm2, mlym)` / `(ory2, orya)`.
+- **`FaceChain::shape` cluster-position-aware GSUB pass.** A new
+  pass after the round-10 reph substitution walks each Indic
+  cluster (recorded as a `ClusterSpan` sidecar from
+  `apply_indic_reorder`) and dispatches the position-driven GSUB
+  features:
+  - `half` — applied to a base consonant immediately followed by a
+    halant when the cluster has more characters after the halant.
+  - `pref` / `blwf` / `abvf` / `pstf` — cascaded on a post-halant
+    consonant; first lookup that returns a substitute wins.
+    The cascade lets the font's form-position table dictate which
+    feature applies to a given conjunct component without the
+    shaper hard-coding per-script position rules.
+  - `pres` / `psts` / `abvs` / `blws` — presentation-pass single
+    substitutions applied to every glyph in the cluster.
+  All of these use `Font::gsub_apply_lookup_type_1` against the
+  active script tag pair (modern Indic2 tried first, legacy v1
+  fallback). Coverage misses pass through unchanged — fonts without
+  a given lookup degrade gracefully to the round-10 behaviour.
+- **Crate-root re-exports** for the new categorisation functions,
+  feature-tag functions, and rules constants.
+
+The implementations are clean-room readings of:
+
+- Unicode 15.1 Standard Annex #15 (Indic syllabic categories).
+- Microsoft OpenType Layout — *Creating and supporting OpenType
+  fonts for Indic scripts* (Gurmukhi / Gujarati / Telugu / Kannada /
+  Malayalam / Oriya — the per-script *Shaping* informative examples
+  drove the per-position feature cascade).
+
+No HarfBuzz / FreeType / pango / ICU layout source consulted.
+
+Test coverage:
+- `shaping::indic::tests` — 32 new unit tests covering the six new
+  scripts (categorisation + per-script pre-base matra reorder + reph
+  identification + feature-tag list shape + chillu classification +
+  feature-list assertions). Total `shaping::indic` test count: 81
+  (up from 49).
+- `face_chain::tests` — 8 new unit tests covering the multi-script
+  cluster-span pass: per-script reorder + cluster-span script tags
+  for every new script + the chillu cluster-boundary case + an
+  `adjust_cluster_spans` helper test that verifies subsequent
+  spans shift down after a reph drop.
+- `tests/round11_telugu_cluster.rs` /
+  `tests/round11_kannada_cluster.rs` /
+  `tests/round11_gujarati_cluster.rs` — three new integration tests
+  that follow the round-10 fixture-skip pattern (DejaVuSans does not
+  cover U+0A80..U+0CFF; tests `eprintln!` and return when the
+  fixture cmap is empty for the script in question). Activate once a
+  Noto Sans Telugu / Kannada / Gujarati font lands in
+  `samples.oxideav.org/fonts/` via the `font_fixtures` helper.
+
+Followup tasks deferred:
+- **Indic font fixtures on the CDN.** Activating the round-11
+  integration tests + the round-8 / round-10 ones for Devanagari /
+  Bengali / Tamil needs `NotoSansDevanagari` / `NotoSansBengali` /
+  `NotoSansTamil` / `NotoSansTelugu` / `NotoSansKannada` /
+  `NotoSansGujarati` / `NotoSansGurmukhi` / `NotoSansMalayalam` /
+  `NotoSansOriya` (~280-330 KB each, OFL) on
+  `samples.oxideav.org/fonts/`. The `font_fixtures` helper plumbing
+  is already in place.
+- **Brahmic non-Indic scripts.** Sinhala (U+0D80..U+0DFF), Burmese
+  (U+1000..U+109F), Khmer (U+1780..U+17FF), Thai (U+0E00..U+0E7F),
+  Lao (U+0E80..U+0EFF) all use cluster-based shaping but have
+  stack-form / split-vowel rules outside the Indic2 cluster machine
+  (e.g. Sinhala's vowel signs decompose to up to 3 components;
+  Burmese's medial consonants chain via U+103B..U+103E).
+- **Cluster-position feature ORDER.** Round 11 fires `half` then the
+  `pref|blwf|abvf|pstf` cascade then the presentation features for
+  every cluster. The OpenType Indic2 spec calls for a per-cluster
+  feature application order (locl → ccmp → nukt → akhn → rphf →
+  pref → blwf → half → abvf → pstf → cjct → init → pres → abvs →
+  blws → psts → haln); the round-11 pass implements the inner
+  half + position cascade + presentation block but does NOT yet
+  apply locl / nukt / akhn / cjct / init / haln (those need
+  multi-glyph context which the current single-substitution pass
+  doesn't carry).
+
 ## [0.1.5](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.4...v0.1.5) - 2026-05-04
 
 ### Other

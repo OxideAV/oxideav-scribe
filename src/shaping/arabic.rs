@@ -126,6 +126,41 @@ pub enum Script {
     /// U+0BC7 / U+0BC8) only — no reph (Tamil RA renders in-line),
     /// no nukta, no conjunct formation in the modern orthography.
     Tamil,
+    /// Gurmukhi block (U+0A00..U+0A7F). Punjabi. Round 11 added
+    /// halant-driven cluster machine: pre-base matra reorder
+    /// (U+0A3F sign "i"); reph rare in modern usage (RA U+0A30 sets
+    /// the flag for fonts that ship a `rphf` lookup, callers without
+    /// one fall back to in-line RA rendering).
+    Gurmukhi,
+    /// Gujarati block (U+0A80..U+0AFF). Gujarati. Round 11 added —
+    /// closest in shape to Devanagari (halant-driven conjuncts;
+    /// pre-base matra U+0ABF; reph rule on RA U+0AB0).
+    Gujarati,
+    /// Telugu block (U+0C00..U+0C7F). Telugu. Round 11 added —
+    /// reph identification on RA U+0C30 plus pre-base matra reorder
+    /// for U+0C46 / U+0C47 / U+0C48 (e / ee / ai). The Telugu split
+    /// vowels (U+0C46 + U+0C56) decompose to a pre-base + post-base
+    /// pair under NFD; the cluster machine flags the pre-base
+    /// component for reorder.
+    Telugu,
+    /// Kannada block (U+0C80..U+0CFF). Kannada. Round 11 added —
+    /// similar shape to Telugu (reph on RA U+0CB0; pre-base matras
+    /// U+0CC6 / U+0CC7 / U+0CC8) with its own codepoints + halant
+    /// (U+0CCD).
+    Kannada,
+    /// Malayalam block (U+0D00..U+0D7F). Malayalam. Round 11 added —
+    /// pre-base matras U+0D46 / U+0D47 / U+0D48 plus the chillu
+    /// (half-form) characters U+0D7A..U+0D7F treated as
+    /// consonants (they are NFC-stable independent codepoints in modern
+    /// Malayalam orthography). No reph in modern Malayalam — chillu
+    /// replaces the historic reph rendering.
+    Malayalam,
+    /// Oriya block (U+0B00..U+0B7F). Oriya / Odia. Round 11 added —
+    /// reph identification on RA U+0B30 plus pre-base matra reorder
+    /// for U+0B47 / U+0B48 / U+0B4B / U+0B4C (Oriya is unusual in that
+    /// the precomposed o / au matras are themselves pre-base after
+    /// canonical decomposition). Halant U+0B4D drives conjuncts.
+    Oriya,
     /// Anything else — Latin, CJK, Cyrillic, Greek, etc.
     Other,
 }
@@ -154,6 +189,24 @@ pub fn script_of(ch: char) -> Script {
     if (0x0B80..=0x0BFF).contains(&cp) {
         return Script::Tamil;
     }
+    if (0x0A00..=0x0A7F).contains(&cp) {
+        return Script::Gurmukhi;
+    }
+    if (0x0A80..=0x0AFF).contains(&cp) {
+        return Script::Gujarati;
+    }
+    if (0x0C00..=0x0C7F).contains(&cp) {
+        return Script::Telugu;
+    }
+    if (0x0C80..=0x0CFF).contains(&cp) {
+        return Script::Kannada;
+    }
+    if (0x0D00..=0x0D7F).contains(&cp) {
+        return Script::Malayalam;
+    }
+    if (0x0B00..=0x0B7F).contains(&cp) {
+        return Script::Oriya;
+    }
     Script::Other
 }
 
@@ -170,6 +223,12 @@ pub fn feature_tags_for_run(script: Script) -> Vec<[u8; 4]> {
         Script::Devanagari => super::indic::devanagari_feature_tags(),
         Script::Bengali => super::indic::bengali_feature_tags(),
         Script::Tamil => super::indic::tamil_feature_tags(),
+        Script::Gurmukhi => super::indic::gurmukhi_feature_tags(),
+        Script::Gujarati => super::indic::gujarati_feature_tags(),
+        Script::Telugu => super::indic::telugu_feature_tags(),
+        Script::Kannada => super::indic::kannada_feature_tags(),
+        Script::Malayalam => super::indic::malayalam_feature_tags(),
+        Script::Oriya => super::indic::oriya_feature_tags(),
         Script::Other => Vec::new(),
     }
 }

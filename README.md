@@ -57,20 +57,30 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   (U+FE70..U+FEFF) before cmap so cmap-only fonts render the
   visually-correct contextual shapes (including LAM-ALEF ligatures
   via the existing GSUB pass).
-- **Indic complex-script shaping (rounds 8 + 10)** — `shaping::indic`
+- **Indic complex-script shaping (rounds 8 + 10 + 11)** — `shaping::indic`
   classifies Devanagari (U+0900..U+097F), Bengali (U+0980..U+09FF),
-  and Tamil (U+0B80..U+0BFF) codepoints, segments runs into
-  orthographic clusters, applies per-script pre-base matra reorder
-  (Devanagari U+093F; Bengali U+09BF / U+09C7 / U+09C8; Tamil
-  U+0BC6 / U+0BC7 / U+0BC8), and identifies reph (leading RA +
-  halant + consonant — Devanagari + Bengali only; Tamil RA does not
-  form a reph). When the active face publishes a `rphf` GSUB lookup
-  for the active script, the leading RA glyph is rewritten to its
-  reph form via `Font::gsub_apply_lookup_type_1` and the halant
-  glyph is dropped (round 10). Per-script reorder rules are
-  exposed as `DEVANAGARI_RULES` / `BENGALI_RULES` / `TAMIL_RULES`
-  for callers wanting to reuse the cluster machine on additional
-  Indic scripts.
+  Tamil (U+0B80..U+0BFF), Gurmukhi (U+0A00..U+0A7F),
+  Gujarati (U+0A80..U+0AFF), Telugu (U+0C00..U+0C7F),
+  Kannada (U+0C80..U+0CFF), Malayalam (U+0D00..U+0D7F), and
+  Oriya (U+0B00..U+0B7F) codepoints, segments runs into
+  orthographic clusters, applies per-script pre-base matra reorder,
+  and identifies reph where applicable (Tamil + Malayalam are
+  reph-disabled — Tamil RA does not form a reph; modern Malayalam
+  uses chillu independent half-forms instead). When the active face
+  publishes a `rphf` GSUB lookup for the active script, the leading
+  RA glyph is rewritten to its reph form via
+  `Font::gsub_apply_lookup_type_1` and the halant glyph is dropped
+  (round 10). Round 11 also wires cluster-position-aware GSUB
+  features: `half` for non-final consonants in conjuncts;
+  `pref` / `blwf` / `abvf` / `pstf` (cascaded — first that returns a
+  substitute wins) for post-halant consonants; and the presentation-
+  pass features `pres` / `psts` / `abvs` / `blws` over every glyph
+  in the cluster. Coverage misses pass through unchanged so a font
+  without a given lookup degrades gracefully. Per-script reorder
+  rules are exposed as `DEVANAGARI_RULES` / `BENGALI_RULES` /
+  `TAMIL_RULES` / `GURMUKHI_RULES` / `GUJARATI_RULES` /
+  `TELUGU_RULES` / `KANNADA_RULES` / `MALAYALAM_RULES` /
+  `ORIYA_RULES` for callers reusing the cluster machine.
 - **Variable fonts (round 9)** — `Face::set_variation_coords` /
   `variation_axes` / `named_instances` / `is_variable` surface the
   font's `fvar` declarations and let callers shape against a custom
@@ -103,11 +113,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **remaining Indic scripts** (Telugu, Gujarati,
-  Gurmukhi, Kannada, Malayalam, Oriya — same pattern as Bengali /
-  Tamil with per-script categorisation tables), **variable-font
-  metrics** (`MVAR` / `HVAR` / `VVAR` / `STAT`), **CFF2 variable
-  fonts**, **TrueType bytecode hinting**, **subpixel LCD filtering**,
+- **Bidi (UAX #9)**, **Sinhala / Burmese / Khmer / Thai / Lao**
+  (Brahmic but with stack-form / split-vowel rules outside the
+  Indic2 cluster machine), **variable-font metrics**
+  (`MVAR` / `HVAR` / `VVAR` / `STAT`), **CFF2 variable fonts**,
+  **TrueType bytecode hinting**, **subpixel LCD filtering**,
   **GPOS cursive attachment** — deferred.
 
 ## Test fixtures

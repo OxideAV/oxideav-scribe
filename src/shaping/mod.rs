@@ -25,7 +25,11 @@ pub use arabic::{
 pub use arabic_pf::presentation_form;
 pub use indic::{
     bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
-    devanagari_category, devanagari_feature_tags, reorder_cluster, reorder_cluster_with,
-    script_indic_tags, tamil_category, tamil_feature_tags, ClusterFlags, IndicCategory,
-    ReorderRules, BENGALI_RULES, DEVANAGARI_RULES, TAMIL_RULES,
+    devanagari_category, devanagari_feature_tags, gujarati_category, gujarati_feature_tags,
+    gurmukhi_category, gurmukhi_feature_tags, kannada_category, kannada_feature_tags,
+    malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
+    reorder_cluster, reorder_cluster_with, script_indic_tags, tamil_category, tamil_feature_tags,
+    telugu_category, telugu_feature_tags, ClusterFlags, IndicCategory, ReorderRules, BENGALI_RULES,
+    DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, MALAYALAM_RULES, ORIYA_RULES,
+    TAMIL_RULES, TELUGU_RULES,
 };

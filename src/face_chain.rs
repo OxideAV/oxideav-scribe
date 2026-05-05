@@ -29,8 +29,9 @@ use crate::shaper::{shape_run_with_font, PositionedGlyph};
 use crate::shaping::arabic::{compute_forms, script_of, Script};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::indic::{
-    cluster_boundaries_with, reorder_cluster_with, script_indic_tags, ReorderRules, BENGALI_RULES,
-    DEVANAGARI_RULES, TAMIL_RULES,
+    cluster_boundaries_with, reorder_cluster_with, script_indic_tags, IndicCategory, ReorderRules,
+    BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
+    MALAYALAM_RULES, ORIYA_RULES, TAMIL_RULES, TELUGU_RULES,
 };
 use crate::style::Style;
 use crate::Error;
@@ -205,7 +206,7 @@ impl FaceChain {
         // we run Arabic first to match the round-7 behaviour exactly
         // when no Indic input is present.
         let arabic_shaped = apply_arabic_joining(&chars);
-        let (shaped_chars, reph_marks) = apply_indic_reorder(&arabic_shaped);
+        let (shaped_chars, reph_marks, cluster_spans) = apply_indic_reorder(&arabic_shaped);
         let mut out: Vec<(u16, u16)> = Vec::with_capacity(shaped_chars.len());
         for (orig_idx, ch) in shaped_chars.iter().enumerate() {
             let mut found: Option<(u16, u16)> = None;
@@ -268,7 +269,23 @@ impl FaceChain {
         //
         // We process marks back-to-front so the index manipulation
         // stays straightforward (no shifting of pending marks).
-        let out = self.apply_reph_substitutions(out, &reph_marks)?;
+        let (out, dropped_halants) = self.apply_reph_substitutions(out, &reph_marks)?;
+        // Round 11 — cluster-position-aware GSUB pass. For every Indic
+        // cluster, dispatch `half` / `pref` / `blwf` / `abvf` / `pstf`
+        // (per-position substitution) on halant-suffixed conjunct
+        // components, then `pres` / `psts` / `abvs` / `blws` (cluster-
+        // wide presentation features) on every glyph in the cluster.
+        // Coverage misses pass through unchanged so a font without a
+        // given lookup degrades gracefully (the round-10 behaviour).
+        //
+        // The reph pass may have removed halant glyphs from `out`; the
+        // `dropped_halants` Vec tells us which post-reorder character
+        // indices are now absent so we can shift cluster span ends
+        // accordingly. (Reph removal touches the END of a cluster's
+        // first 3 chars, never its boundary, so the START index is
+        // always still valid.)
+        let adjusted_spans = adjust_cluster_spans(&cluster_spans, &dropped_halants, &shaped_chars);
+        let out = self.apply_cluster_position_substitutions(out, &adjusted_spans, &shaped_chars)?;
         Ok(out)
     }
 
@@ -276,17 +293,23 @@ impl FaceChain {
     /// to the RA glyph and drop the halant glyph if a substitute is
     /// returned. Marks for which no `rphf` lookup applies pass through
     /// unchanged.
+    ///
+    /// Returns the rewritten glyph list AND a list of the post-reorder
+    /// character indices whose corresponding halant glyph was removed
+    /// from the run. The cluster-position GSUB pass downstream uses
+    /// this to shift cluster span end indices.
     fn apply_reph_substitutions(
         &self,
         glyphs: Vec<(u16, u16)>,
         marks: &[RephMark],
-    ) -> Result<Vec<(u16, u16)>, Error> {
+    ) -> Result<RephSubstResult, Error> {
         if marks.is_empty() {
-            return Ok(glyphs);
+            return Ok((glyphs, Vec::new()));
         }
         // Process marks back-to-front so earlier RA / halant indices
         // stay stable while we splice out the halant slots.
         let mut out = glyphs;
+        let mut dropped: Vec<usize> = Vec::new();
         for mark in marks.iter().rev() {
             // Bounds + face-coverage sanity. The reph mark records the
             // RA's index into the post-reorder character stream which
@@ -342,12 +365,166 @@ impl FaceChain {
                 // collapsed cluster.
                 if mark.halant_idx < out.len() {
                     out.remove(mark.halant_idx);
+                    dropped.push(mark.halant_idx);
+                }
+            }
+        }
+        Ok((out, dropped))
+    }
+
+    /// Round-11 cluster-position-aware GSUB pass. For every Indic
+    /// cluster span, dispatch the position-driven GSUB features:
+    ///
+    /// - **`half`** — applied to a base consonant immediately followed
+    ///   by a halant when the cluster has more characters after the
+    ///   halant (i.e. the consonant is in the *non-final* slot of a
+    ///   conjunct — its inherent vowel is suppressed and a "half form"
+    ///   glyph is the canonical shape).
+    /// - **`pref` / `blwf` / `abvf` / `pstf`** — applied to a consonant
+    ///   that follows a halant. The Telugu/Kannada/Malayalam family
+    ///   distinguishes the position by glyph; we try `pref` first,
+    ///   then `blwf`, `abvf`, `pstf` in that order. The first lookup
+    ///   that returns a substitute wins. (Coverage misses pass through
+    ///   unchanged — the ordering picks the position the font has a
+    ///   form for.)
+    /// - **`pres` / `psts` / `abvs` / `blws`** — presentation-pass
+    ///   single substitutions; applied to every glyph in the cluster
+    ///   (each glyph independently — coverage misses pass through).
+    ///
+    /// Faces without any of the above lookups for the cluster's script
+    /// degrade to the round-10 behaviour (just `rphf`).
+    fn apply_cluster_position_substitutions(
+        &self,
+        glyphs: Vec<(u16, u16)>,
+        spans: &[ClusterSpan],
+        chars: &[char],
+    ) -> Result<Vec<(u16, u16)>, Error> {
+        if spans.is_empty() {
+            return Ok(glyphs);
+        }
+        let mut out = glyphs;
+        for span in spans {
+            // Bound the span to the current `out` length — reph drops
+            // may have shifted the end down; downstream
+            // `adjust_cluster_spans` clamps but be defensive.
+            let end = span.end.min(out.len());
+            if span.start >= end {
+                continue;
+            }
+            // Resolve the script's GSUB script tag pair.
+            let (modern, legacy) = match script_indic_tags(span.script) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Per-position substitution for halant-suffixed conjunct
+            // components. Walk the cluster's chars (post-reorder) and
+            // identify (a) base + halant pairs (`half`) and (b)
+            // post-halant consonants (`pref` / `blwf` / `abvf` /
+            // `pstf`). The chars vec is bounded by the pre-reph
+            // cluster's char positions; reph drops shift the END down
+            // by 1 per drop but not the START — clamp to chars.len().
+            let chars_end = span.end.min(chars.len());
+            let cat_of =
+                |i: usize| -> IndicCategory { indic_category_for_script(span.script, chars[i]) };
+            let mut pos = span.start;
+            while pos < chars_end {
+                let here = cat_of(pos);
+                if here == IndicCategory::Consonant && pos + 1 < chars_end {
+                    let next = cat_of(pos + 1);
+                    if next == IndicCategory::Halant {
+                        let glyph_idx = pos.min(out.len().saturating_sub(1));
+                        let after_halant = pos + 2;
+                        // `half` form fires when there's anything after
+                        // the halant in the cluster.
+                        if after_halant < chars_end && glyph_idx < out.len() {
+                            self.try_apply_single_subst(
+                                &mut out, glyph_idx, modern, legacy, b"half",
+                            )?;
+                        }
+                        // The post-halant consonant (if any) gets the
+                        // pref / blwf / abvf / pstf cascade. We pick
+                        // the first feature whose lookup covers the
+                        // gid — the font's form-position table dictates
+                        // which one wins.
+                        if after_halant < chars_end
+                            && cat_of(after_halant) == IndicCategory::Consonant
+                            && after_halant < out.len()
+                        {
+                            for tag in [b"pref", b"blwf", b"abvf", b"pstf"] {
+                                if self.try_apply_single_subst(
+                                    &mut out,
+                                    after_halant,
+                                    modern,
+                                    legacy,
+                                    tag,
+                                )? {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                pos += 1;
+            }
+            // Presentation-pass single substitutions over every glyph
+            // in the cluster.
+            for tag in [b"pres", b"psts", b"abvs", b"blws"] {
+                for idx in span.start..end {
+                    if idx < out.len() {
+                        self.try_apply_single_subst(&mut out, idx, modern, legacy, tag)?;
+                    }
                 }
             }
         }
         Ok(out)
     }
+
+    /// Attempt to apply a feature-tagged single substitution
+    /// (LookupType 1) to `out[glyph_idx]`. Walks the modern Indic2 tag
+    /// first then the legacy v1 tag; returns `Ok(true)` when a
+    /// substitution was applied, `Ok(false)` otherwise. Glyphs whose
+    /// owning face publishes no matching feature pass through silently.
+    fn try_apply_single_subst(
+        &self,
+        out: &mut [(u16, u16)],
+        glyph_idx: usize,
+        modern: [u8; 4],
+        legacy: [u8; 4],
+        feature_tag: &[u8; 4],
+    ) -> Result<bool, Error> {
+        let (face_idx, gid) = out[glyph_idx];
+        if gid == 0 {
+            return Ok(false);
+        }
+        let face = &self.faces[face_idx as usize];
+        let new_gid = face.with_font(|font| {
+            for tag in [modern, legacy] {
+                let features = font.gsub_features_for_script(tag, None);
+                for feat in features {
+                    if &feat.tag == feature_tag {
+                        for &lookup_idx in &feat.lookup_indices {
+                            if let Some(g) = font.gsub_apply_lookup_type_1(lookup_idx, gid) {
+                                return Some(g);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        })?;
+        if let Some(g) = new_gid {
+            out[glyph_idx] = (face_idx, g);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
+
+/// Return type of [`FaceChain::apply_reph_substitutions`]: the
+/// rewritten `(face_idx, glyph_id)` list plus the post-reorder
+/// character indices whose halant glyph was removed.
+type RephSubstResult = (Vec<(u16, u16)>, Vec<usize>);
 
 /// Sidecar info recorded by [`apply_indic_reorder`] for every cluster
 /// whose `ClusterFlags::has_reph` was set. Carries the indices into
@@ -370,26 +547,48 @@ struct RephMark {
     script: Script,
 }
 
+/// Per-cluster span recorded by [`apply_indic_reorder`] so the post-cmap
+/// cluster-position-aware GSUB pass knows which glyphs belong to which
+/// Indic cluster + what script they came from.
+///
+/// Consumed by [`FaceChain::apply_cluster_position_substitutions`] (round
+/// 11) which dispatches `half` / `pref` / `blwf` / `abvf` / `pstf` for
+/// halant-suffixed conjunct components, and `pres` / `psts` / `abvs` /
+/// `blws` as presentation-pass single substitutions for every glyph in
+/// the cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClusterSpan {
+    /// Inclusive start index in the post-reorder character stream
+    /// (matches the assigned-glyphs list 1:1).
+    start: usize,
+    /// Exclusive end index in the post-reorder character stream.
+    end: usize,
+    /// Script the cluster originated from. Drives the OpenType script
+    /// tag pair (`dev2` / `deva` etc.) for the GSUB lookup.
+    script: Script,
+}
+
 /// Pre-cmap Indic shaping pass: walk `chars`, find contiguous runs of
-/// Indic codepoints (Devanagari / Bengali / Tamil), segment each run
+/// Indic codepoints (any script we have rules for), segment each run
 /// into orthographic clusters, and apply per-script
 /// [`reorder_cluster_with`] to each (pre-base matra reorder + reph
 /// flagging). Non-Indic characters pass through untouched.
 ///
 /// Returns the reordered char stream plus a list of [`RephMark`]
-/// sidecar entries — one per cluster whose `ClusterFlags::has_reph`
-/// was set. The marks are then consumed by
-/// [`FaceChain::apply_reph_substitutions`] which wires the actual
-/// `rphf` GSUB substitution after cmap.
+/// sidecar entries (one per cluster with `ClusterFlags::has_reph`)
+/// PLUS a list of [`ClusterSpan`] entries (one per Indic cluster) so
+/// the cluster-position-aware GSUB pass downstream can dispatch
+/// per-position lookups.
 ///
-/// Indices in the returned [`RephMark`]s are into the returned
-/// character stream (the post-reorder one).
-fn apply_indic_reorder(chars: &[char]) -> (Vec<char>, Vec<RephMark>) {
+/// Indices in the returned [`RephMark`]s and [`ClusterSpan`]s are into
+/// the returned character stream (the post-reorder one).
+fn apply_indic_reorder(chars: &[char]) -> (Vec<char>, Vec<RephMark>, Vec<ClusterSpan>) {
     if chars.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let mut out: Vec<char> = Vec::with_capacity(chars.len());
     let mut reph_marks: Vec<RephMark> = Vec::new();
+    let mut spans: Vec<ClusterSpan> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         // Walk a maximal Indic-of-one-script run starting at `i`.
@@ -413,6 +612,7 @@ fn apply_indic_reorder(chars: &[char]) -> (Vec<char>, Vec<RephMark>) {
         for (s, e) in bounds {
             let cluster = &run[s..e];
             let (reordered, flags) = reorder_cluster_with(cluster, rules);
+            let cluster_start = out.len();
             // Record the reph mark BEFORE we extend `out` with the
             // reordered cluster — `out.len()` at this point is the
             // index of the RA glyph in the post-reorder stream.
@@ -431,7 +631,7 @@ fn apply_indic_reorder(chars: &[char]) -> (Vec<char>, Vec<RephMark>) {
                 // reorder, the RA + halant sit at positions 1 + 2
                 // (after the matra at position 0).
                 let ra_offset = if flags.pre_base_reordered { 1 } else { 0 };
-                let ra_idx = out.len() + ra_offset;
+                let ra_idx = cluster_start + ra_offset;
                 let halant_idx = ra_idx + 1;
                 reph_marks.push(RephMark {
                     ra_idx,
@@ -440,9 +640,72 @@ fn apply_indic_reorder(chars: &[char]) -> (Vec<char>, Vec<RephMark>) {
                 });
             }
             out.extend_from_slice(&reordered);
+            // Record the cluster span (inclusive..exclusive) for the
+            // cluster-position-aware GSUB pass downstream.
+            spans.push(ClusterSpan {
+                start: cluster_start,
+                end: out.len(),
+                script: run_script,
+            });
         }
     }
-    (out, reph_marks)
+    (out, reph_marks, spans)
+}
+
+/// Shift a list of [`ClusterSpan`]s after the reph pass dropped some
+/// halant glyphs. Reph drop occurs at index `halant_idx` in the
+/// post-reorder stream which corresponds to the SECOND character of a
+/// reph cluster (positions 1 / 2 of the cluster, depending on whether a
+/// pre-base matra reordered). The drop:
+/// - shifts the END index of the affected span down by 1 (one fewer
+///   glyph in this cluster);
+/// - shifts the START + END indices of every subsequent span down by 1.
+///
+/// The cluster char positions in the chars vec are unchanged — only
+/// the GLYPH indices in `out` shift. We track this by computing per-
+/// span how many drops happened at-or-before its start (shift_start)
+/// and at-or-before its end-1 (shift_end).
+fn adjust_cluster_spans(
+    spans: &[ClusterSpan],
+    dropped: &[usize],
+    chars: &[char],
+) -> Vec<ClusterSpan> {
+    if dropped.is_empty() {
+        return spans.to_vec();
+    }
+    // Count drops strictly before `idx`.
+    let drops_before = |idx: usize| -> usize { dropped.iter().filter(|&&d| d < idx).count() };
+    spans
+        .iter()
+        .map(|s| {
+            let new_start = s.start.saturating_sub(drops_before(s.start));
+            let new_end = s.end.saturating_sub(drops_before(s.end));
+            ClusterSpan {
+                start: new_start.min(chars.len()),
+                end: new_end.min(chars.len()),
+                script: s.script,
+            }
+        })
+        .collect()
+}
+
+/// Look up a script-specific [`IndicCategory`] for `ch`. Used by the
+/// cluster-position GSUB pass to identify halant chains within a
+/// cluster span. Returns [`IndicCategory::Other`] for non-Indic scripts.
+fn indic_category_for_script(script: Script, ch: char) -> IndicCategory {
+    use crate::shaping::indic;
+    match script {
+        Script::Devanagari => indic::devanagari_category(ch),
+        Script::Bengali => indic::bengali_category(ch),
+        Script::Tamil => indic::tamil_category(ch),
+        Script::Gurmukhi => indic::gurmukhi_category(ch),
+        Script::Gujarati => indic::gujarati_category(ch),
+        Script::Telugu => indic::telugu_category(ch),
+        Script::Kannada => indic::kannada_category(ch),
+        Script::Malayalam => indic::malayalam_category(ch),
+        Script::Oriya => indic::oriya_category(ch),
+        _ => IndicCategory::Other,
+    }
 }
 
 /// Map a [`Script`] to its Indic [`ReorderRules`], if any. Used by
@@ -452,6 +715,12 @@ fn indic_rules_for_script(script: Script) -> Option<&'static ReorderRules> {
         Script::Devanagari => Some(&DEVANAGARI_RULES),
         Script::Bengali => Some(&BENGALI_RULES),
         Script::Tamil => Some(&TAMIL_RULES),
+        Script::Gurmukhi => Some(&GURMUKHI_RULES),
+        Script::Gujarati => Some(&GUJARATI_RULES),
+        Script::Telugu => Some(&TELUGU_RULES),
+        Script::Kannada => Some(&KANNADA_RULES),
+        Script::Malayalam => Some(&MALAYALAM_RULES),
+        Script::Oriya => Some(&ORIYA_RULES),
         _ => None,
     }
 }
@@ -498,7 +767,7 @@ fn apply_arabic_joining(chars: &[char]) -> Vec<char> {
 #[cfg(test)]
 #[allow(non_snake_case)] // tests reference Unicode codepoint literals + algorithm shorthands
 mod tests {
-    use super::{apply_arabic_joining, apply_indic_reorder};
+    use super::{apply_arabic_joining, apply_indic_reorder, ClusterSpan};
     use crate::shaping::arabic::Script;
 
     #[test]
@@ -511,17 +780,24 @@ mod tests {
     fn devanagari_pre_base_matra_moves_to_front_of_cluster() {
         // "कि" = KA + sign-i → sign-i + KA after Devanagari reorder.
         let chars = vec!['\u{0915}', '\u{093F}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, spans) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{093F}', '\u{0915}']);
         assert!(marks.is_empty(), "no reph in this cluster");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 2);
+        assert_eq!(spans[0].script, Script::Devanagari);
     }
 
     #[test]
     fn devanagari_two_clusters_each_reorder_independently() {
         // "किकि" → two clusters; each reorders its matra to the front.
         let chars = vec!['\u{0915}', '\u{093F}', '\u{0915}', '\u{093F}'];
-        let (out, _) = apply_indic_reorder(&chars);
+        let (out, _, spans) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{093F}', '\u{0915}', '\u{093F}', '\u{0915}']);
+        assert_eq!(spans.len(), 2);
+        assert_eq!((spans[0].start, spans[0].end), (0, 2));
+        assert_eq!((spans[1].start, spans[1].end), (2, 4));
     }
 
     #[test]
@@ -529,7 +805,7 @@ mod tests {
         // "क्षि" = KA + halant + SSA + sign-i. Conjunct stays in
         // logical order; matra moves to front.
         let chars = vec!['\u{0915}', '\u{094D}', '\u{0937}', '\u{093F}'];
-        let (out, _) = apply_indic_reorder(&chars);
+        let (out, _, _) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{093F}', '\u{0915}', '\u{094D}', '\u{0937}']);
     }
 
@@ -537,17 +813,22 @@ mod tests {
     fn ascii_passes_through_indic_reorder_unchanged() {
         // Sanity: non-Indic input must not be touched.
         let chars: Vec<char> = "Hello".chars().collect();
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, spans) = apply_indic_reorder(&chars);
         assert_eq!(out, chars);
         assert!(marks.is_empty());
+        // Non-Indic chars produce no cluster spans.
+        assert!(spans.is_empty());
     }
 
     #[test]
     fn mixed_latin_and_devanagari_reorders_only_devanagari_clusters() {
         // "Aकि" → Latin A passes through; Devanagari cluster reorders.
         let chars = vec!['A', '\u{0915}', '\u{093F}'];
-        let (out, _) = apply_indic_reorder(&chars);
+        let (out, _, spans) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['A', '\u{093F}', '\u{0915}']);
+        // Only the Devanagari cluster gets a span.
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (1, 3));
     }
 
     #[test]
@@ -555,7 +836,7 @@ mod tests {
         // RA + halant + KA → reph cluster. The mark records ra_idx=0
         // and halant_idx=1 (no pre-base matra reorder shifted them).
         let chars = vec!['\u{0930}', '\u{094D}', '\u{0915}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, _) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{0930}', '\u{094D}', '\u{0915}']);
         assert_eq!(marks.len(), 1);
         assert_eq!(marks[0].ra_idx, 0);
@@ -568,7 +849,7 @@ mod tests {
         // RA + halant + KA + sign-i — matra moves to position 0; RA
         // is now at position 1, halant at 2.
         let chars = vec!['\u{0930}', '\u{094D}', '\u{0915}', '\u{093F}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, _) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{093F}', '\u{0930}', '\u{094D}', '\u{0915}']);
         assert_eq!(marks.len(), 1);
         assert_eq!(marks[0].ra_idx, 1);
@@ -579,16 +860,18 @@ mod tests {
     fn bengali_pre_base_matra_e_moves_to_front_of_cluster() {
         // BENGALI KA + sign-e → sign-e + KA.
         let chars = vec!['\u{0995}', '\u{09C7}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, spans) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{09C7}', '\u{0995}']);
         assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Bengali);
     }
 
     #[test]
     fn bengali_reph_emits_reph_mark_with_bengali_script_tag() {
         // BENGALI RA + halant + KA → reph cluster.
         let chars = vec!['\u{09B0}', '\u{09CD}', '\u{0995}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, _) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{09B0}', '\u{09CD}', '\u{0995}']);
         assert_eq!(marks.len(), 1);
         assert_eq!(marks[0].script, Script::Bengali);
@@ -598,7 +881,7 @@ mod tests {
     fn tamil_pre_base_matra_e_moves_to_front_of_cluster() {
         // TAMIL KA + sign-e → sign-e + KA.
         let chars = vec!['\u{0B95}', '\u{0BC6}'];
-        let (out, marks) = apply_indic_reorder(&chars);
+        let (out, marks, _) = apply_indic_reorder(&chars);
         assert_eq!(out, vec!['\u{0BC6}', '\u{0B95}']);
         assert!(marks.is_empty());
     }
@@ -607,7 +890,7 @@ mod tests {
     fn tamil_RA_plus_halant_does_NOT_emit_reph_mark() {
         // TAMIL RA + pulli + KA — Tamil never forms a reph.
         let chars = vec!['\u{0BB0}', '\u{0BCD}', '\u{0B95}'];
-        let (_out, marks) = apply_indic_reorder(&chars);
+        let (_out, marks, _) = apply_indic_reorder(&chars);
         assert!(marks.is_empty(), "Tamil never sets the reph flag");
     }
 
@@ -615,10 +898,108 @@ mod tests {
     fn mixed_devanagari_and_bengali_runs_segment_independently() {
         // Devanagari KA + sign-i + Bengali KA + sign-i.
         let chars = vec!['\u{0915}', '\u{093F}', '\u{0995}', '\u{09BF}'];
-        let (out, _) = apply_indic_reorder(&chars);
+        let (out, _, spans) = apply_indic_reorder(&chars);
         // Each script's pre-base matra moves to the front of its OWN
         // cluster (cluster boundary at the script switch).
         assert_eq!(out, vec!['\u{093F}', '\u{0915}', '\u{09BF}', '\u{0995}']);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Devanagari);
+        assert_eq!(spans[1].script, Script::Bengali);
+    }
+
+    // ---------- Round 11 — new scripts ----------
+
+    #[test]
+    fn gurmukhi_cluster_reorder_emits_span_with_gurmukhi_script() {
+        // KA + sign-i — pre-base matra reorders.
+        let chars = vec!['\u{0A15}', '\u{0A3F}'];
+        let (out, _, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{0A3F}', '\u{0A15}']);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Gurmukhi);
+    }
+
+    #[test]
+    fn gujarati_cluster_reorder_emits_span_with_gujarati_script() {
+        // KA + sign-i.
+        let chars = vec!['\u{0A95}', '\u{0ABF}'];
+        let (out, _, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{0ABF}', '\u{0A95}']);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Gujarati);
+    }
+
+    #[test]
+    fn telugu_pre_base_matra_e_reorders_with_telugu_span() {
+        // KA + sign-e (pre-base) — reorder.
+        let chars = vec!['\u{0C15}', '\u{0C46}'];
+        let (out, _, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{0C46}', '\u{0C15}']);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Telugu);
+    }
+
+    #[test]
+    fn kannada_reph_emits_reph_mark_with_kannada_script_tag() {
+        let chars = vec!['\u{0CB0}', '\u{0CCD}', '\u{0C95}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].script, Script::Kannada);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Kannada);
+    }
+
+    #[test]
+    fn malayalam_RA_plus_halant_does_NOT_emit_reph_mark() {
+        // Modern Malayalam — chillu replaces reph.
+        let chars = vec!['\u{0D30}', '\u{0D4D}', '\u{0D15}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Malayalam);
+    }
+
+    #[test]
+    fn oriya_pre_base_matra_e_reorders_with_oriya_span() {
+        let chars = vec!['\u{0B15}', '\u{0B47}'];
+        let (out, _, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{0B47}', '\u{0B15}']);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Oriya);
+    }
+
+    #[test]
+    fn malayalam_chillu_starts_new_cluster_from_following_consonant() {
+        // Chillu U+0D7A + KA U+0D15 — chillu is a Consonant, the next
+        // consonant starts a new cluster.
+        let chars = vec!['\u{0D7A}', '\u{0D15}'];
+        let (_out, _marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn adjust_cluster_spans_shifts_subsequent_spans_after_drop() {
+        use super::adjust_cluster_spans;
+        let chars = vec!['a'; 10];
+        let spans = vec![
+            ClusterSpan {
+                start: 0,
+                end: 3,
+                script: Script::Devanagari,
+            },
+            ClusterSpan {
+                start: 3,
+                end: 6,
+                script: Script::Devanagari,
+            },
+        ];
+        // Pretend reph dropped the halant at index 1 (in cluster 0).
+        let dropped = vec![1usize];
+        let adjusted = adjust_cluster_spans(&spans, &dropped, &chars);
+        // Cluster 0 shrinks by 1 at the end.
+        assert_eq!((adjusted[0].start, adjusted[0].end), (0, 2));
+        // Cluster 1 shifts both start and end down by 1.
+        assert_eq!((adjusted[1].start, adjusted[1].end), (2, 5));
     }
 
     #[test]

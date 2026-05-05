@@ -27,14 +27,28 @@
 //! Round 8 covered Devanagari pre-base matra reorder + reph
 //! identification (without `rphf` GSUB substitution).
 //!
-//! Round 10 (this round):
-//! - Adds Bengali + Tamil as two more scripts under the same shape.
-//! - Wires the `rphf` GSUB feature to the reph identification: when a
+//! Round 10 (previous round):
+//! - Added Bengali + Tamil as two more scripts under the same shape.
+//! - Wired the `rphf` GSUB feature to the reph identification: when a
 //!   cluster has [`ClusterFlags::has_reph`] AND the active face publishes
 //!   a `rphf` lookup for the script, the leading RA glyph is rewritten
 //!   to its reph form via [`oxideav_ttf::Font::gsub_apply_lookup_type_1`]
 //!   and the halant is dropped. See [`crate::face_chain`] for the
 //!   wiring.
+//!
+//! Round 11 (this round):
+//! - Adds six more Indic scripts: Gurmukhi, Gujarati, Telugu, Kannada,
+//!   Malayalam, Oriya — each via a per-script categorisation table +
+//!   `*_RULES` constant + `*_feature_tags()` function.
+//! - Adds cluster-position-aware GSUB feature wiring on top of the
+//!   round-10 `rphf` pattern. For every halant-suffixed consonant in a
+//!   cluster we apply the appropriate per-position lookup — `half` for
+//!   non-final consonants, `pref` / `blwf` / `abvf` / `pstf` for the
+//!   pre-base / below-base / above-base / post-base components of
+//!   split-vowel matras and Telugu/Kannada/Malayalam-style conjuncts.
+//!   The presentation-pass features `pres` / `psts` / `abvs` / `blws`
+//!   are then applied to every glyph in the cluster (single
+//!   substitution); coverage misses pass through unchanged.
 //!
 //! ## References
 //!
@@ -339,6 +353,325 @@ pub fn tamil_category(ch: char) -> IndicCategory {
     }
 }
 
+/// Look up the Indic category for `ch` within the Gurmukhi block
+/// (U+0A00..U+0A7F). Punjabi.
+///
+/// Gurmukhi shares Devanagari's halant-driven shape (halant U+0A4D
+/// glues consonants into conjuncts) but reph is rare in modern usage —
+/// fonts that ship a `rphf` lookup substitute for RA + halant; fonts
+/// that don't fall back to in-line RA rendering. The cluster machine
+/// flags reph regardless and lets the GSUB pass decide.
+pub fn gurmukhi_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0A00 || cp > 0x0A7F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks (anusvara / candrabindu / visarga / udaat).
+        0x0A01..=0x0A03 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0A05..=0x0A0A => IndicCategory::Vowel,
+        0x0A0F..=0x0A10 => IndicCategory::Vowel,
+        0x0A13..=0x0A14 => IndicCategory::Vowel,
+        // Consonants KA..HA (with the standard Gurmukhi gaps).
+        0x0A15..=0x0A28 => IndicCategory::Consonant,
+        0x0A2A..=0x0A30 => IndicCategory::Consonant,
+        0x0A32..=0x0A33 => IndicCategory::Consonant,
+        0x0A35..=0x0A36 => IndicCategory::Consonant,
+        0x0A38..=0x0A39 => IndicCategory::Consonant,
+        // Nukta — combining dot below.
+        0x0A3C => IndicCategory::Nukta,
+        // Vowel sign AA — post-base.
+        0x0A3E => IndicCategory::Matra,
+        // Pre-base matra "i".
+        0x0A3F => IndicCategory::PreBaseMatra,
+        // Vowel signs II / U / UU — post-base / below-base.
+        0x0A40..=0x0A42 => IndicCategory::Matra,
+        // Vowel signs E / AI / O / AU — above-base / post-base.
+        0x0A47..=0x0A48 => IndicCategory::Matra,
+        0x0A4B..=0x0A4C => IndicCategory::Matra,
+        // Halant / virama.
+        0x0A4D => IndicCategory::Halant,
+        // U+0A51 UDAAT — bindu-like.
+        0x0A51 => IndicCategory::Bindu,
+        // Additional consonants (KHHA, GHHA, ZA, RRA, etc.).
+        0x0A59..=0x0A5C => IndicCategory::Consonant,
+        0x0A5E => IndicCategory::Consonant,
+        // Digits + symbols.
+        0x0A66..=0x0A6F => IndicCategory::Symbol,
+        0x0A70..=0x0A71 => IndicCategory::Bindu,
+        // Iri / Ura / Yakash — modifier letters/consonants in some fonts.
+        0x0A72..=0x0A74 => IndicCategory::Consonant,
+        0x0A75 => IndicCategory::Bindu,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Gujarati block
+/// (U+0A80..U+0AFF). Closest in shape to Devanagari.
+pub fn gujarati_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0A80 || cp > 0x0AFF {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks.
+        0x0A81..=0x0A83 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0A85..=0x0A8D => IndicCategory::Vowel,
+        0x0A8F..=0x0A91 => IndicCategory::Vowel,
+        0x0A93..=0x0A94 => IndicCategory::Vowel,
+        // Consonants KA..HA.
+        0x0A95..=0x0AA8 => IndicCategory::Consonant,
+        0x0AAA..=0x0AB0 => IndicCategory::Consonant,
+        0x0AB2..=0x0AB3 => IndicCategory::Consonant,
+        0x0AB5..=0x0AB9 => IndicCategory::Consonant,
+        // Nukta.
+        0x0ABC => IndicCategory::Nukta,
+        // Avagraha — symbol.
+        0x0ABD => IndicCategory::Symbol,
+        // Vowel sign AA — post-base.
+        0x0ABE => IndicCategory::Matra,
+        // Pre-base matra "i".
+        0x0ABF => IndicCategory::PreBaseMatra,
+        // Other matras (II / U / UU / R / RR / E / AI / O / AU).
+        0x0AC0..=0x0AC5 => IndicCategory::Matra,
+        0x0AC7..=0x0AC9 => IndicCategory::Matra,
+        0x0ACB..=0x0ACC => IndicCategory::Matra,
+        // Halant / virama.
+        0x0ACD => IndicCategory::Halant,
+        // OM symbol.
+        0x0AD0 => IndicCategory::Consonant,
+        // Vocalic R / L (independent vowels).
+        0x0AE0..=0x0AE1 => IndicCategory::Vowel,
+        // Vowel signs vocalic L (matras).
+        0x0AE2..=0x0AE3 => IndicCategory::Matra,
+        // Digits + Gujarati symbols.
+        0x0AE6..=0x0AEF => IndicCategory::Symbol,
+        0x0AF0..=0x0AFF => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Telugu block
+/// (U+0C00..U+0C7F).
+///
+/// Telugu split vowels (e.g. U+0C46 + U+0C56) decompose a precomposed
+/// matra into a pre-base + post-base pair under NFD. We classify the
+/// pre-base components U+0C46 / U+0C47 / U+0C48 as `PreBaseMatra` so the
+/// reorderer moves them to the front of the cluster.
+pub fn telugu_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0C00 || cp > 0x0C7F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks (combining candrabindu / anusvara / visarga).
+        0x0C00..=0x0C04 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0C05..=0x0C0C => IndicCategory::Vowel,
+        0x0C0E..=0x0C10 => IndicCategory::Vowel,
+        0x0C12..=0x0C14 => IndicCategory::Vowel,
+        // Consonants KA..HA.
+        0x0C15..=0x0C28 => IndicCategory::Consonant,
+        0x0C2A..=0x0C39 => IndicCategory::Consonant,
+        // U+0C3C TELUGU SIGN NUKTA (added in Unicode 16; included for
+        // forward compatibility — fonts without it cmap-miss safely).
+        0x0C3C => IndicCategory::Nukta,
+        // Avagraha — symbol.
+        0x0C3D => IndicCategory::Symbol,
+        // Post-base matras AA / I / II / U / UU / R / RR.
+        0x0C3E..=0x0C44 => IndicCategory::Matra,
+        // Pre-base matras E / EE / AI.
+        0x0C46..=0x0C48 => IndicCategory::PreBaseMatra,
+        // Post-base matras O / OO / AU (precomposed).
+        0x0C4A..=0x0C4C => IndicCategory::Matra,
+        // Halant / virama.
+        0x0C4D => IndicCategory::Halant,
+        // U+0C55 / U+0C56 — length marks (post-base / above).
+        0x0C55..=0x0C56 => IndicCategory::Matra,
+        // Vocalic L / LL (independent vowels).
+        0x0C58..=0x0C5A => IndicCategory::Consonant,
+        // Vocalic R / L matras.
+        0x0C60..=0x0C61 => IndicCategory::Vowel,
+        0x0C62..=0x0C63 => IndicCategory::Matra,
+        // Digits + Telugu fractions/symbols.
+        0x0C66..=0x0C6F => IndicCategory::Symbol,
+        0x0C77..=0x0C7F => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Kannada block
+/// (U+0C80..U+0CFF). Similar shape to Telugu but distinct codepoints +
+/// own halant U+0CCD.
+pub fn kannada_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0C80 || cp > 0x0CFF {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks.
+        0x0C80..=0x0C83 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0C85..=0x0C8C => IndicCategory::Vowel,
+        0x0C8E..=0x0C90 => IndicCategory::Vowel,
+        0x0C92..=0x0C94 => IndicCategory::Vowel,
+        // Consonants KA..HA.
+        0x0C95..=0x0CA8 => IndicCategory::Consonant,
+        0x0CAA..=0x0CB3 => IndicCategory::Consonant,
+        0x0CB5..=0x0CB9 => IndicCategory::Consonant,
+        // Nukta.
+        0x0CBC => IndicCategory::Nukta,
+        // Avagraha — symbol.
+        0x0CBD => IndicCategory::Symbol,
+        // Vowel sign AA — post-base.
+        0x0CBE => IndicCategory::Matra,
+        // Pre-base matra "i".
+        0x0CBF => IndicCategory::PreBaseMatra,
+        // Vowel signs II / U / UU / R / RR — post-base/right.
+        0x0CC0..=0x0CC4 => IndicCategory::Matra,
+        // Pre-base matras E / EE / AI.
+        0x0CC6..=0x0CC8 => IndicCategory::PreBaseMatra,
+        // Vowel signs O / OO / AU — post-base.
+        0x0CCA..=0x0CCC => IndicCategory::Matra,
+        // Halant / virama.
+        0x0CCD => IndicCategory::Halant,
+        // Length marks (post-base).
+        0x0CD5..=0x0CD6 => IndicCategory::Matra,
+        // U+0CDD / U+0CDE — additional consonants.
+        0x0CDD..=0x0CDE => IndicCategory::Consonant,
+        // Vocalic R / L (independent vowels).
+        0x0CE0..=0x0CE1 => IndicCategory::Vowel,
+        // Vowel signs vocalic L (matras).
+        0x0CE2..=0x0CE3 => IndicCategory::Matra,
+        // Digits + Kannada signs.
+        0x0CE6..=0x0CEF => IndicCategory::Symbol,
+        0x0CF1..=0x0CFF => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Malayalam block
+/// (U+0D00..U+0D7F).
+///
+/// Malayalam orthography uses chillu (half-form) characters
+/// U+0D7A..U+0D7F as NFC-stable independent codepoints — they replace
+/// the historic reph rendering. We classify them as `Consonant` so the
+/// cluster machine treats them as bases that can start a new cluster.
+pub fn malayalam_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0D00 || cp > 0x0D7F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks.
+        0x0D00..=0x0D03 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0D05..=0x0D0C => IndicCategory::Vowel,
+        0x0D0E..=0x0D10 => IndicCategory::Vowel,
+        0x0D12..=0x0D14 => IndicCategory::Vowel,
+        // Consonants KA..HA + extended (LLLA, ZHA, etc.).
+        0x0D15..=0x0D3A => IndicCategory::Consonant,
+        // Nukta — combining dot below (Unicode 14+).
+        0x0D3B..=0x0D3C => IndicCategory::Nukta,
+        // Avagraha — symbol.
+        0x0D3D => IndicCategory::Symbol,
+        // Vowel sign AA — post-base.
+        0x0D3E => IndicCategory::Matra,
+        // Vowel signs I / II / U / UU / R / RR — post-base.
+        0x0D3F..=0x0D44 => IndicCategory::Matra,
+        // Pre-base matras E / EE / AI.
+        0x0D46..=0x0D48 => IndicCategory::PreBaseMatra,
+        // Vowel signs O / OO / AU — pre+post canonical decomposition;
+        // we classify them as post-base (visually the cluster machine
+        // sees the canonical form when callers feed NFC-normalised
+        // text).
+        0x0D4A..=0x0D4C => IndicCategory::Matra,
+        // Halant / virama.
+        0x0D4D => IndicCategory::Halant,
+        // U+0D4E DOT REPH — pre-base mark (used in Malayalam to
+        // indicate a reph-like form). Classified as a matra so it stays
+        // attached to its cluster but doesn't trigger reorder.
+        0x0D4E => IndicCategory::Matra,
+        // Length mark (post-base).
+        0x0D57 => IndicCategory::Matra,
+        // Fraction / numerator signs (treated as cluster-breaking).
+        0x0D58..=0x0D5F => IndicCategory::Symbol,
+        // Vocalic R / L (independent vowels).
+        0x0D60..=0x0D61 => IndicCategory::Vowel,
+        // Vowel signs vocalic L (matras).
+        0x0D62..=0x0D63 => IndicCategory::Matra,
+        // Digits + Malayalam fractions.
+        0x0D66..=0x0D6F => IndicCategory::Symbol,
+        0x0D70..=0x0D79 => IndicCategory::Symbol,
+        // Chillu characters (independent half-forms) — consonants in
+        // their own right.
+        0x0D7A..=0x0D7F => IndicCategory::Consonant,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Oriya / Odia block
+/// (U+0B00..U+0B7F).
+///
+/// Oriya is unusual in that the precomposed o / au matras
+/// (U+0B4B / U+0B4C) themselves carry pre-base components after
+/// canonical decomposition. The cluster machine flags U+0B47 / U+0B48 /
+/// U+0B4B / U+0B4C as pre-base matras to keep the visual ordering
+/// correct without depending on the upstream NFC normaliser.
+pub fn oriya_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0B00 || cp > 0x0B7F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Bindu marks (candrabindu / anusvara / visarga).
+        0x0B01..=0x0B03 => IndicCategory::Bindu,
+        // Independent vowels.
+        0x0B05..=0x0B0C => IndicCategory::Vowel,
+        0x0B0F..=0x0B10 => IndicCategory::Vowel,
+        0x0B13..=0x0B14 => IndicCategory::Vowel,
+        // Consonants KA..HA.
+        0x0B15..=0x0B28 => IndicCategory::Consonant,
+        0x0B2A..=0x0B30 => IndicCategory::Consonant,
+        0x0B32..=0x0B33 => IndicCategory::Consonant,
+        0x0B35..=0x0B39 => IndicCategory::Consonant,
+        // Nukta.
+        0x0B3C => IndicCategory::Nukta,
+        // Avagraha — symbol.
+        0x0B3D => IndicCategory::Symbol,
+        // Vowel sign AA — post-base.
+        0x0B3E => IndicCategory::Matra,
+        // Above-base matra "i" (Oriya I sign sits ABOVE the base —
+        // not a pre-base reorder). Treat as a regular matra.
+        0x0B3F => IndicCategory::Matra,
+        // Vowel signs II / U / UU / R / RR — post-base/below.
+        0x0B40..=0x0B44 => IndicCategory::Matra,
+        // Pre-base matras E / AI.
+        0x0B47..=0x0B48 => IndicCategory::PreBaseMatra,
+        // O / AU vowel signs are precomposed forms; their canonical
+        // decomposition (U+0B47 + U+0B3E / U+0B57) starts with the
+        // pre-base U+0B47 — we mirror that by classifying the
+        // precomposed forms as PreBaseMatra so a cluster machine
+        // operating on raw input still emits a visually-correct
+        // pre-base reorder.
+        0x0B4B..=0x0B4C => IndicCategory::PreBaseMatra,
+        // Halant / virama.
+        0x0B4D => IndicCategory::Halant,
+        // Length mark (post-base).
+        0x0B55..=0x0B57 => IndicCategory::Matra,
+        // Additional consonants (RRA / RHA / YYA).
+        0x0B5C..=0x0B5D => IndicCategory::Consonant,
+        0x0B5F..=0x0B61 => IndicCategory::Vowel,
+        0x0B62..=0x0B63 => IndicCategory::Matra,
+        // Digits + Oriya fractions/signs.
+        0x0B66..=0x0B6F => IndicCategory::Symbol,
+        0x0B70..=0x0B7F => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
 /// Per-cluster shaping flags computed by [`reorder_cluster`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClusterFlags {
@@ -440,6 +773,58 @@ pub const TAMIL_RULES: ReorderRules = ReorderRules {
     category: tamil_category,
     ra_codepoint: '\u{0BB0}',
     reph_enabled: false,
+};
+
+/// Gurmukhi reorder rules. Reph is rare in modern Punjabi but the
+/// flag is still set when RA + halant + consonant appears, so fonts
+/// that ship a `rphf` lookup get the substitution.
+pub const GURMUKHI_RULES: ReorderRules = ReorderRules {
+    category: gurmukhi_category,
+    ra_codepoint: '\u{0A30}',
+    reph_enabled: true,
+};
+
+/// Gujarati reorder rules — Devanagari-shaped (halant-driven
+/// conjuncts; reph rule on RA U+0AB0; pre-base matra U+0ABF).
+pub const GUJARATI_RULES: ReorderRules = ReorderRules {
+    category: gujarati_category,
+    ra_codepoint: '\u{0AB0}',
+    reph_enabled: true,
+};
+
+/// Telugu reorder rules. Reph forms on RA U+0C30; pre-base matras
+/// U+0C46 / U+0C47 / U+0C48 reorder to the front of the cluster.
+pub const TELUGU_RULES: ReorderRules = ReorderRules {
+    category: telugu_category,
+    ra_codepoint: '\u{0C30}',
+    reph_enabled: true,
+};
+
+/// Kannada reorder rules. Reph forms on RA U+0CB0; pre-base matras
+/// U+0CBF / U+0CC6 / U+0CC7 / U+0CC8 reorder to the front of the
+/// cluster.
+pub const KANNADA_RULES: ReorderRules = ReorderRules {
+    category: kannada_category,
+    ra_codepoint: '\u{0CB0}',
+    reph_enabled: true,
+};
+
+/// Malayalam reorder rules. `reph_enabled = false` — modern Malayalam
+/// uses chillu (independent half-form) characters U+0D7A..U+0D7F
+/// instead of the historic reph rendering.
+pub const MALAYALAM_RULES: ReorderRules = ReorderRules {
+    category: malayalam_category,
+    ra_codepoint: '\u{0D30}',
+    reph_enabled: false,
+};
+
+/// Oriya reorder rules. Reph forms on RA U+0B30; pre-base matras
+/// U+0B47 / U+0B48 / U+0B4B / U+0B4C reorder to the front of the
+/// cluster (the precomposed o / au matras carry pre-base components).
+pub const ORIYA_RULES: ReorderRules = ReorderRules {
+    category: oriya_category,
+    ra_codepoint: '\u{0B30}',
+    reph_enabled: true,
 };
 
 /// Apply Indic cluster reordering to a single cluster using `rules`.
@@ -558,11 +943,60 @@ pub fn tamil_feature_tags() -> Vec<[u8; 4]> {
     ]
 }
 
+/// Gurmukhi feature tags. Same Devanagari-family pipeline.
+pub fn gurmukhi_feature_tags() -> Vec<[u8; 4]> {
+    devanagari_feature_tags()
+}
+
+/// Gujarati feature tags. Closest-to-Devanagari shape, identical
+/// feature ordering.
+pub fn gujarati_feature_tags() -> Vec<[u8; 4]> {
+    devanagari_feature_tags()
+}
+
+/// Telugu feature tags. The Telugu/Kannada/Malayalam family adds the
+/// `pref` / `pstf` / `abvf` / `abvs` per-position GSUB features on top
+/// of the Devanagari list — split-vowel pre-base components flow
+/// through `pref`, and the post-base components through `pstf`.
+pub fn telugu_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"nukt", *b"akhn", *b"rphf", *b"pref", *b"blwf", *b"half", *b"abvf",
+        *b"pstf", *b"cjct", *b"init", *b"pres", *b"abvs", *b"blws", *b"psts", *b"haln",
+    ]
+}
+
+/// Kannada feature tags. Same Telugu/Kannada/Malayalam family
+/// (`pref` / `pstf` / `abvf` plus the standard list).
+pub fn kannada_feature_tags() -> Vec<[u8; 4]> {
+    telugu_feature_tags()
+}
+
+/// Malayalam feature tags. Same family as Telugu/Kannada but `rphf`
+/// is omitted because Malayalam uses chillu (independent half-forms)
+/// instead of reph.
+pub fn malayalam_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"nukt", *b"akhn", *b"pref", *b"blwf", *b"half", *b"abvf", *b"pstf",
+        *b"cjct", *b"init", *b"pres", *b"abvs", *b"blws", *b"psts", *b"haln",
+    ]
+}
+
+/// Oriya feature tags. Devanagari-shape feature list — adds `pref`
+/// because the precomposed o / au matras decompose into pre-base
+/// components.
+pub fn oriya_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"nukt", *b"akhn", *b"rphf", *b"pref", *b"blwf", *b"half", *b"vatu",
+        *b"cjct", *b"init", *b"pres", *b"abvs", *b"blws", *b"psts", *b"haln",
+    ]
+}
+
 /// OpenType script tags for the Indic scripts we shape. Each tuple
 /// returns `(modern_tag, legacy_tag)` — modern Indic2 tags
-/// (`dev2` / `bng2` / `tml2`) carry the up-to-date feature lookups in
-/// most fonts; legacy v1 tags (`deva` / `beng` / `taml`) ship the
-/// pre-2005 lookups for compatibility with older shapers.
+/// (`dev2` / `bng2` / `tml2` / `gur2` / `gjr2` / `tel2` / `knd2` /
+/// `mlm2` / `ory2`) carry the up-to-date feature lookups in most
+/// fonts; legacy v1 tags ship the pre-2005 lookups for compatibility
+/// with older shapers.
 ///
 /// Use [`script_indic_tags`] to fetch the pair for a given script.
 pub fn script_indic_tags(script: super::arabic::Script) -> Option<([u8; 4], [u8; 4])> {
@@ -570,6 +1004,12 @@ pub fn script_indic_tags(script: super::arabic::Script) -> Option<([u8; 4], [u8;
         super::arabic::Script::Devanagari => Some((*b"dev2", *b"deva")),
         super::arabic::Script::Bengali => Some((*b"bng2", *b"beng")),
         super::arabic::Script::Tamil => Some((*b"tml2", *b"taml")),
+        super::arabic::Script::Gurmukhi => Some((*b"gur2", *b"guru")),
+        super::arabic::Script::Gujarati => Some((*b"gjr2", *b"gujr")),
+        super::arabic::Script::Telugu => Some((*b"tel2", *b"telu")),
+        super::arabic::Script::Kannada => Some((*b"knd2", *b"knda")),
+        super::arabic::Script::Malayalam => Some((*b"mlm2", *b"mlym")),
+        super::arabic::Script::Oriya => Some((*b"ory2", *b"orya")),
         _ => None,
     }
 }
@@ -979,5 +1419,307 @@ mod tests {
         use super::super::arabic::Script;
         assert_eq!(script_indic_tags(Script::Arabic), None);
         assert_eq!(script_indic_tags(Script::Other), None);
+    }
+
+    // ---------- Gurmukhi (round 11) ----------
+
+    #[test]
+    fn gurmukhi_category_classifies_ka_as_consonant() {
+        // U+0A15 GURMUKHI LETTER KA.
+        assert_eq!(gurmukhi_category('\u{0A15}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn gurmukhi_category_classifies_halant_as_halant() {
+        // U+0A4D GURMUKHI SIGN VIRAMA.
+        assert_eq!(gurmukhi_category('\u{0A4D}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn gurmukhi_category_classifies_pre_base_matra_i() {
+        // U+0A3F GURMUKHI VOWEL SIGN I — pre-base.
+        assert_eq!(gurmukhi_category('\u{0A3F}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn gurmukhi_pre_base_matra_i_reorders_before_base() {
+        // KA + sign-i → sign-i + KA.
+        let cluster = ['\u{0A15}', '\u{0A3F}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &GURMUKHI_RULES);
+        assert_eq!(out, vec!['\u{0A3F}', '\u{0A15}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn gurmukhi_reph_marks_RA_for_superscript() {
+        // RA + halant + KA — Gurmukhi flags reph (rare in modern usage
+        // but fonts that ship the lookup pick it up).
+        let cluster = ['\u{0A30}', '\u{0A4D}', '\u{0A15}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &GURMUKHI_RULES);
+        assert!(flags.has_reph);
+    }
+
+    // ---------- Gujarati (round 11) ----------
+
+    #[test]
+    fn gujarati_category_classifies_ka_as_consonant() {
+        // U+0A95 GUJARATI LETTER KA.
+        assert_eq!(gujarati_category('\u{0A95}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn gujarati_category_classifies_halant_as_halant() {
+        // U+0ACD GUJARATI SIGN VIRAMA.
+        assert_eq!(gujarati_category('\u{0ACD}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn gujarati_category_classifies_pre_base_matra_i() {
+        // U+0ABF GUJARATI VOWEL SIGN I — pre-base.
+        assert_eq!(gujarati_category('\u{0ABF}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn gujarati_pre_base_matra_i_reorders_before_base() {
+        // KA + sign-i → sign-i + KA.
+        let cluster = ['\u{0A95}', '\u{0ABF}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &GUJARATI_RULES);
+        assert_eq!(out, vec!['\u{0ABF}', '\u{0A95}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn gujarati_reph_marks_RA_for_superscript() {
+        // RA U+0AB0 + halant + KA → reph.
+        let cluster = ['\u{0AB0}', '\u{0ACD}', '\u{0A95}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &GUJARATI_RULES);
+        assert!(flags.has_reph);
+    }
+
+    // ---------- Telugu (round 11) ----------
+
+    #[test]
+    fn telugu_category_classifies_ka_as_consonant() {
+        // U+0C15 TELUGU LETTER KA.
+        assert_eq!(telugu_category('\u{0C15}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn telugu_category_classifies_halant_as_halant() {
+        // U+0C4D TELUGU SIGN VIRAMA.
+        assert_eq!(telugu_category('\u{0C4D}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn telugu_pre_base_matras_e_ee_ai() {
+        // U+0C46 / U+0C47 / U+0C48 — pre-base.
+        assert_eq!(telugu_category('\u{0C46}'), IndicCategory::PreBaseMatra);
+        assert_eq!(telugu_category('\u{0C47}'), IndicCategory::PreBaseMatra);
+        assert_eq!(telugu_category('\u{0C48}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn telugu_pre_base_matra_e_reorders_before_base() {
+        // KA + sign-e → sign-e + KA.
+        let cluster = ['\u{0C15}', '\u{0C46}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &TELUGU_RULES);
+        assert_eq!(out, vec!['\u{0C46}', '\u{0C15}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn telugu_reph_marks_RA_for_superscript() {
+        // RA U+0C30 + halant + KA → reph.
+        let cluster = ['\u{0C30}', '\u{0C4D}', '\u{0C15}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &TELUGU_RULES);
+        assert!(flags.has_reph);
+    }
+
+    // ---------- Kannada (round 11) ----------
+
+    #[test]
+    fn kannada_category_classifies_ka_as_consonant() {
+        // U+0C95 KANNADA LETTER KA.
+        assert_eq!(kannada_category('\u{0C95}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn kannada_category_classifies_halant_as_halant() {
+        // U+0CCD KANNADA SIGN VIRAMA.
+        assert_eq!(kannada_category('\u{0CCD}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn kannada_pre_base_matras_e_ee_ai() {
+        // U+0CC6 / U+0CC7 / U+0CC8 — pre-base.
+        assert_eq!(kannada_category('\u{0CC6}'), IndicCategory::PreBaseMatra);
+        assert_eq!(kannada_category('\u{0CC7}'), IndicCategory::PreBaseMatra);
+        assert_eq!(kannada_category('\u{0CC8}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn kannada_pre_base_matra_e_reorders_before_base() {
+        let cluster = ['\u{0C95}', '\u{0CC6}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &KANNADA_RULES);
+        assert_eq!(out, vec!['\u{0CC6}', '\u{0C95}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn kannada_reph_marks_RA_for_superscript() {
+        // RA U+0CB0 + halant + KA → reph.
+        let cluster = ['\u{0CB0}', '\u{0CCD}', '\u{0C95}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &KANNADA_RULES);
+        assert!(flags.has_reph);
+    }
+
+    // ---------- Malayalam (round 11) ----------
+
+    #[test]
+    fn malayalam_category_classifies_ka_as_consonant() {
+        // U+0D15 MALAYALAM LETTER KA.
+        assert_eq!(malayalam_category('\u{0D15}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn malayalam_category_classifies_halant_as_halant() {
+        // U+0D4D MALAYALAM SIGN VIRAMA.
+        assert_eq!(malayalam_category('\u{0D4D}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn malayalam_pre_base_matras_e_ee_ai() {
+        // U+0D46 / U+0D47 / U+0D48 — pre-base.
+        assert_eq!(malayalam_category('\u{0D46}'), IndicCategory::PreBaseMatra);
+        assert_eq!(malayalam_category('\u{0D47}'), IndicCategory::PreBaseMatra);
+        assert_eq!(malayalam_category('\u{0D48}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn malayalam_chillu_classified_as_consonant() {
+        // U+0D7A..U+0D7F — chillu independent half-forms.
+        for cp in 0x0D7A..=0x0D7F {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                malayalam_category(ch),
+                IndicCategory::Consonant,
+                "chillu U+{cp:04X} should be Consonant"
+            );
+        }
+    }
+
+    #[test]
+    fn malayalam_pre_base_matra_e_reorders_before_base() {
+        let cluster = ['\u{0D15}', '\u{0D46}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &MALAYALAM_RULES);
+        assert_eq!(out, vec!['\u{0D46}', '\u{0D15}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn malayalam_RA_plus_halant_does_NOT_set_reph_flag() {
+        // Modern Malayalam — chillu replaces reph.
+        let cluster = ['\u{0D30}', '\u{0D4D}', '\u{0D15}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &MALAYALAM_RULES);
+        assert!(!flags.has_reph);
+    }
+
+    // ---------- Oriya (round 11) ----------
+
+    #[test]
+    fn oriya_category_classifies_ka_as_consonant() {
+        // U+0B15 ORIYA LETTER KA.
+        assert_eq!(oriya_category('\u{0B15}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn oriya_category_classifies_halant_as_halant() {
+        // U+0B4D ORIYA SIGN VIRAMA.
+        assert_eq!(oriya_category('\u{0B4D}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn oriya_pre_base_matras_e_ai_o_au() {
+        // U+0B47 / U+0B48 / U+0B4B / U+0B4C — pre-base
+        // (precomposed o / au carry pre-base components).
+        assert_eq!(oriya_category('\u{0B47}'), IndicCategory::PreBaseMatra);
+        assert_eq!(oriya_category('\u{0B48}'), IndicCategory::PreBaseMatra);
+        assert_eq!(oriya_category('\u{0B4B}'), IndicCategory::PreBaseMatra);
+        assert_eq!(oriya_category('\u{0B4C}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn oriya_pre_base_matra_e_reorders_before_base() {
+        let cluster = ['\u{0B15}', '\u{0B47}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &ORIYA_RULES);
+        assert_eq!(out, vec!['\u{0B47}', '\u{0B15}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn oriya_reph_marks_RA_for_superscript() {
+        // RA U+0B30 + halant + KA → reph.
+        let cluster = ['\u{0B30}', '\u{0B4D}', '\u{0B15}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &ORIYA_RULES);
+        assert!(flags.has_reph);
+    }
+
+    // ---------- script_indic_tags expansions ----------
+
+    #[test]
+    fn script_indic_tags_returns_pair_for_all_round11_scripts() {
+        use super::super::arabic::Script;
+        assert_eq!(
+            script_indic_tags(Script::Gurmukhi),
+            Some((*b"gur2", *b"guru"))
+        );
+        assert_eq!(
+            script_indic_tags(Script::Gujarati),
+            Some((*b"gjr2", *b"gujr"))
+        );
+        assert_eq!(
+            script_indic_tags(Script::Telugu),
+            Some((*b"tel2", *b"telu"))
+        );
+        assert_eq!(
+            script_indic_tags(Script::Kannada),
+            Some((*b"knd2", *b"knda"))
+        );
+        assert_eq!(
+            script_indic_tags(Script::Malayalam),
+            Some((*b"mlm2", *b"mlym"))
+        );
+        assert_eq!(script_indic_tags(Script::Oriya), Some((*b"ory2", *b"orya")));
+    }
+
+    #[test]
+    fn telugu_feature_tags_includes_pref_pstf_abvf_position_features() {
+        let tags = telugu_feature_tags();
+        // Cluster-position-aware GSUB features wired in round 11.
+        assert!(tags.contains(b"pref"), "Telugu emits pref");
+        assert!(tags.contains(b"pstf"), "Telugu emits pstf");
+        assert!(tags.contains(b"abvf"), "Telugu emits abvf");
+        // Telugu still has reph.
+        assert!(tags.contains(b"rphf"), "Telugu emits rphf");
+    }
+
+    #[test]
+    fn malayalam_feature_tags_omits_rphf_keeps_position_features() {
+        let tags = malayalam_feature_tags();
+        assert!(!tags.contains(b"rphf"), "Malayalam has no rphf (chillu)");
+        assert!(tags.contains(b"pref"));
+        assert!(tags.contains(b"pstf"));
+        assert!(tags.contains(b"abvf"));
+        assert!(tags.contains(b"blwf"));
+    }
+
+    #[test]
+    fn gujarati_feature_tags_match_devanagari_shape() {
+        assert_eq!(gujarati_feature_tags(), devanagari_feature_tags());
+    }
+
+    #[test]
+    fn gurmukhi_feature_tags_match_devanagari_shape() {
+        assert_eq!(gurmukhi_feature_tags(), devanagari_feature_tags());
     }
 }
