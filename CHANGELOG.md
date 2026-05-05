@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.5...v0.1.6) - 2026-05-05
+
+### Other
+
+- 6 more Indic scripts + cluster-position GSUB (round 11)
+
 ### Added — six more Indic scripts + cluster-position GSUB wiring (round 11)
 
 Round 11 brings the remaining Indic scripts under the same cluster
