@@ -20,6 +20,12 @@
 //!   in the visual position). The cluster machine still drives all of
 //!   them via [`indic::ReorderRules`] (Sinhala / Khmer reorder the
 //!   pre-base matras; Thai is a no-op reorder, only segmentation).
+//! - Round 13: [`indic`] adds the remaining two Brahmic non-Indic
+//!   scripts — Lao (U+0E80..U+0EFF, structural twin of Thai) and
+//!   Myanmar / Burmese (U+1000..U+109F, Asat killer + medials +
+//!   kinzi reph-equivalent). The [`indic::RephKind`] enum carries the
+//!   kinzi pattern (NGA + Asat + Virama + Cons) as a separate variant
+//!   so the cluster reorderer dispatches the right reph detector.
 
 pub mod arabic;
 pub mod arabic_pf;
@@ -31,13 +37,15 @@ pub use arabic::{
 };
 pub use arabic_pf::presentation_form;
 pub use indic::{
-    bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
-    devanagari_category, devanagari_feature_tags, gujarati_category, gujarati_feature_tags,
-    gurmukhi_category, gurmukhi_feature_tags, kannada_category, kannada_feature_tags,
-    khmer_category, khmer_feature_tags, malayalam_category, malayalam_feature_tags, oriya_category,
+    bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,
+    cluster_boundaries, cluster_boundaries_with, devanagari_category, devanagari_feature_tags,
+    gujarati_category, gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags,
+    kannada_category, kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category,
+    lao_feature_tags, malayalam_category, malayalam_feature_tags, oriya_category,
     oriya_feature_tags, reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
     sinhala_feature_tags, tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags,
-    thai_category, thai_feature_tags, ClusterFlags, IndicCategory, ReorderRules, BENGALI_RULES,
-    DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES, MALAYALAM_RULES,
-    ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
+    thai_category, thai_feature_tags, ClusterFlags, IndicCategory, ReorderRules, RephKind,
+    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
+    KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES,
+    THAI_RULES,
 };

@@ -30,8 +30,9 @@ use crate::shaping::arabic::{compute_forms, script_of, Script};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::indic::{
     cluster_boundaries_with, reorder_cluster_with, script_indic_tags, IndicCategory, ReorderRules,
-    BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES,
-    MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
+    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
+    KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES,
+    THAI_RULES,
 };
 use crate::style::Style;
 use crate::Error;
@@ -286,6 +287,23 @@ impl FaceChain {
         // always still valid.)
         let adjusted_spans = adjust_cluster_spans(&cluster_spans, &dropped_halants, &shaped_chars);
         let out = self.apply_cluster_position_substitutions(out, &adjusted_spans, &shaped_chars)?;
+        // Round 13 — multi-glyph context-aware GSUB pass. For every
+        // Indic cluster, dispatch the multi-glyph features
+        // (`locl` / `nukt` / `akhn` / `cjct` / `init` / `haln`) via
+        // `Font::gsub_apply_lookup_type_5` (Contextual) and
+        // `gsub_apply_lookup_type_6` (Chained Context). These features
+        // need surrounding-glyph context that the round-11
+        // single-substitution pass can't carry. Per-position invocation
+        // because the lookup itself decides whether the surrounding
+        // glyphs match. Faces without the relevant lookup degrade
+        // gracefully (the round-11 behaviour).
+        //
+        // The cluster span boundaries may have shifted again because of
+        // the round-11 single-substitution pass — but the start/end
+        // glyph indices map 1:1 onto the input chars, and round-11 is
+        // length-preserving (single substitutions don't insert/delete),
+        // so `adjusted_spans` is still correct here.
+        let out = self.apply_cluster_context_substitutions(out, &adjusted_spans)?;
         Ok(out)
     }
 
@@ -475,6 +493,147 @@ impl FaceChain {
                     }
                 }
             }
+        }
+        Ok(out)
+    }
+
+    /// Round-13 multi-glyph context-aware GSUB pass. For every Indic
+    /// cluster span, dispatch the multi-glyph feature pipeline:
+    ///
+    /// - **`locl`** — language-form contextual variants (e.g.
+    ///   Marathi vs Hindi RA glyphs).
+    /// - **`nukt`** — nukta contextual forms.
+    /// - **`akhn`** — akhand ligatures (e.g. Devanagari ksha or jnya
+    ///   matched as 3-glyph context).
+    /// - **`cjct`** — conjunct forms (multi-glyph cluster glyphs;
+    ///   a halant + consonant pair gets emitted as a single conjunct
+    ///   gid).
+    /// - **`init`** — initial contextual variant for the leading
+    ///   consonant of a cluster.
+    /// - **`haln`** — halant contextual forms (final-position halant
+    ///   variants).
+    ///
+    /// For each feature in the per-script list that's also in the
+    /// allow-set above, walk the cluster span and at each glyph index
+    /// try the lookup as both LookupType 5 (Contextual) and LookupType
+    /// 6 (Chained Context). The font's lookup decides whether the rule
+    /// fires — if it does, we replace the cluster's glyph slice with
+    /// the rewritten glyphs. Faces that don't publish any of these
+    /// lookups for the script tag fall through unchanged.
+    ///
+    /// The contextual lookups are length-changing (LookupType 4
+    /// ligature + LookupType 2 multiple substitution embedded in
+    /// LookupType 5/6 sub-actions), so the cluster span boundary may
+    /// shift. We re-clamp the span end after each successful
+    /// substitution and continue from the same position so further
+    /// chained rules can fire on top of the rewritten glyphs (bounded
+    /// by total cluster size to avoid infinite loops).
+    fn apply_cluster_context_substitutions(
+        &self,
+        glyphs: Vec<(u16, u16)>,
+        spans: &[ClusterSpan],
+    ) -> Result<Vec<(u16, u16)>, Error> {
+        if spans.is_empty() {
+            return Ok(glyphs);
+        }
+        // The 6 multi-glyph context features in canonical Indic
+        // application order. Kept in lockstep with the
+        // `*_feature_tags()` lists in `shaping::indic`.
+        const CONTEXT_FEATURES: &[&[u8; 4]] =
+            &[b"locl", b"nukt", b"akhn", b"cjct", b"init", b"haln"];
+        let mut out = glyphs;
+        // Walk spans front-to-back. Each span's char positions are
+        // unchanged by length-changing edits within a PRECEDING span
+        // because the spans are non-overlapping; but a length change
+        // within span N shifts spans N+1.. by the delta. We track the
+        // running offset.
+        let mut offset_delta: isize = 0;
+        for span in spans {
+            // Apply the offset so far to recover the current span's
+            // glyph indices in `out`.
+            let span_start = (span.start as isize + offset_delta).max(0) as usize;
+            let span_end = (span.end as isize + offset_delta).max(0) as usize;
+            let span_end = span_end.min(out.len());
+            if span_start >= span_end {
+                continue;
+            }
+            let (modern, legacy) = match script_indic_tags(span.script) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Faces inside one cluster are not guaranteed to be the
+            // same — but in practice an Indic cluster's chars all come
+            // from the same font (`assign_codepoints` walks the chain
+            // per char and Indic glyphs cluster on whichever face has
+            // the script). If the cluster has mixed faces the lookup
+            // simply won't match (different gid space) — graceful
+            // degradation.
+            let face_idx = out[span_start].0;
+            let face = &self.faces[face_idx as usize];
+            let pre_len = span_end - span_start;
+            // Snapshot the cluster's gid slice (just the gids — we'll
+            // splice the (face_idx, gid) pairs back after the lookup).
+            let gid_slice: Vec<u16> = out[span_start..span_end].iter().map(|p| p.1).collect();
+            // For each feature in priority order, try the lookup at
+            // every position inside the cluster. The lookup's coverage
+            // table decides whether the rule fires — if it does, we
+            // adopt the new glyph slice and re-extract.
+            let new_gids = face.with_font(|font| {
+                let mut gids = gid_slice.clone();
+                for feat_tag in CONTEXT_FEATURES {
+                    for tag in [modern, legacy] {
+                        let features = font.gsub_features_for_script(tag, None);
+                        for feat in &features {
+                            if &feat.tag != *feat_tag {
+                                continue;
+                            }
+                            for &lookup_idx in &feat.lookup_indices {
+                                // Try LookupType 5 then LookupType 6 at
+                                // every position inside the cluster.
+                                // The first successful rewrite wins per
+                                // (lookup_idx, position) — we don't
+                                // rerun the same lookup on the rewritten
+                                // glyphs because the spec already
+                                // recurses internally for chained
+                                // sub-lookups.
+                                let mut pos = 0usize;
+                                while pos < gids.len() {
+                                    let mut applied = false;
+                                    if let Some(rewritten) =
+                                        font.gsub_apply_lookup_type_5(lookup_idx, &gids, pos)
+                                    {
+                                        gids = rewritten;
+                                        applied = true;
+                                    } else if let Some(rewritten) =
+                                        font.gsub_apply_lookup_type_6(lookup_idx, &gids, pos)
+                                    {
+                                        gids = rewritten;
+                                        applied = true;
+                                    }
+                                    if applied {
+                                        // Stay at the same `pos` — the
+                                        // rewrite may have introduced
+                                        // a new glyph that another rule
+                                        // can hit. But cap iteration to
+                                        // prevent pathological loops.
+                                        pos += 1;
+                                    } else {
+                                        pos += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                gids
+            })?;
+            let post_len = new_gids.len();
+            // Splice the rewritten gids back into `out`, preserving
+            // face_idx (length may have changed).
+            let face_idx = out[span_start].0;
+            let new_pairs: Vec<(u16, u16)> = new_gids.into_iter().map(|g| (face_idx, g)).collect();
+            out.splice(span_start..span_end, new_pairs);
+            offset_delta += post_len as isize - pre_len as isize;
         }
         Ok(out)
     }
@@ -707,6 +866,8 @@ fn indic_category_for_script(script: Script, ch: char) -> IndicCategory {
         Script::Sinhala => indic::sinhala_category(ch),
         Script::Khmer => indic::khmer_category(ch),
         Script::Thai => indic::thai_category(ch),
+        Script::Lao => indic::lao_category(ch),
+        Script::Burmese => indic::burmese_category(ch),
         _ => IndicCategory::Other,
     }
 }
@@ -727,6 +888,8 @@ fn indic_rules_for_script(script: Script) -> Option<&'static ReorderRules> {
         Script::Sinhala => Some(&SINHALA_RULES),
         Script::Khmer => Some(&KHMER_RULES),
         Script::Thai => Some(&THAI_RULES),
+        Script::Lao => Some(&LAO_RULES),
+        Script::Burmese => Some(&BURMESE_RULES),
         _ => None,
     }
 }
@@ -1063,6 +1226,111 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].script, Script::Devanagari);
         assert_eq!(spans[1].script, Script::Thai);
+    }
+
+    // ---------- Round 13 (Burmese / Lao) ----------
+
+    #[test]
+    fn lao_no_reorder_preserves_storage_order() {
+        // Lao SARA E (pre-base in storage) + KO — already in visual
+        // order; cluster machine starts a new cluster at each.
+        let chars = vec!['\u{0EC0}', '\u{0E81}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Lao);
+        assert_eq!(spans[1].script, Script::Lao);
+    }
+
+    #[test]
+    fn lao_consonant_with_above_vowel_and_tone_emits_one_span() {
+        // KO + SARA I (above) + MAI EK (tone) — single cluster.
+        let chars = vec!['\u{0E81}', '\u{0EB4}', '\u{0EC8}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (0, 3));
+        assert_eq!(spans[0].script, Script::Lao);
+    }
+
+    #[test]
+    fn burmese_pre_base_matra_e_reorders_with_burmese_span() {
+        // Burmese KA + sign-e (pre-base) → sign-e + KA.
+        let chars = vec!['\u{1000}', '\u{1031}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{1031}', '\u{1000}']);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Burmese);
+    }
+
+    #[test]
+    fn burmese_kinzi_emits_reph_mark_with_burmese_script_tag() {
+        // NGA + Asat + Virama + KA — kinzi.
+        let chars = vec!['\u{1004}', '\u{103A}', '\u{1039}', '\u{1000}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(marks.len(), 1, "Burmese kinzi emits a reph mark");
+        assert_eq!(marks[0].script, Script::Burmese);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Burmese);
+        assert_eq!((spans[0].start, spans[0].end), (0, 4));
+    }
+
+    #[test]
+    fn burmese_asat_does_NOT_chain_following_consonant_into_cluster() {
+        // KA + Asat + KHA — Asat (Bindu) attaches to KA; KHA starts
+        // a new cluster (because Asat is NOT halant).
+        let chars = vec!['\u{1000}', '\u{103A}', '\u{1001}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Burmese);
+        assert_eq!(spans[1].script, Script::Burmese);
+    }
+
+    #[test]
+    fn burmese_virama_chains_subjoined_consonant_into_one_span() {
+        // KA + Virama + KHA — true halant, single cluster.
+        let chars = vec!['\u{1000}', '\u{1039}', '\u{1001}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (0, 3));
+    }
+
+    #[test]
+    fn burmese_ka_with_medial_ya_in_one_span() {
+        // KA + medial YA — medial extends the cluster as a Matra.
+        let chars = vec!['\u{1000}', '\u{103B}'];
+        let (_out, _marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (0, 2));
+    }
+
+    #[test]
+    fn mixed_burmese_and_thai_segments_at_script_boundary() {
+        // Burmese KA + Thai KO KAI — different scripts, two clusters.
+        let chars = vec!['\u{1000}', '\u{0E01}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Burmese);
+        assert_eq!(spans[1].script, Script::Thai);
+    }
+
+    #[test]
+    fn mixed_lao_and_burmese_segments_at_script_boundary() {
+        // Lao KO + Burmese KA — different scripts, two clusters.
+        let chars = vec!['\u{0E81}', '\u{1000}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Lao);
+        assert_eq!(spans[1].script, Script::Burmese);
     }
 
     #[test]

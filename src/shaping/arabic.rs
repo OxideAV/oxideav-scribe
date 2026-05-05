@@ -182,6 +182,25 @@ pub enum Script {
     /// new cluster at each pre-base vowel. Tone marks U+0E48..U+0E4B
     /// + signs U+0E4C..U+0E4E attach to the cluster end.
     Thai,
+    /// Lao block (U+0E80..U+0EFF). Lao. Round 13 added — structurally
+    /// identical to Thai (no halant, no conjunct formation). Pre-base
+    /// vowels U+0EC0..U+0EC4 (sara e / ay / o / ay-tai / ai-tai)
+    /// appear BEFORE their consonant in storage order, matching the
+    /// visual position; no reorder needed. Tone marks U+0EC8..U+0ECB
+    /// attach to the cluster end as bindus.
+    Lao,
+    /// Myanmar / Burmese block (U+1000..U+109F). Burmese / Mon /
+    /// Karen / Shan / Pali. Round 13 added — the structurally richest
+    /// of the round-13 scripts. Asat U+103A is a "killer" mark that
+    /// kills the inherent vowel without gluing the next consonant
+    /// into the cluster; Virama U+1039 plays the standard halant role
+    /// and stacks subjoined consonants. Medials U+103B..U+103E (medial
+    /// Ya / Ra / Wa / Ha) bind to the preceding consonant. Pre-base
+    /// matra U+1031 (sign-e) is the only matra that needs reordering.
+    /// Burmese forms a kinzi (NGA U+1004 + Asat + Virama + Consonant)
+    /// at cluster start — the Burmese reph-equivalent — flagged via
+    /// `RephKind::BurmeseKinzi` on [`super::indic::BURMESE_RULES`].
+    Burmese,
     /// Anything else — Latin, CJK, Cyrillic, Greek, etc.
     Other,
 }
@@ -237,6 +256,12 @@ pub fn script_of(ch: char) -> Script {
     if (0x0E00..=0x0E7F).contains(&cp) {
         return Script::Thai;
     }
+    if (0x0E80..=0x0EFF).contains(&cp) {
+        return Script::Lao;
+    }
+    if (0x1000..=0x109F).contains(&cp) {
+        return Script::Burmese;
+    }
     Script::Other
 }
 
@@ -262,6 +287,8 @@ pub fn feature_tags_for_run(script: Script) -> Vec<[u8; 4]> {
         Script::Sinhala => super::indic::sinhala_feature_tags(),
         Script::Khmer => super::indic::khmer_feature_tags(),
         Script::Thai => super::indic::thai_feature_tags(),
+        Script::Lao => super::indic::lao_feature_tags(),
+        Script::Burmese => super::indic::burmese_feature_tags(),
         Script::Other => Vec::new(),
     }
 }

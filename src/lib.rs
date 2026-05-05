@@ -66,6 +66,7 @@ pub mod layout;
 pub mod shaper;
 pub mod shaping;
 pub mod style;
+pub mod variations;
 
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
@@ -75,17 +76,18 @@ pub use layout::{run_width, wrap_lines};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
 pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
 pub use shaping::{
-    bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
-    compute_forms, devanagari_category, devanagari_feature_tags, feature_tags_for_run,
-    gujarati_category, gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags,
-    joining_class, kannada_category, kannada_feature_tags, khmer_category, khmer_feature_tags,
+    bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,
+    cluster_boundaries, cluster_boundaries_with, compute_forms, devanagari_category,
+    devanagari_feature_tags, feature_tags_for_run, gujarati_category, gujarati_feature_tags,
+    gurmukhi_category, gurmukhi_feature_tags, joining_class, kannada_category,
+    kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category, lao_feature_tags,
     malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
     presentation_form, reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
     sinhala_feature_tags, tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags,
     thai_category, thai_feature_tags, ClusterFlags, IndicCategory, JoiningClass, JoiningForm,
-    ReorderRules, Script, BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES,
-    KANNADA_RULES, KHMER_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES,
-    TELUGU_RULES, THAI_RULES,
+    ReorderRules, RephKind, Script, BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES,
+    GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES,
+    SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
 };
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,

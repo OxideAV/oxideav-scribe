@@ -430,6 +430,185 @@ impl Face {
         self.var_coords.clear();
     }
 
+    /// Borrow the raw font bytes the face was constructed from. Used
+    /// by [`crate::variations`] to walk tables that the underlying
+    /// `oxideav-ttf` / `oxideav-otf` parsers don't surface yet
+    /// (`MVAR` / `HVAR` / `VVAR` / `STAT` / `CFF2`). The returned
+    /// slice is the WHOLE file (including the sfnt header) so the
+    /// caller can call `variations::find_table` against it.
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Resolve a `name` table id to its highest-ranked Unicode string
+    /// (Windows English first, Mac Roman English second, anything
+    /// Unicode-y after, then any remaining record). Used by callers
+    /// that consumed an axis or instance name id from
+    /// [`Face::variation_axes`] / [`Face::named_instances`] /
+    /// [`Face::stat_axes`] / [`Face::stat_axis_values`] and need the
+    /// human-readable label.
+    ///
+    /// Returns `None` if the font has no `name` table for the id, or
+    /// (for OTF faces) the name table couldn't be located in the raw
+    /// font bytes. Owned `String` rather than `&str` because the
+    /// underlying snapshot decodes UTF-16-BE on the fly.
+    pub fn name_id(&self, name_id: u16) -> Option<String> {
+        let name_bytes = match self.kind {
+            FaceKind::Ttf => {
+                crate::variations::find_table(&self.bytes, b"name", self.subfont_offset())?
+            }
+            FaceKind::Otf => crate::variations::find_table(&self.bytes, b"name", 0)?,
+        };
+        let snap = crate::variations::NameTableSnapshot::parse(name_bytes)?;
+        snap.find(name_id).map(|s| s.to_string())
+    }
+
+    /// Compute the table-relative offset of the sfnt header for this
+    /// face. Plain sfnt fonts return `0`; TTC subfonts walk the
+    /// collection header for the per-subfont offset.
+    fn subfont_offset(&self) -> usize {
+        let i = match self.subfont_index {
+            Some(i) => i,
+            None => return 0,
+        };
+        // The TTC header layout is: 'ttcf'(4) + version(4) + numFonts(4) + u32 offsets.
+        if self.bytes.len() < 12 {
+            return 0;
+        }
+        if &self.bytes[0..4] != b"ttcf" {
+            return 0;
+        }
+        let off = 12 + (i as usize) * 4;
+        if off + 4 > self.bytes.len() {
+            return 0;
+        }
+        u32::from_be_bytes([
+            self.bytes[off],
+            self.bytes[off + 1],
+            self.bytes[off + 2],
+            self.bytes[off + 3],
+        ]) as usize
+    }
+
+    /// Parse and return the `MVAR` (Metrics Variations) table, if
+    /// present. Returns `None` for static fonts and for fonts that
+    /// don't ship MVAR (most static fonts and many simpler variable
+    /// fonts).
+    pub fn mvar(&self) -> Option<crate::variations::MvarTable> {
+        let bytes = crate::variations::find_table(&self.bytes, b"MVAR", self.subfont_offset())?;
+        crate::variations::MvarTable::parse(bytes)
+    }
+
+    /// Parse and return the `HVAR` (Horizontal Metrics Variations)
+    /// table, if present. Returns `None` for fonts that don't ship
+    /// HVAR (every static font and many variable fonts whose advance
+    /// widths don't change with the variation coords).
+    pub fn hvar(&self) -> Option<crate::variations::AdvanceVariationTable> {
+        let bytes = crate::variations::find_table(&self.bytes, b"HVAR", self.subfont_offset())?;
+        crate::variations::AdvanceVariationTable::parse(bytes)
+    }
+
+    /// Parse and return the `VVAR` (Vertical Metrics Variations)
+    /// table, if present. Returns `None` for horizontal-only fonts
+    /// (the common case — Inter Variable, Roboto Flex, almost every
+    /// Latin variable font).
+    pub fn vvar(&self) -> Option<crate::variations::AdvanceVariationTable> {
+        let bytes = crate::variations::find_table(&self.bytes, b"VVAR", self.subfont_offset())?;
+        crate::variations::AdvanceVariationTable::parse(bytes)
+    }
+
+    /// Parse and return the `STAT` (Style Attributes) table, if
+    /// present. Returns `None` for fonts that don't ship STAT (every
+    /// static font and a handful of older variable fonts).
+    pub fn stat(&self) -> Option<crate::variations::StatTable> {
+        let bytes = crate::variations::find_table(&self.bytes, b"STAT", self.subfont_offset())?;
+        crate::variations::StatTable::parse(bytes)
+    }
+
+    /// Parse and return the `CFF2` table, if present. Returns `None`
+    /// for TT-flavoured faces and for OTF faces that don't ship CFF2
+    /// (every static OTF — they all carry plain `CFF ` instead).
+    pub fn cff2(&self) -> Option<crate::variations::Cff2Table> {
+        let bytes = crate::variations::find_table(&self.bytes, b"CFF2", 0)?;
+        crate::variations::Cff2Table::parse(bytes)
+    }
+
+    /// Apply MVAR + the current variation coords (set via
+    /// [`Self::set_variation_coords`]) to compute a metric delta in
+    /// font units for `tag`. Returns `0.0` when the font has no MVAR,
+    /// the tag isn't enumerated, or the coords are at the
+    /// per-axis defaults.
+    ///
+    /// Common tags: `b"hasc"` (horizontal ascender), `b"hdsc"`
+    /// (horizontal descender), `b"hcla"` (typo line gap), `b"xhgt"`
+    /// (x-height), `b"cpht"` (cap height), `b"undo"` (underline
+    /// offset), `b"unds"` (underline size). The full list is in
+    /// the OpenType spec §"MVAR — Metrics Variations Table".
+    pub fn metric_delta(&self, tag: &[u8; 4]) -> f32 {
+        let mvar = match self.mvar() {
+            Some(m) => m,
+            None => return 0.0,
+        };
+        let coords = self.normalised_coords();
+        mvar.delta(tag, &coords)
+    }
+
+    /// Apply HVAR + the current variation coords to compute a
+    /// horizontal-advance delta in font units for `gid`. Returns
+    /// `0.0` when the font has no HVAR or the coords are at the
+    /// per-axis defaults.
+    pub fn h_advance_delta(&self, gid: u16) -> f32 {
+        let hvar = match self.hvar() {
+            Some(h) => h,
+            None => return 0.0,
+        };
+        let coords = self.normalised_coords();
+        hvar.advance_delta(gid, &coords)
+    }
+
+    /// Apply VVAR + the current variation coords to compute a
+    /// vertical-advance delta in font units for `gid`. Returns
+    /// `0.0` for horizontal-only fonts.
+    pub fn v_advance_delta(&self, gid: u16) -> f32 {
+        let vvar = match self.vvar() {
+            Some(v) => v,
+            None => return 0.0,
+        };
+        let coords = self.normalised_coords();
+        vvar.advance_delta(gid, &coords)
+    }
+
+    /// Compute the normalised coord vector for the current variation
+    /// coords. Empty for static / OTF faces. The returned vector has
+    /// the avar piecewise-linear remap applied (when the font ships
+    /// one).
+    pub fn normalised_coords(&self) -> Vec<f32> {
+        if self.kind != FaceKind::Ttf || self.var_coords.is_empty() {
+            return Vec::new();
+        }
+        self.with_font(|f| f.normalised_coords())
+            .unwrap_or_default()
+    }
+
+    /// All STAT design axes, in declaration order. Empty for static
+    /// fonts or fonts without STAT.
+    pub fn stat_axes(&self) -> Vec<crate::variations::StatAxis> {
+        match self.stat() {
+            Some(s) => s.axes().to_vec(),
+            None => Vec::new(),
+        }
+    }
+
+    /// All STAT axis-value records (one per named point / range / link
+    /// / multi-axis combination), in declaration order. Empty for
+    /// static fonts or fonts without STAT.
+    pub fn stat_axis_values(&self) -> Vec<crate::variations::StatAxisValue> {
+        match self.stat() {
+            Some(s) => s.axis_values().to_vec(),
+            None => Vec::new(),
+        }
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.

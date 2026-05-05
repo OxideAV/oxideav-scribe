@@ -907,6 +907,207 @@ pub fn thai_category(ch: char) -> IndicCategory {
     }
 }
 
+/// Look up the Indic category for `ch` within the Lao block
+/// (U+0E80..U+0EFF). Round 13 added.
+///
+/// Lao is the structural twin of Thai: no halant, no conjunct
+/// formation, pre-base vowels U+0EC0..U+0EC4 (sara e / ay / o / ay-tai
+/// / ai-tai) sit BEFORE the consonant in storage / keyboard order
+/// (matching their visual position; no reorder needed). Tone marks
+/// U+0EC8..U+0ECB attach as bindus to the cluster end. Above-base
+/// vowel sign U+0EB1 (mai kan) and U+0EB4..U+0EB7 (sara i / ii / y /
+/// yy) sit above the base; below-base U+0EB8..U+0EB9 (sara u / uu) sit
+/// below.
+///
+/// Lao consonants run U+0E81..U+0EAE with sparse gaps that mirror
+/// Thai's consonant span (U+0E83 / U+0E85 / U+0E89 / U+0E8B / U+0E8E /
+/// U+0E8F / U+0E90 are unassigned). We classify the entire span as
+/// Consonant — assigned points are consonants; unassigned points the
+/// font's cmap won't have anyway.
+///
+/// Reph: Lao has no reph at all (no halant means RA + halant + consonant
+/// can't be formed). [`LAO_RULES`] sets `reph_enabled = false`.
+pub fn lao_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0E80 || cp > 0x0EFF {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Consonants — U+0E81..U+0EAE with sparse gaps. We classify the
+        // whole span as Consonant; the gaps are unassigned and the
+        // cluster machine never sees them (the font's cmap returns
+        // .notdef for unassigned codepoints, which the shaper still
+        // tolerates).
+        0x0E81..=0x0EAE => IndicCategory::Consonant,
+        // U+0EAF — symbol (not currently assigned in this slot in
+        // modern Unicode but historic; treat as Symbol to be safe).
+        0x0EAF => IndicCategory::Symbol,
+        // U+0EB0 SARA A — post-base vowel.
+        0x0EB0 => IndicCategory::Matra,
+        // U+0EB1 MAI KAN — above-base vowel sign.
+        0x0EB1 => IndicCategory::Matra,
+        // U+0EB2 SARA AA — post-base vowel.
+        0x0EB2 => IndicCategory::Matra,
+        // U+0EB3 SARA AM — sara aa + nikahit precomposed; post-base.
+        0x0EB3 => IndicCategory::Matra,
+        // U+0EB4..U+0EB7 SARA I / II / Y / YY — above-base vowels.
+        0x0EB4..=0x0EB7 => IndicCategory::Matra,
+        // U+0EB8..U+0EB9 SARA U / UU — below-base vowels.
+        0x0EB8..=0x0EB9 => IndicCategory::Matra,
+        // U+0EBA PHINTHU (Lao virama-like cancel mark — NOT used as
+        // cluster glue in modern Lao; classified as Bindu so it attaches
+        // to the cluster end without forcing a conjunct).
+        0x0EBA => IndicCategory::Bindu,
+        // U+0EBB MAI KON — above-base vowel sign.
+        0x0EBB => IndicCategory::Matra,
+        // U+0EBC SEMIVOWEL SIGN LO — below-base attachment.
+        0x0EBC => IndicCategory::Matra,
+        // U+0EBD SEMIVOWEL SIGN NYO — semi-consonant attachment.
+        0x0EBD => IndicCategory::Matra,
+        // U+0EC0..U+0EC4 pre-base vowels SARA E / AY / O / AY-TAI /
+        // AI-TAI. Storage order is BEFORE the consonant — already in
+        // visual position. Classify as Vowel so the cluster machine
+        // starts a new cluster at each (no reorder needed).
+        0x0EC0..=0x0EC4 => IndicCategory::Vowel,
+        // U+0EC6 KO LA — repeat sign; symbol.
+        0x0EC6 => IndicCategory::Symbol,
+        // U+0EC8..U+0ECB tone marks MAI EK / MAI THO / MAI TI / MAI
+        // CATAWA — bindu (attach to cluster end).
+        0x0EC8..=0x0ECB => IndicCategory::Bindu,
+        // U+0ECC CANCELLATION MARK / U+0ECD NIKAHIT / U+0ECE YAMAKKAN
+        // (held over from Thai-shape) — bindu marks.
+        0x0ECC..=0x0ECE => IndicCategory::Bindu,
+        // U+0ED0..U+0ED9 Lao digits.
+        0x0ED0..=0x0ED9 => IndicCategory::Symbol,
+        // U+0EDC..U+0EDD HO NO / HO MO digraph consonants.
+        0x0EDC..=0x0EDD => IndicCategory::Consonant,
+        // U+0EDE..U+0EDF KHMU consonants (additional).
+        0x0EDE..=0x0EDF => IndicCategory::Consonant,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Myanmar / Burmese
+/// block (U+1000..U+109F). Round 13 added.
+///
+/// Burmese is the most complex of the round-13 scripts. Its cluster
+/// machine combines several of the structural features we already
+/// implement plus three new ones:
+///
+/// - **Asat U+103A** (the "killer") — kills the inherent vowel of the
+///   preceding consonant. Asat does NOT glue the next consonant into
+///   the cluster (unlike halant); it's a terminator. We classify it as
+///   `Bindu` so it attaches to the cluster end without forcing a
+///   conjunct — matching its visual role as a small mark above the
+///   base.
+/// - **Virama U+1039** — Burmese's true halant (glues the following
+///   consonant into the cluster as a stacked / subjoined letter).
+///   Classified as `Halant`.
+/// - **Medials U+103B..U+103E** (medial Ya / Ra / Wa / Ha) — bind
+///   tightly to the preceding consonant; like matras they extend the
+///   cluster but never break it. Classified as `Matra`.
+/// - **Pre-base vowel sign U+1031** (sign-e) — appears AFTER its base
+///   consonant in logical order but renders BEFORE it. Classified as
+///   `PreBaseMatra` so the cluster machine reorders it to the front of
+///   the cluster — matching the Devanagari shape exactly.
+/// - **Kinzi** (NGA + Asat + Virama + Consonant) — Burmese's
+///   reph-equivalent. The leading NGA + Asat + Virama stack renders as
+///   a small "kinzi" mark above the cluster base. The cluster machine
+///   sets [`ClusterFlags::has_reph`] when the cluster begins with NGA
+///   U+1004 + Asat U+103A + Virama U+1039 + Consonant — see the
+///   special-case branch in [`reorder_cluster_with`].
+///
+/// Tone marks U+1036..U+1038 (Anusvara / Dot Below / Visarga) are
+/// `Bindu` — they attach to the cluster end.
+pub fn burmese_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x1000 || cp > 0x109F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Consonants KA..A — U+1000..U+1021.
+        0x1000..=0x1021 => IndicCategory::Consonant,
+        // Independent vowels A / I / II / U / UU.
+        0x1023..=0x1027 => IndicCategory::Vowel,
+        // U+1028 unassigned (hole between vowels).
+        // Independent vowels E / O.
+        0x1029..=0x102A => IndicCategory::Vowel,
+        // Vowel signs (matras): U+102B SIGN TALL AA, U+102C SIGN AA,
+        // U+102D SIGN I, U+102E SIGN II, U+102F SIGN U, U+1030 SIGN UU.
+        0x102B..=0x1030 => IndicCategory::Matra,
+        // U+1031 SIGN E — pre-base matra (logical-order after base, but
+        // renders before; the cluster machine reorders it to the front).
+        0x1031 => IndicCategory::PreBaseMatra,
+        // U+1032 SIGN AI / U+1033..U+1034 SIGN MON II / SIGN MON O /
+        // U+1035 SIGN E ABOVE — matras (above-base attached).
+        0x1032..=0x1035 => IndicCategory::Matra,
+        // U+1036 SIGN ANUSVARA / U+1037 SIGN DOT BELOW / U+1038 SIGN
+        // VISARGA — tone-mark bindus.
+        0x1036..=0x1038 => IndicCategory::Bindu,
+        // U+1039 SIGN VIRAMA — Burmese's halant (glues the following
+        // consonant into the cluster).
+        0x1039 => IndicCategory::Halant,
+        // U+103A SIGN ASAT (killer) — kills inherent vowel of the
+        // preceding consonant. Classified as Bindu so it attaches to
+        // the cluster end WITHOUT gluing the next consonant (key
+        // difference from halant).
+        0x103A => IndicCategory::Bindu,
+        // U+103B..U+103E MEDIAL YA / RA / WA / HA — bind tightly to the
+        // preceding consonant. Classified as Matra so they extend the
+        // cluster.
+        0x103B..=0x103E => IndicCategory::Matra,
+        // U+103F GREAT SA — independent consonant.
+        0x103F => IndicCategory::Consonant,
+        // U+1040..U+1049 Myanmar digits.
+        0x1040..=0x1049 => IndicCategory::Symbol,
+        // U+104A..U+104F Myanmar punctuation + symbols (sectional /
+        // little / great section / locative / completed / aforementioned
+        // / genitive).
+        0x104A..=0x104F => IndicCategory::Symbol,
+        // U+1050..U+1055 Pali letters (Pali SHA / SSA / etc.) —
+        // independent consonants used in Pali borrowings.
+        0x1050..=0x1055 => IndicCategory::Consonant,
+        // U+1056..U+1059 Pali matras (vocalic R / L signs).
+        0x1056..=0x1059 => IndicCategory::Matra,
+        // U+105A..U+105D Mon / Shan additional consonants.
+        0x105A..=0x105D => IndicCategory::Consonant,
+        // U+105E..U+1060 Mon medials (medial NA / MA / LA).
+        0x105E..=0x1060 => IndicCategory::Matra,
+        // U+1061 Sgaw Karen sha consonant.
+        0x1061 => IndicCategory::Consonant,
+        // U+1062..U+1064 Sgaw Karen vowel signs / tones.
+        0x1062..=0x1064 => IndicCategory::Matra,
+        // U+1065..U+1066 Western Pwo Karen consonants.
+        0x1065..=0x1066 => IndicCategory::Consonant,
+        // U+1067..U+106D Western Pwo Karen vowel signs / tones.
+        0x1067..=0x106D => IndicCategory::Matra,
+        // U+106E..U+1070 Eastern Pwo Karen consonants.
+        0x106E..=0x1070 => IndicCategory::Consonant,
+        // U+1071..U+1074 Eastern Pwo Karen vowel signs.
+        0x1071..=0x1074 => IndicCategory::Matra,
+        // U+1075..U+1081 Shan consonants.
+        0x1075..=0x1081 => IndicCategory::Consonant,
+        // U+1082 Shan medial wa.
+        0x1082 => IndicCategory::Matra,
+        // U+1083..U+1086 Shan vowel signs.
+        0x1083..=0x1086 => IndicCategory::Matra,
+        // U+1087..U+108D Shan tone marks (sign three / two / one /
+        // little section / aforementioned).
+        0x1087..=0x108D => IndicCategory::Bindu,
+        // U+108E Rumai Palaung fa consonant.
+        0x108E => IndicCategory::Consonant,
+        // U+108F Rumai Palaung tone-5.
+        0x108F => IndicCategory::Bindu,
+        // U+1090..U+1099 Shan digits.
+        0x1090..=0x1099 => IndicCategory::Symbol,
+        // U+109A..U+109D Shan tone marks / vowel signs.
+        0x109A..=0x109D => IndicCategory::Matra,
+        // U+109E..U+109F Khamti symbol / sign.
+        0x109E..=0x109F => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
 /// Per-cluster shaping flags computed by [`reorder_cluster`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClusterFlags {
@@ -972,6 +1173,22 @@ pub fn cluster_boundaries(chars: &[char]) -> Vec<(usize, usize)> {
     cluster_boundaries_with(chars, devanagari_category)
 }
 
+/// Shape of the reph (or kinzi-equivalent) that a script forms when
+/// `reph_enabled = true`. The cluster machine's reph detector matches
+/// the pattern at the start of the cluster and sets
+/// [`ClusterFlags::has_reph`] when it fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RephKind {
+    /// Indic-style reph: `RA + halant + consonant` — three characters,
+    /// the standard Devanagari / Bengali / Telugu / Kannada / Gurmukhi
+    /// / Gujarati / Oriya pattern.
+    IndicRA,
+    /// Burmese-style kinzi: `NGA U+1004 + Asat U+103A + Virama U+1039 +
+    /// consonant` — four characters. The Asat (classified as `Bindu` by
+    /// [`burmese_category`]) sits between the NGA and the virama.
+    BurmeseKinzi,
+}
+
 /// Reordering rules that describe how a single cluster is rewritten
 /// from logical to visual order.
 #[derive(Debug, Clone, Copy)]
@@ -980,12 +1197,19 @@ pub struct ReorderRules {
     pub category: fn(char) -> IndicCategory,
     /// Codepoint of the script's RA letter — the only consonant that
     /// can form a reph. Devanagari U+0930, Bengali U+09B0, Tamil
-    /// U+0BB0 (but Tamil sets `reph_enabled = false`).
+    /// U+0BB0 (but Tamil sets `reph_enabled = false`). For Burmese the
+    /// "RA" slot is occupied by NGA U+1004 — the kinzi-leading
+    /// consonant — and `reph_kind = RephKind::BurmeseKinzi`.
     pub ra_codepoint: char,
-    /// True when this script forms a reph (Devanagari, Bengali). False
-    /// for scripts where RA + halant + consonant renders in-line
-    /// (Tamil, Malayalam in modern orthography).
+    /// True when this script forms a reph (Devanagari, Bengali) or
+    /// kinzi (Burmese). False for scripts where RA + halant + consonant
+    /// renders in-line (Tamil, Malayalam in modern orthography) or
+    /// where there is no halant at all (Thai, Lao).
     pub reph_enabled: bool,
+    /// Which pattern the reph detector matches at cluster start when
+    /// `reph_enabled` is true. Defaults to [`RephKind::IndicRA`] for
+    /// every Indic script; Burmese sets [`RephKind::BurmeseKinzi`].
+    pub reph_kind: RephKind,
 }
 
 /// Devanagari reorder rules.
@@ -993,6 +1217,7 @@ pub const DEVANAGARI_RULES: ReorderRules = ReorderRules {
     category: devanagari_category,
     ra_codepoint: '\u{0930}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Bengali reorder rules.
@@ -1000,6 +1225,7 @@ pub const BENGALI_RULES: ReorderRules = ReorderRules {
     category: bengali_category,
     ra_codepoint: '\u{09B0}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Tamil reorder rules. `reph_enabled = false` because Tamil RA
@@ -1008,6 +1234,7 @@ pub const TAMIL_RULES: ReorderRules = ReorderRules {
     category: tamil_category,
     ra_codepoint: '\u{0BB0}',
     reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Gurmukhi reorder rules. Reph is rare in modern Punjabi but the
@@ -1017,6 +1244,7 @@ pub const GURMUKHI_RULES: ReorderRules = ReorderRules {
     category: gurmukhi_category,
     ra_codepoint: '\u{0A30}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Gujarati reorder rules — Devanagari-shaped (halant-driven
@@ -1025,6 +1253,7 @@ pub const GUJARATI_RULES: ReorderRules = ReorderRules {
     category: gujarati_category,
     ra_codepoint: '\u{0AB0}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Telugu reorder rules. Reph forms on RA U+0C30; pre-base matras
@@ -1033,6 +1262,7 @@ pub const TELUGU_RULES: ReorderRules = ReorderRules {
     category: telugu_category,
     ra_codepoint: '\u{0C30}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Kannada reorder rules. Reph forms on RA U+0CB0; pre-base matras
@@ -1042,6 +1272,7 @@ pub const KANNADA_RULES: ReorderRules = ReorderRules {
     category: kannada_category,
     ra_codepoint: '\u{0CB0}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Malayalam reorder rules. `reph_enabled = false` — modern Malayalam
@@ -1051,6 +1282,7 @@ pub const MALAYALAM_RULES: ReorderRules = ReorderRules {
     category: malayalam_category,
     ra_codepoint: '\u{0D30}',
     reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Oriya reorder rules. Reph forms on RA U+0B30; pre-base matras
@@ -1060,6 +1292,7 @@ pub const ORIYA_RULES: ReorderRules = ReorderRules {
     category: oriya_category,
     ra_codepoint: '\u{0B30}',
     reph_enabled: true,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Sinhala reorder rules. `reph_enabled = false` — Sinhala has no
@@ -1073,6 +1306,7 @@ pub const SINHALA_RULES: ReorderRules = ReorderRules {
     category: sinhala_category,
     ra_codepoint: '\u{0DBB}',
     reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Khmer reorder rules. `reph_enabled = false` — Khmer has no
@@ -1084,6 +1318,7 @@ pub const KHMER_RULES: ReorderRules = ReorderRules {
     category: khmer_category,
     ra_codepoint: '\u{179A}',
     reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
 };
 
 /// Thai reorder rules. `reph_enabled = false`; no halant either, so
@@ -1096,6 +1331,41 @@ pub const THAI_RULES: ReorderRules = ReorderRules {
     category: thai_category,
     ra_codepoint: '\u{0E23}',
     reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
+};
+
+/// Lao reorder rules. `reph_enabled = false`; structurally identical
+/// to Thai (no halant, no conjunct formation, pre-base vowels
+/// U+0EC0..U+0EC4 already in storage / visual order). `ra_codepoint`
+/// U+0EA3 (Lao RO) is a placeholder — never read because
+/// `reph_enabled = false`.
+pub const LAO_RULES: ReorderRules = ReorderRules {
+    category: lao_category,
+    ra_codepoint: '\u{0EA3}',
+    reph_enabled: false,
+    reph_kind: RephKind::IndicRA,
+};
+
+/// Burmese / Myanmar reorder rules. `reph_enabled = true` because
+/// Burmese DOES have a reph-equivalent — the **kinzi** (NGA U+1004 +
+/// Asat U+103A + Virama U+1039 + Consonant). The reph detection in
+/// [`reorder_cluster_with`] has a Burmese-specific branch (driven by
+/// `reph_kind = RephKind::BurmeseKinzi`) that checks for the kinzi
+/// pattern (4 chars rather than the Indic 3-char RA + halant +
+/// consonant) and sets [`ClusterFlags::has_reph`].
+/// `ra_codepoint` is U+1004 (NGA) — the kinzi-leading consonant in
+/// Burmese, which is what `apply_reph_substitutions` uses to feed the
+/// font's `rphf` GSUB lookup.
+///
+/// Pre-base matra: U+1031 (sign-e) — the only matra that needs
+/// reordering in modern Burmese. The standard
+/// [`reorder_cluster_with`] machinery handles it identically to
+/// Devanagari's pre-base matra reorder.
+pub const BURMESE_RULES: ReorderRules = ReorderRules {
+    category: burmese_category,
+    ra_codepoint: '\u{1004}',
+    reph_enabled: true,
+    reph_kind: RephKind::BurmeseKinzi,
 };
 
 /// Apply Indic cluster reordering to a single cluster using `rules`.
@@ -1137,13 +1407,32 @@ pub fn reorder_cluster_with(cluster: &[char], rules: &ReorderRules) -> (Vec<char
 
     // Reph detection. Use the original `cluster` (not `out`) so a
     // pre-base matra moved to the front doesn't mask the leading RA.
-    if rules.reph_enabled
-        && cluster.len() >= 3
-        && cluster[0] == rules.ra_codepoint
-        && (rules.category)(cluster[1]) == IndicCategory::Halant
-        && (rules.category)(cluster[2]) == IndicCategory::Consonant
-    {
-        flags.has_reph = true;
+    if rules.reph_enabled {
+        match rules.reph_kind {
+            // Indic-style: RA + halant + consonant.
+            RephKind::IndicRA => {
+                if cluster.len() >= 3
+                    && cluster[0] == rules.ra_codepoint
+                    && (rules.category)(cluster[1]) == IndicCategory::Halant
+                    && (rules.category)(cluster[2]) == IndicCategory::Consonant
+                {
+                    flags.has_reph = true;
+                }
+            }
+            // Burmese kinzi: NGA U+1004 + Asat U+103A + Virama U+1039 +
+            // consonant. The Asat is classified as Bindu by
+            // [`burmese_category`]; the Virama is the Halant.
+            RephKind::BurmeseKinzi => {
+                if cluster.len() >= 4
+                    && cluster[0] == rules.ra_codepoint
+                    && cluster[1] == '\u{103A}'
+                    && (rules.category)(cluster[2]) == IndicCategory::Halant
+                    && (rules.category)(cluster[3]) == IndicCategory::Consonant
+                {
+                    flags.has_reph = true;
+                }
+            }
+        }
     }
 
     (out, flags)
@@ -1298,6 +1587,31 @@ pub fn thai_feature_tags() -> Vec<[u8; 4]> {
     vec![*b"locl", *b"ccmp", *b"pres", *b"abvs", *b"blws", *b"psts"]
 }
 
+/// Lao feature tags (round 13). Identical to [`thai_feature_tags`] —
+/// Lao mirrors Thai structurally (no halant, no conjunct formation,
+/// pre-base vowels in storage order). Same minimal substitution
+/// pipeline.
+pub fn lao_feature_tags() -> Vec<[u8; 4]> {
+    thai_feature_tags()
+}
+
+/// Burmese / Myanmar feature tags (round 13). Burmese has the richest
+/// substitution pipeline of all the round-13 scripts — kinzi reph,
+/// medials, asat (the killer mark), and post-base / pre-base
+/// presentation features all participate.
+///
+/// Per-OpenType "Creating and supporting OpenType fonts for the
+/// Myanmar script", the Myanmar shaper applies (in order): `locl` /
+/// `ccmp` / `rphf` (kinzi) / `pref` / `blwf` / `pstf` / `pres` /
+/// `abvs` / `blws` / `psts` / `haln`. We add `mset` (Myanmar set —
+/// post-medial substitution) for fonts that ship it.
+pub fn burmese_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"rphf", *b"pref", *b"blwf", *b"pstf", *b"pres", *b"abvs", *b"blws",
+        *b"psts", *b"haln", *b"mset",
+    ]
+}
+
 /// OpenType script tags for the Indic scripts we shape. Each tuple
 /// returns `(modern_tag, legacy_tag)` — modern Indic2 tags
 /// (`dev2` / `bng2` / `tml2` / `gur2` / `gjr2` / `tel2` / `knd2` /
@@ -1325,6 +1639,12 @@ pub fn script_indic_tags(script: super::arabic::Script) -> Option<([u8; 4], [u8;
         super::arabic::Script::Sinhala => Some((*b"sinh", *b"sinh")),
         super::arabic::Script::Khmer => Some((*b"khmr", *b"khmr")),
         super::arabic::Script::Thai => Some((*b"thai", *b"thai")),
+        // Round 13 Brahmic non-Indic scripts. Lao's Indic2 tag is `lao`
+        // (note: 3-byte ASCII padded with a space → "lao "); Burmese
+        // has both `mym2` (Indic2) and `mymr` (legacy v1) as recognised
+        // OpenType tags.
+        super::arabic::Script::Lao => Some((*b"lao ", *b"lao ")),
+        super::arabic::Script::Burmese => Some((*b"mym2", *b"mymr")),
         _ => None,
     }
 }
@@ -2401,5 +2721,374 @@ mod tests {
         // Thai block.
         assert_eq!(script_of('\u{0E01}'), Script::Thai);
         assert_eq!(script_of('\u{0E40}'), Script::Thai);
+    }
+
+    // ---------- Lao (round 13) ----------
+
+    #[test]
+    fn lao_category_classifies_ko_as_consonant() {
+        // U+0E81 LAO LETTER KO.
+        assert_eq!(lao_category('\u{0E81}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn lao_category_has_no_halant() {
+        // Lao has no halant — every Lao consonant returns Consonant; no
+        // codepoint returns Halant. Spot-check the entire Lao consonant
+        // span.
+        for cp in 0x0E81..=0x0EAE {
+            let ch = char::from_u32(cp).unwrap();
+            assert_ne!(
+                lao_category(ch),
+                IndicCategory::Halant,
+                "U+{cp:04X} must not be Halant"
+            );
+        }
+    }
+
+    #[test]
+    fn lao_pre_base_vowels_classified_as_vowel() {
+        // U+0EC0..U+0EC4 SARA E / AY / O / AY-TAI / AI-TAI — already
+        // in pre-base storage order; classified as Vowel so the
+        // cluster machine starts a new cluster at each (no reorder
+        // needed since storage order matches visual order).
+        for cp in 0x0EC0..=0x0EC4 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                lao_category(ch),
+                IndicCategory::Vowel,
+                "U+{cp:04X} should be Vowel (pre-base in storage order)"
+            );
+        }
+    }
+
+    #[test]
+    fn lao_above_base_vowel_signs_classified_as_matra() {
+        // U+0EB1 MAI KAN, U+0EB4..U+0EB7 SARA I / II / Y / YY,
+        // U+0EBB MAI KON.
+        assert_eq!(lao_category('\u{0EB1}'), IndicCategory::Matra);
+        for cp in 0x0EB4..=0x0EB7 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(lao_category(ch), IndicCategory::Matra);
+        }
+        assert_eq!(lao_category('\u{0EBB}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn lao_below_base_vowel_signs_classified_as_matra() {
+        // U+0EB8..U+0EB9 SARA U / UU.
+        assert_eq!(lao_category('\u{0EB8}'), IndicCategory::Matra);
+        assert_eq!(lao_category('\u{0EB9}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn lao_tone_marks_classified_as_bindu() {
+        // U+0EC8..U+0ECB tone marks MAI EK / MAI THO / MAI TI / MAI
+        // CATAWA.
+        for cp in 0x0EC8..=0x0ECB {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(lao_category(ch), IndicCategory::Bindu);
+        }
+    }
+
+    #[test]
+    fn lao_returns_other_for_devanagari_codepoint() {
+        assert_eq!(lao_category('\u{0915}'), IndicCategory::Other);
+    }
+
+    #[test]
+    fn lao_pre_base_vowel_starts_new_cluster_before_consonant() {
+        // SARA E (U+0EC0) + KO (U+0E81) — SARA E is a Vowel (pre-base
+        // in storage), KO is a Consonant — both start their own
+        // cluster.
+        let chars = ['\u{0EC0}', '\u{0E81}'];
+        let bounds = cluster_boundaries_with(&chars, lao_category);
+        assert_eq!(bounds, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn lao_consonant_with_tone_mark_in_one_cluster() {
+        // KO + MAI EK (tone mark) — bindu attaches to consonant.
+        let chars = ['\u{0E81}', '\u{0EC8}'];
+        let bounds = cluster_boundaries_with(&chars, lao_category);
+        assert_eq!(bounds, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn lao_each_consonant_starts_new_cluster() {
+        // KO + KHO + KHO TAM — three independent clusters
+        // (no halant to glue them).
+        let chars = ['\u{0E81}', '\u{0E82}', '\u{0E84}'];
+        let bounds = cluster_boundaries_with(&chars, lao_category);
+        assert_eq!(bounds, vec![(0, 1), (1, 2), (2, 3)]);
+    }
+
+    #[test]
+    fn lao_no_pre_base_matra_reorder() {
+        // KO + SARA AA (post-base) — no reorder required.
+        let cluster = ['\u{0E81}', '\u{0EB2}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &LAO_RULES);
+        assert_eq!(out, vec!['\u{0E81}', '\u{0EB2}']);
+        assert!(!flags.pre_base_reordered);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn lao_RA_does_NOT_set_reph_flag() {
+        // Lao RO (U+0EA3) — no halant in Lao so no reph pattern can be
+        // formed.
+        let cluster = ['\u{0EA3}', '\u{0E81}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &LAO_RULES);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn lao_feature_tags_match_thai_shape() {
+        assert_eq!(lao_feature_tags(), thai_feature_tags());
+    }
+
+    // ---------- Burmese / Myanmar (round 13) ----------
+
+    #[test]
+    fn burmese_category_classifies_ka_as_consonant() {
+        // U+1000 MYANMAR LETTER KA.
+        assert_eq!(burmese_category('\u{1000}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn burmese_category_classifies_nga_as_consonant() {
+        // U+1004 MYANMAR LETTER NGA — kinzi-leading consonant.
+        assert_eq!(burmese_category('\u{1004}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn burmese_category_classifies_virama_as_halant() {
+        // U+1039 MYANMAR SIGN VIRAMA — Burmese's halant.
+        assert_eq!(burmese_category('\u{1039}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn burmese_category_classifies_asat_as_bindu_not_halant() {
+        // U+103A MYANMAR SIGN ASAT (the killer) — kills inherent vowel
+        // but does NOT glue the next consonant. Classified as Bindu so
+        // it attaches to the cluster end rather than acting as a halant.
+        assert_eq!(burmese_category('\u{103A}'), IndicCategory::Bindu);
+        assert_ne!(burmese_category('\u{103A}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn burmese_category_classifies_pre_base_matra_e() {
+        // U+1031 MYANMAR VOWEL SIGN E — pre-base.
+        assert_eq!(burmese_category('\u{1031}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn burmese_category_medials_classified_as_matra() {
+        // U+103B..U+103E MEDIAL YA / RA / WA / HA.
+        for cp in 0x103B..=0x103E {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                burmese_category(ch),
+                IndicCategory::Matra,
+                "medial U+{cp:04X} should be Matra"
+            );
+        }
+    }
+
+    #[test]
+    fn burmese_aa_matra_classified_as_matra() {
+        // U+102C MYANMAR VOWEL SIGN AA.
+        assert_eq!(burmese_category('\u{102C}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn burmese_anusvara_classified_as_bindu() {
+        // U+1036 MYANMAR SIGN ANUSVARA.
+        assert_eq!(burmese_category('\u{1036}'), IndicCategory::Bindu);
+    }
+
+    #[test]
+    fn burmese_dot_below_classified_as_bindu() {
+        // U+1037 MYANMAR SIGN DOT BELOW (tone mark).
+        assert_eq!(burmese_category('\u{1037}'), IndicCategory::Bindu);
+    }
+
+    #[test]
+    fn burmese_visarga_classified_as_bindu() {
+        // U+1038 MYANMAR SIGN VISARGA (tone mark).
+        assert_eq!(burmese_category('\u{1038}'), IndicCategory::Bindu);
+    }
+
+    #[test]
+    fn burmese_independent_vowel_a_classified_as_vowel() {
+        // U+1023 MYANMAR LETTER I (the second independent vowel).
+        assert_eq!(burmese_category('\u{1023}'), IndicCategory::Vowel);
+    }
+
+    #[test]
+    fn burmese_returns_other_for_devanagari_codepoint() {
+        assert_eq!(burmese_category('\u{0915}'), IndicCategory::Other);
+    }
+
+    #[test]
+    fn burmese_pre_base_matra_e_reorders_before_base() {
+        // KA (U+1000) + sign-e (U+1031) → sign-e + KA after reorder.
+        let cluster = ['\u{1000}', '\u{1031}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        assert_eq!(out, vec!['\u{1031}', '\u{1000}']);
+        assert!(flags.pre_base_reordered);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn burmese_virama_chains_subjoined_consonant_into_one_cluster() {
+        // KA + VIRAMA + KHA → conjunct stack (single cluster).
+        let chars = ['\u{1000}', '\u{1039}', '\u{1001}'];
+        let bounds = cluster_boundaries_with(&chars, burmese_category);
+        assert_eq!(bounds, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn burmese_asat_does_NOT_glue_next_consonant() {
+        // KA + ASAT + KHA — Asat is Bindu (attaches to KA), KHA starts
+        // a new cluster. This is the key difference from VIRAMA.
+        let chars = ['\u{1000}', '\u{103A}', '\u{1001}'];
+        let bounds = cluster_boundaries_with(&chars, burmese_category);
+        assert_eq!(bounds, vec![(0, 2), (2, 3)]);
+    }
+
+    #[test]
+    fn burmese_kinzi_pattern_sets_reph_flag() {
+        // NGA (U+1004) + ASAT (U+103A) + VIRAMA (U+1039) + Consonant.
+        // The Burmese kinzi — Burmese reph-equivalent.
+        let cluster = ['\u{1004}', '\u{103A}', '\u{1039}', '\u{1000}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        assert_eq!(out, cluster.to_vec());
+        assert!(flags.has_reph, "Burmese kinzi must set has_reph");
+    }
+
+    #[test]
+    fn burmese_kinzi_keeps_in_one_cluster() {
+        // NGA + ASAT + VIRAMA + KA — Asat (Bindu) extends, Virama
+        // (Halant) extends, KA after Halant extends. Single cluster.
+        let chars = ['\u{1004}', '\u{103A}', '\u{1039}', '\u{1000}'];
+        let bounds = cluster_boundaries_with(&chars, burmese_category);
+        assert_eq!(bounds, vec![(0, 4)]);
+    }
+
+    #[test]
+    fn burmese_partial_kinzi_sequence_does_NOT_set_reph_flag() {
+        // NGA + ASAT (without virama + cons) — incomplete kinzi.
+        let cluster = ['\u{1004}', '\u{103A}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        assert!(!flags.has_reph);
+        // Same with NGA + ASAT + VIRAMA but no consonant.
+        let cluster = ['\u{1004}', '\u{103A}', '\u{1039}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn burmese_non_NGA_consonant_does_NOT_form_kinzi() {
+        // KA (NOT NGA) + ASAT + VIRAMA + Cons — must not match kinzi.
+        let cluster = ['\u{1000}', '\u{103A}', '\u{1039}', '\u{1001}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        assert!(!flags.has_reph, "kinzi requires NGA U+1004 specifically");
+    }
+
+    #[test]
+    fn burmese_kinzi_with_pre_base_matra_combines_both_flags() {
+        // NGA + ASAT + VIRAMA + KA + sign-e (pre-base).
+        let cluster = ['\u{1004}', '\u{103A}', '\u{1039}', '\u{1000}', '\u{1031}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &BURMESE_RULES);
+        // Pre-base matra moves to position 0.
+        assert_eq!(
+            out,
+            vec!['\u{1031}', '\u{1004}', '\u{103A}', '\u{1039}', '\u{1000}']
+        );
+        assert!(flags.has_reph, "kinzi still detected on original cluster");
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn burmese_ka_with_medial_ya_in_one_cluster() {
+        // KA + MEDIAL YA — medial extends the cluster.
+        let chars = ['\u{1000}', '\u{103B}'];
+        let bounds = cluster_boundaries_with(&chars, burmese_category);
+        assert_eq!(bounds, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn burmese_ka_with_aa_and_dot_below_in_one_cluster() {
+        // KA + SIGN AA + DOT BELOW (tone) — single cluster.
+        let chars = ['\u{1000}', '\u{102C}', '\u{1037}'];
+        let bounds = cluster_boundaries_with(&chars, burmese_category);
+        assert_eq!(bounds, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn burmese_feature_tags_includes_rphf_for_kinzi() {
+        let tags = burmese_feature_tags();
+        assert!(tags.contains(b"rphf"), "Burmese kinzi uses rphf feature");
+        assert!(tags.contains(b"pref"));
+        assert!(tags.contains(b"blwf"));
+        assert!(tags.contains(b"pstf"));
+        assert!(tags.contains(b"mset"), "Burmese mset for medial-set");
+        assert!(tags.contains(b"pres"));
+        assert!(tags.contains(b"abvs"));
+        assert!(tags.contains(b"blws"));
+        assert!(tags.contains(b"psts"));
+        assert!(tags.contains(b"haln"));
+    }
+
+    #[test]
+    fn burmese_great_sa_is_independent_consonant() {
+        // U+103F MYANMAR LETTER GREAT SA.
+        assert_eq!(burmese_category('\u{103F}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn burmese_digit_classified_as_symbol() {
+        // U+1040..U+1049 Myanmar digits.
+        for cp in 0x1040..=0x1049 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(burmese_category(ch), IndicCategory::Symbol);
+        }
+    }
+
+    // ---------- script_indic_tags expansions for round 13 ----------
+
+    #[test]
+    fn script_indic_tags_returns_pair_for_round13_scripts() {
+        use super::super::arabic::Script;
+        assert_eq!(script_indic_tags(Script::Lao), Some((*b"lao ", *b"lao ")));
+        assert_eq!(
+            script_indic_tags(Script::Burmese),
+            Some((*b"mym2", *b"mymr"))
+        );
+    }
+
+    #[test]
+    fn script_of_recognises_round13_blocks() {
+        use super::super::arabic::{script_of, Script};
+        // Lao block.
+        assert_eq!(script_of('\u{0E81}'), Script::Lao);
+        assert_eq!(script_of('\u{0EC0}'), Script::Lao);
+        // Burmese block.
+        assert_eq!(script_of('\u{1000}'), Script::Burmese);
+        assert_eq!(script_of('\u{103A}'), Script::Burmese);
+        assert_eq!(script_of('\u{1039}'), Script::Burmese);
+    }
+
+    // ---------- RephKind enum sanity ----------
+
+    #[test]
+    fn devanagari_uses_indic_ra_reph_kind() {
+        assert_eq!(DEVANAGARI_RULES.reph_kind, RephKind::IndicRA);
+    }
+
+    #[test]
+    fn burmese_uses_burmese_kinzi_reph_kind() {
+        assert_eq!(BURMESE_RULES.reph_kind, RephKind::BurmeseKinzi);
     }
 }

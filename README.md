@@ -58,38 +58,45 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   visually-correct contextual shapes (including LAM-ALEF ligatures
   via the existing GSUB pass).
 - **Indic + Brahmic non-Indic complex-script shaping (rounds 8 + 10 +
-  11 + 12)** — `shaping::indic` classifies Devanagari (U+0900..U+097F),
-  Bengali (U+0980..U+09FF), Tamil (U+0B80..U+0BFF),
+  11 + 12 + 13)** — `shaping::indic` classifies Devanagari
+  (U+0900..U+097F), Bengali (U+0980..U+09FF), Tamil (U+0B80..U+0BFF),
   Gurmukhi (U+0A00..U+0A7F), Gujarati (U+0A80..U+0AFF),
   Telugu (U+0C00..U+0C7F), Kannada (U+0C80..U+0CFF),
   Malayalam (U+0D00..U+0D7F), Oriya (U+0B00..U+0B7F),
-  Sinhala (U+0D80..U+0DFF), Khmer (U+1780..U+17FF), and
-  Thai (U+0E00..U+0E7F) codepoints, segments runs into orthographic
-  clusters, applies per-script pre-base matra reorder, and identifies
-  reph where applicable (Tamil + Malayalam + Sinhala + Khmer + Thai
-  are reph-disabled — Tamil RA does not form a reph; modern Malayalam
-  uses chillu independent half-forms; Sinhala renders RA + al-lakuna
-  in-line; Khmer renders RA + coeng as a subjoined RA; Thai has no
-  halant at all). When the active face publishes a `rphf` GSUB lookup
-  for the active script, the leading RA glyph is rewritten to its reph
-  form via `Font::gsub_apply_lookup_type_1` and the halant glyph is
-  dropped (round 10). Round 11 also wires cluster-position-aware GSUB
-  features: `half` for non-final consonants in conjuncts;
+  Sinhala (U+0D80..U+0DFF), Khmer (U+1780..U+17FF),
+  Thai (U+0E00..U+0E7F), Lao (U+0E80..U+0EFF), and
+  Myanmar / Burmese (U+1000..U+109F) codepoints, segments runs into
+  orthographic clusters, applies per-script pre-base matra reorder,
+  and identifies reph where applicable (Tamil + Malayalam + Sinhala +
+  Khmer + Thai + Lao are reph-disabled; Burmese identifies a kinzi
+  (NGA + Asat + Virama + Cons) instead via `RephKind::BurmeseKinzi`
+  on `BURMESE_RULES`). When the active face publishes a `rphf` GSUB
+  lookup for the active script, the leading RA glyph is rewritten to
+  its reph form via `Font::gsub_apply_lookup_type_1` and the halant
+  glyph is dropped (round 10). Round 11 wires cluster-position-aware
+  GSUB features: `half` for non-final consonants in conjuncts;
   `pref` / `blwf` / `abvf` / `pstf` (cascaded — first that returns a
   substitute wins) for post-halant consonants; and the presentation-
   pass features `pres` / `psts` / `abvs` / `blws` over every glyph
-  in the cluster. Coverage misses pass through unchanged so a font
-  without a given lookup degrades gracefully. Round 12 generalises the
-  cluster machine over Khmer (where U+17D2 COENG plays the halant role
-  and stacks subjoined consonants 2-3 deep in Pali borrowings), Sinhala
-  (Indic-shaped halant with U+0DCA AL-LAKUNA), and Thai (no halant —
-  pre-base vowels U+0E40..U+0E44 already in storage order so each
-  consonant simply starts a new cluster and tone marks attach). Per-
-  script reorder rules are exposed as `DEVANAGARI_RULES` /
-  `BENGALI_RULES` / `TAMIL_RULES` / `GURMUKHI_RULES` /
-  `GUJARATI_RULES` / `TELUGU_RULES` / `KANNADA_RULES` /
-  `MALAYALAM_RULES` / `ORIYA_RULES` / `SINHALA_RULES` / `KHMER_RULES`
-  / `THAI_RULES` for callers reusing the cluster machine.
+  in the cluster. Round 12 generalises the cluster machine over Khmer
+  (where U+17D2 COENG plays the halant role and stacks subjoined
+  consonants 2-3 deep in Pali borrowings), Sinhala (Indic-shaped halant
+  with U+0DCA AL-LAKUNA), and Thai (no halant — pre-base vowels
+  U+0E40..U+0E44 already in storage order). Round 13 adds Lao
+  (structural twin of Thai) and Burmese (Asat U+103A killer + Virama
+  U+1039 halant + medials U+103B..U+103E + pre-base sign-e U+1031 +
+  kinzi reph-equivalent), plus a multi-glyph **context-aware** GSUB
+  pass (`apply_cluster_context_substitutions`) that dispatches `locl` /
+  `nukt` / `akhn` / `cjct` / `init` / `haln` via
+  `Font::gsub_apply_lookup_type_5` (Contextual) +
+  `gsub_apply_lookup_type_6` (Chained Context) at every position in
+  every cluster. Coverage misses pass through unchanged so a font
+  without a given lookup degrades gracefully. Per-script reorder rules
+  are exposed as `DEVANAGARI_RULES` / `BENGALI_RULES` / `TAMIL_RULES` /
+  `GURMUKHI_RULES` / `GUJARATI_RULES` / `TELUGU_RULES` /
+  `KANNADA_RULES` / `MALAYALAM_RULES` / `ORIYA_RULES` /
+  `SINHALA_RULES` / `KHMER_RULES` / `THAI_RULES` / `LAO_RULES` /
+  `BURMESE_RULES` for callers reusing the cluster machine.
 - **Variable fonts (round 9)** — `Face::set_variation_coords` /
   `variation_axes` / `named_instances` / `is_variable` surface the
   font's `fvar` declarations and let callers shape against a custom
@@ -98,9 +105,35 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   text, size_px)` is the per-call override path: it installs the
   coords on the primary face, runs the shape, then restores. Glyph
   outlines flow through `oxideav-ttf`'s gvar interpolator so the
-  emitted `Path` carries the blended deltas. CFF2 / OTF variable
-  fonts are deferred until `oxideav-otf` exposes a CFF2 variation
-  pipeline.
+  emitted `Path` carries the blended deltas. CFF2 charstring
+  evaluation (TN5177 v3 with the `blend` operator) is deferred —
+  scribe parses the CFF2 INDEX walker for table presence + axis
+  count + glyph count via `Face::cff2()`, but doesn't yet emit
+  variation-blended cubic outlines from CFF2 charstrings.
+- **Variable-font metrics + style attributes (round 14 / #454)** —
+  full surface for the four metric-variation tables. `Face::mvar()`
+  parses the global metric-variation table; `metric_delta(b"hasc")`
+  returns the ascender delta in font units at the current variation
+  coords (similar accessors for `cpht` cap-height, `xhgt` x-height,
+  `undo` underline offset, `unds` underline size, and the rest of
+  the OpenType MVAR ValueTag set). `Face::hvar()` /
+  `h_advance_delta(gid)` exposes per-glyph horizontal-advance
+  variations; `Face::vvar()` / `v_advance_delta(gid)` is the
+  vertical mirror (returns `None` / `0.0` for the horizontal-only
+  fonts that omit VVAR). `Face::stat()` / `stat_axes()` /
+  `stat_axis_values()` parse the Style Attributes table — design
+  axis labelling (`wght 400 → "Regular"`, `wght 700 → "Bold"`)
+  surfaced as metadata for downstream callers. All four tables
+  share an `ItemVariationStore` parser + a `DeltaSetIndexMap`
+  parser — both live in `crate::variations`.
+- **`name`-id resolution (round 14)** — `Face::name_id(nid)`
+  returns the highest-ranked Unicode string for a `name`-table
+  id, with the same priority the underlying TTF parser uses
+  (Windows English first, Mac Roman English second, anything
+  Unicode-y after, then any remaining record). Resolves
+  `axis_name_id` / `subfamily_name_id` (from `fvar`) and
+  `value_name_id` (from STAT) without forcing callers to reach
+  into `Face::with_font`.
 - **Vector text API** — `Shaper::shape_to_paths` returns one
   `(face_idx, Node, Transform2D)` per visible glyph. Each node is
   wrapped in an `oxideav_core::Group { cache_key: Some(_), .. }` so the
@@ -122,14 +155,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **Burmese (U+1000..U+109F)** + **Lao
-  (U+0E80..U+0EFF)** Brahmic non-Indic scripts (Burmese has medial
-  consonants U+103B..U+103E that need their own categorisation pass;
-  Lao mirrors Thai's structure but with distinct codepoints — both
-  deferred to a future round), **variable-font metrics**
-  (`MVAR` / `HVAR` / `VVAR` / `STAT`), **CFF2 variable fonts**,
-  **TrueType bytecode hinting**, **subpixel LCD filtering**,
-  **GPOS cursive attachment** — deferred.
+- **Bidi (UAX #9)**, **CFF2 variable charstrings**
+  (the `blend` operator in TN5177 v3 — scribe parses the CFF2
+  INDEX walker, but doesn't yet emit variation-blended cubic
+  outlines), **TrueType bytecode hinting**, **subpixel LCD
+  filtering**, **GPOS cursive attachment** — deferred.
 
 ## Test fixtures
 
