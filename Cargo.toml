@@ -19,7 +19,7 @@ categories = ["graphics", "rendering", "text-processing"]
 # `Transform2D`) introduced in oxideav-core 0.1.14. Round 8 / #357
 # adds `Group::cache_key` wrapping in `shape_to_paths`, which
 # requires the `cache_key` field landed in oxideav-core 0.1.15.
-oxideav-core = "0.1.15"
+oxideav-core = "0.1"
 oxideav-ttf = "0.1"
 oxideav-otf = "0.1"
 # CBDT/CBLC colour-emoji glyphs ship per-glyph PNG byte streams; we
