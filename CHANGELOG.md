@@ -7,6 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — three Brahmic non-Indic scripts (round 12)
+
+Round 12 extends the cluster machine across the script-family boundary
+to three of the five Brahmic non-Indic scripts. The round-11
+`ReorderRules` template carried straight over: each script ships its
+own categorisation table + `*_RULES` constant + feature-tag list, and
+the existing `cluster_boundaries_with` / `reorder_cluster_with`
+implementations consume them unchanged.
+
+- **Sinhala** (U+0D80..U+0DFF) — closest of the three to the Indic
+  shape. U+0DCA "AL-LAKUNA" plays the halant role (suppresses inherent
+  vowel; glues the next consonant into a conjunct cluster). Pre-base
+  matras: U+0DD9 (sign-e), U+0DDA (sign-ee), U+0DDB (sign-ai). The
+  precomposed two-part vowels U+0DDC / U+0DDD / U+0DDE (sign-o /
+  sign-oo / sign-au) carry pre-base components after canonical
+  decomposition — classified as `PreBaseMatra` so a cluster machine
+  on raw input still emits a pre-base reorder. `reph_enabled = false`
+  — Sinhala has no superscript reph rendering; RA + al-lakuna stays
+  in-line. Feature-tag list omits `rphf` and adds `pref` / `blwf` /
+  `pstf` for the two-part vowel decompositions.
+- **Khmer** (U+1780..U+17FF) — uniquely complex among the round-12
+  scripts. U+17D2 "KHMER SIGN COENG" plays the halant role and stacks
+  the following consonant as a subjoined letter underneath the base.
+  Khmer subjoined chains run two- to three-deep in Pali borrowings;
+  the cluster machine glues them into a single cluster via the
+  standard halant-skip rule. Pre-base matras: U+17BE (oe), U+17BF
+  (ya), U+17C0 (ie), U+17C1 (e), U+17C2 (ae), U+17C3 (ai), plus the
+  precomposed U+17C4 / U+17C5 (oo / au). `reph_enabled = false` —
+  Khmer's RA + COENG renders as subjoined RA, not as a reph. Feature-
+  tag list omits `rphf` and adds the Khmer-specific `cfar` (coeng-ra
+  final reordering).
+- **Thai** (U+0E00..U+0E7F) — the structural outlier. Thai has **no
+  halant** and **no conjunct formation** — every consonant starts a
+  new cluster. Thai's pre-base vowels U+0E40..U+0E44 (SARA E / AE /
+  O / AI MAIMUAN / AI MAIMALAI) appear in **storage / keyboard order
+  BEFORE** their consonant — the only Indic-family script where this
+  is the case — so their visual position already matches storage and
+  no reorder is needed. The cluster machine treats them as `Vowel`
+  (which starts a new cluster) and the existing segmenter does the
+  rest. Tone marks U+0E48..U+0E4B (mai ek / mai tho / mai tri / mai
+  chattawa) and signs U+0E4C..U+0E4E (thanthakhat / nikhahit /
+  yamakkan) are classified as `Bindu` so they attach to the cluster
+  end. Above-base vowel signs U+0E31, U+0E34..U+0E37, U+0E47 and
+  below-base signs U+0E38..U+0E3A are `Matra`. Feature-tag list is
+  minimal — `locl` / `ccmp` plus the four presentation-pass features.
+- **`Script::{Sinhala, Khmer, Thai}`** added to the
+  `shaping::arabic::Script` enum. The shared `script_of(char)`
+  classifier now returns the right variant for every codepoint in the
+  three new blocks.
+- **`script_indic_tags`** extended to map each new variant to its
+  OpenType script tag pair: `(sinh, sinh)` / `(khmr, khmr)` /
+  `(thai, thai)` (Sinhala / Khmer / Thai have a single Indic2 tag —
+  no v1/v2 split, since they were added after the Indic2 transition).
+- **Crate-root re-exports** for the new categorisation functions
+  (`sinhala_category` / `khmer_category` / `thai_category`),
+  feature-tag functions (`sinhala_feature_tags` / `khmer_feature_tags`
+  / `thai_feature_tags`), and rules constants (`SINHALA_RULES` /
+  `KHMER_RULES` / `THAI_RULES`).
+
+The implementations are clean-room readings of:
+
+- Unicode 15.1 Standard Annex #15 (Indic / Brahmic syllabic
+  categories); UAX #29 (cluster boundaries); the per-block charts in
+  the Unicode 15.1 core spec.
+- Microsoft OpenType Layout — *Creating and supporting OpenType fonts
+  for South-East Asian scripts* (Khmer / Thai); *Creating and
+  supporting OpenType fonts for the Sinhala script*.
+
+No HarfBuzz / FreeType / pango / ICU layout source consulted.
+
+Test coverage:
+- `shaping::indic::tests` — 36 new unit tests covering the three new
+  scripts (categorisation per category + per-script pre-base reorder +
+  reph-disabled assertions + cluster-boundary cases for halant chains
+  / coeng subjoined chains / Thai vowel-break + feature-tag list
+  shape). Total `shaping::indic` test count: 117 (up from 81).
+- `face_chain::tests` — 7 new unit tests covering the multi-script
+  cluster-span pass: per-script reorder + cluster-span script tag for
+  each new script + Khmer three-deep subjoined chain + Thai storage-
+  order preservation + a mixed Devanagari / Thai run that segments
+  cleanly at the script boundary.
+- `tests/round12_sinhala_cluster.rs` /
+  `tests/round12_khmer_cluster.rs` / `tests/round12_thai_cluster.rs`
+  — three new integration tests. Sinhala + Khmer follow the round-10
+  / round-11 fixture-skip pattern (DejaVuSans does not cover
+  U+0D80..U+0DFF or U+1780..U+17FF; tests `eprintln!` and return when
+  the fixture cmap is empty for the script in question). The Thai
+  test runs **without skip** — DejaVuSans does cover the Thai block,
+  so the test asserts SARA E + KO KAI gid sequence is preserved (no
+  reorder happens) and tone marks pass through.
+
+Followup tasks deferred:
+- **Burmese (U+1000..U+109F) + Lao (U+0E80..U+0EFF)** — the remaining
+  two Brahmic non-Indic scripts. Burmese has medial consonants
+  U+103B..U+103E that chain like Khmer subjoined letters but via a
+  distinct mechanism (no coeng equivalent — the medials are encoded
+  as standalone codepoints), plus complex tone marks. Lao mirrors
+  Thai structurally but with distinct codepoints (U+0EB1 above-base
+  vowel sign etc.). Both deferred to a future round.
+- **Multi-glyph-context GSUB features** (`locl` / `nukt` / `akhn` /
+  `cjct` / `init` / `haln`) still pending from #481. The round-11
+  cluster-position pass implements `half` + `pref|blwf|abvf|pstf` +
+  presentation features but the listed features need multi-glyph
+  context (e.g. `cjct` matches a halant + consonant pair and emits a
+  single conjunct gid) which the current `gsub_apply_lookup_type_1`
+  call doesn't carry.
+- **Indic font fixtures on the CDN.** The round-10 / round-11 / round-12
+  Sinhala + Khmer integration tests still skip when the fixture font
+  lacks coverage; landing `NotoSansSinhala` / `NotoSansKhmer` / et al.
+  on `samples.oxideav.org/fonts/` via the existing `font_fixtures`
+  helper would activate them.
+
 ## [0.1.6](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.5...v0.1.6) - 2026-05-05
 
 ### Other

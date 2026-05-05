@@ -161,6 +161,27 @@ pub enum Script {
     /// the precomposed o / au matras are themselves pre-base after
     /// canonical decomposition). Halant U+0B4D drives conjuncts.
     Oriya,
+    /// Sinhala block (U+0D80..U+0DFF). Sinhala. Round 12 (Brahmic
+    /// non-Indic) — closest to Indic in shape. Halant / al-lakuna
+    /// U+0DCA drives conjuncts; pre-base matras U+0DD9..U+0DDB
+    /// (e / ee / ai) plus the precomposed two-part vowels
+    /// U+0DDC..U+0DDE (o / oo / au) reorder to the front of the
+    /// cluster. No reph (Sinhala has no superscript reph rendering).
+    Sinhala,
+    /// Khmer block (U+1780..U+17FF). Khmer / Cambodian. Round 12 added
+    /// — coeng (U+17D2) plays the role of halant and stacks subjoined
+    /// consonants underneath the base; subjoined chains are commonly
+    /// 2-3 deep in Pali borrowings. Pre-base matras U+17BE / U+17BF /
+    /// U+17C0..U+17C5 reorder to the front of the cluster. No reph.
+    Khmer,
+    /// Thai block (U+0E00..U+0E7F). Thai. Round 12 added — no halant
+    /// and no conjunct formation; pre-base vowels U+0E40..U+0E44
+    /// already appear in storage / keyboard order BEFORE their
+    /// consonant (the one Indic-family script where this is the case),
+    /// so no reorder is needed — the cluster machine simply starts a
+    /// new cluster at each pre-base vowel. Tone marks U+0E48..U+0E4B
+    /// + signs U+0E4C..U+0E4E attach to the cluster end.
+    Thai,
     /// Anything else — Latin, CJK, Cyrillic, Greek, etc.
     Other,
 }
@@ -207,6 +228,15 @@ pub fn script_of(ch: char) -> Script {
     if (0x0B00..=0x0B7F).contains(&cp) {
         return Script::Oriya;
     }
+    if (0x0D80..=0x0DFF).contains(&cp) {
+        return Script::Sinhala;
+    }
+    if (0x1780..=0x17FF).contains(&cp) {
+        return Script::Khmer;
+    }
+    if (0x0E00..=0x0E7F).contains(&cp) {
+        return Script::Thai;
+    }
     Script::Other
 }
 
@@ -229,6 +259,9 @@ pub fn feature_tags_for_run(script: Script) -> Vec<[u8; 4]> {
         Script::Kannada => super::indic::kannada_feature_tags(),
         Script::Malayalam => super::indic::malayalam_feature_tags(),
         Script::Oriya => super::indic::oriya_feature_tags(),
+        Script::Sinhala => super::indic::sinhala_feature_tags(),
+        Script::Khmer => super::indic::khmer_feature_tags(),
+        Script::Thai => super::indic::thai_feature_tags(),
         Script::Other => Vec::new(),
     }
 }

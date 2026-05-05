@@ -19,21 +19,28 @@
 //!   the PF-B block (DejaVuSans, Noto Sans Arabic, Amiri) renders
 //!   visually-correct contextual shapes — including LAM-ALEF
 //!   ligatures via the existing GSUB pass.
-//! - **Indic complex-script shaping (rounds 8 + 10)** —
-//!   `shaping::indic` classifies Devanagari (U+0900..U+097F), Bengali
-//!   (U+0980..U+09FF), and Tamil (U+0B80..U+0BFF) codepoints into
-//!   syllabic categories, segments runs into orthographic clusters,
-//!   and applies per-script cluster transformations: pre-base matra
-//!   reorder (Devanagari U+093F; Bengali U+09BF / U+09C7 / U+09C8;
-//!   Tamil U+0BC6 / U+0BC7 / U+0BC8) plus reph identification
-//!   (Devanagari + Bengali only — Tamil RA does not form a reph).
-//!   The `FaceChain::shape` pipeline applies the reorder before cmap
-//!   so cmap-only Indic fonts render simple clusters like "कি" /
-//!   "কি" / "கெ" with the matra in the correct visual position.
-//!   When the active face publishes a `rphf` GSUB lookup for the
-//!   script, identified reph clusters get the leading RA glyph
-//!   substituted to its reph-form and the halant glyph dropped via
-//!   `Font::gsub_apply_lookup_type_1`.
+//! - **Indic + Brahmic complex-script shaping (rounds 8 + 10 + 11 +
+//!   12)** — `shaping::indic` classifies Devanagari (U+0900..U+097F),
+//!   Bengali (U+0980..U+09FF), Tamil (U+0B80..U+0BFF), Gurmukhi
+//!   (U+0A00..U+0A7F), Gujarati (U+0A80..U+0AFF), Telugu
+//!   (U+0C00..U+0C7F), Kannada (U+0C80..U+0CFF), Malayalam
+//!   (U+0D00..U+0D7F), Oriya (U+0B00..U+0B7F), Sinhala
+//!   (U+0D80..U+0DFF), Khmer (U+1780..U+17FF), and Thai
+//!   (U+0E00..U+0E7F) codepoints into syllabic categories, segments
+//!   runs into orthographic clusters, and applies per-script cluster
+//!   transformations: pre-base matra reorder (a uniform mechanism
+//!   across all scripts that have one) plus reph identification (the
+//!   Indic core scripts; Tamil + Malayalam + Sinhala + Khmer + Thai
+//!   are reph-disabled). Khmer's halant role is played by U+17D2
+//!   COENG which stacks subjoined consonants underneath the base;
+//!   Thai has no halant and Thai pre-base vowels are already in
+//!   storage order before their consonant. The `FaceChain::shape`
+//!   pipeline applies the reorder before cmap so cmap-only fonts
+//!   render simple clusters with the matra in the correct visual
+//!   position. When the active face publishes a `rphf` GSUB lookup
+//!   for the script, identified reph clusters get the leading RA
+//!   glyph substituted to its reph-form and the halant glyph dropped
+//!   via `Font::gsub_apply_lookup_type_1`.
 //! - **`Face::glyph_path` / `glyph_node`** — TrueType + OTF (CFF)
 //!   outlines as `oxideav_core::Path`; CBDT/sbix colour bitmaps as
 //!   `Node::Image` carrying a `VideoFrame`.
@@ -71,12 +78,14 @@ pub use shaping::{
     bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
     compute_forms, devanagari_category, devanagari_feature_tags, feature_tags_for_run,
     gujarati_category, gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags,
-    joining_class, kannada_category, kannada_feature_tags, malayalam_category,
-    malayalam_feature_tags, oriya_category, oriya_feature_tags, presentation_form, reorder_cluster,
-    reorder_cluster_with, script_indic_tags, tamil_category, tamil_feature_tags, telugu_category,
-    telugu_feature_tags, ClusterFlags, IndicCategory, JoiningClass, JoiningForm, ReorderRules,
-    Script, BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
-    MALAYALAM_RULES, ORIYA_RULES, TAMIL_RULES, TELUGU_RULES,
+    joining_class, kannada_category, kannada_feature_tags, khmer_category, khmer_feature_tags,
+    malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
+    presentation_form, reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
+    sinhala_feature_tags, tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags,
+    thai_category, thai_feature_tags, ClusterFlags, IndicCategory, JoiningClass, JoiningForm,
+    ReorderRules, Script, BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES,
+    KANNADA_RULES, KHMER_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES,
+    TELUGU_RULES, THAI_RULES,
 };
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,

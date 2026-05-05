@@ -13,6 +13,13 @@
 //!   adds two more pre-base matras (U+09C7 / U+09C8); Tamil's cluster
 //!   machine omits reph (no superscript RA) and conjunct formation,
 //!   keeping only pre-base matra reorder for U+0BC6 / U+0BC7 / U+0BC8.
+//! - Round 12: [`indic`] adds three Brahmic non-Indic scripts —
+//!   Sinhala (U+0D80..U+0DFF, halant-driven like Indic), Khmer
+//!   (U+1780..U+17FF, coeng-based subjoined consonants via U+17D2),
+//!   and Thai (U+0E00..U+0E7F, no halant — pre-base vowels are already
+//!   in the visual position). The cluster machine still drives all of
+//!   them via [`indic::ReorderRules`] (Sinhala / Khmer reorder the
+//!   pre-base matras; Thai is a no-op reorder, only segmentation).
 
 pub mod arabic;
 pub mod arabic_pf;
@@ -27,9 +34,10 @@ pub use indic::{
     bengali_category, bengali_feature_tags, cluster_boundaries, cluster_boundaries_with,
     devanagari_category, devanagari_feature_tags, gujarati_category, gujarati_feature_tags,
     gurmukhi_category, gurmukhi_feature_tags, kannada_category, kannada_feature_tags,
-    malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
-    reorder_cluster, reorder_cluster_with, script_indic_tags, tamil_category, tamil_feature_tags,
-    telugu_category, telugu_feature_tags, ClusterFlags, IndicCategory, ReorderRules, BENGALI_RULES,
-    DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, MALAYALAM_RULES, ORIYA_RULES,
-    TAMIL_RULES, TELUGU_RULES,
+    khmer_category, khmer_feature_tags, malayalam_category, malayalam_feature_tags, oriya_category,
+    oriya_feature_tags, reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
+    sinhala_feature_tags, tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags,
+    thai_category, thai_feature_tags, ClusterFlags, IndicCategory, ReorderRules, BENGALI_RULES,
+    DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES, MALAYALAM_RULES,
+    ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
 };

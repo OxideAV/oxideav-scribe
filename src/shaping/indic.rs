@@ -672,6 +672,241 @@ pub fn oriya_category(ch: char) -> IndicCategory {
     }
 }
 
+/// Look up the Indic category for `ch` within the Sinhala block
+/// (U+0D80..U+0DFF). Round 12 added.
+///
+/// Sinhala is the closest of the Brahmic non-Indic family to the
+/// Indic-shaped scripts: U+0DCA "AL-LAKUNA" plays the role of halant /
+/// virama (suppresses the inherent vowel; glues the next consonant into
+/// the same cluster). Sinhala's reph rule is **not** the Devanagari
+/// shape — RA + al-lakuna does not move the RA to the cluster end as a
+/// superscript; instead the al-lakuna stays in-line. We mirror the
+/// Tamil / Malayalam approach: `reph_enabled = false` on
+/// [`SINHALA_RULES`] so the cluster machine never sets
+/// [`ClusterFlags::has_reph`].
+///
+/// Pre-base matras: U+0DD9 (sign-e), U+0DDA (sign-ee), U+0DDB (sign-ai)
+/// are pre-base. The two-part vowel signs U+0DDC (sign-o), U+0DDD
+/// (sign-oo), U+0DDE (sign-au) decompose canonically to a leading pre-
+/// base U+0DD9 + a trailing post-base U+0DCF / U+0DDF; we classify the
+/// precomposed forms as `PreBaseMatra` so a cluster machine on raw input
+/// still emits a pre-base reorder.
+pub fn sinhala_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0D80 || cp > 0x0DFF {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // U+0D81 SINHALA SIGN CANDRABINDU, U+0D82 ANUSVARA, U+0D83 VISARGA.
+        0x0D81..=0x0D83 => IndicCategory::Bindu,
+        // Independent vowels (with gaps).
+        0x0D85..=0x0D96 => IndicCategory::Vowel,
+        // Consonants KA..LLA — Sinhala consonant span U+0D9A..U+0DC6
+        // with several gaps.
+        0x0D9A..=0x0DB1 => IndicCategory::Consonant,
+        // U+0DB2 unassigned.
+        0x0DB3..=0x0DBB => IndicCategory::Consonant,
+        // U+0DBC unassigned.
+        0x0DBD => IndicCategory::Consonant,
+        // U+0DBE..U+0DBF unassigned.
+        0x0DC0..=0x0DC6 => IndicCategory::Consonant,
+        // Halant — al-lakuna (U+0DCA).
+        0x0DCA => IndicCategory::Halant,
+        // Vowel sign AA — post-base.
+        0x0DCF => IndicCategory::Matra,
+        // Vowel signs AE / AEE / I / II / U / UU / R / RR — post-base /
+        // above-base.
+        0x0DD0..=0x0DD6 => IndicCategory::Matra,
+        // U+0DD7 unassigned.
+        // Pre-base matras E / EE / AI.
+        0x0DD9..=0x0DDB => IndicCategory::PreBaseMatra,
+        // Two-part vowel signs O / OO / AU — canonical decomposition
+        // begins with the pre-base U+0DD9; classify the precomposed
+        // codepoints as PreBaseMatra so a cluster machine on raw
+        // (un-decomposed) input still emits a pre-base reorder.
+        0x0DDC..=0x0DDE => IndicCategory::PreBaseMatra,
+        // Vowel sign LL / LLL — post-base.
+        0x0DDF => IndicCategory::Matra,
+        // U+0DE0..U+0DE5 unassigned.
+        // Sinhala lith digits.
+        0x0DE6..=0x0DEF => IndicCategory::Symbol,
+        // U+0DF0, U+0DF1 unassigned.
+        // Vowel sign LL / LLL (additional length-mark forms).
+        0x0DF2..=0x0DF3 => IndicCategory::Matra,
+        // U+0DF4 SINHALA PUNCTUATION KUNDDALIYA — symbol.
+        0x0DF4 => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Khmer block
+/// (U+1780..U+17FF). Round 12 added.
+///
+/// Khmer's "halant" is U+17D2 KHMER SIGN COENG — it stacks the
+/// following consonant as a subjoined letter underneath the base
+/// consonant, very much like Devanagari's halant chaining a conjunct.
+/// We classify coeng as [`IndicCategory::Halant`] so the existing
+/// cluster machine + boundary detector glue subjoined chains into one
+/// cluster. Khmer subjoined chains can be **long** — three- or four-
+/// consonant stacks are routine in Pali borrowings.
+///
+/// Pre-base matras: U+17BE (sign-oe), U+17BF (sign-ya), U+17C1 (sign-e),
+/// U+17C2 (sign-ae), U+17C3 (sign-ai). U+17C4 (sign-oo) and U+17C5
+/// (sign-au) are precomposed two-part vowels whose canonical
+/// decomposition begins with pre-base U+17C1; classified as PreBaseMatra
+/// for raw-input correctness.
+///
+/// Reph: Khmer has no reph (RA + coeng + consonant renders as
+/// subjoined RA underneath the base — not a superscript mark). The
+/// cluster machine sets [`SINHALA_RULES`]-style `reph_enabled = false`.
+pub fn khmer_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x1780 || cp > 0x17FF {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // Consonants KA..A — U+1780..U+17A2 (the Khmer base consonants).
+        0x1780..=0x17A2 => IndicCategory::Consonant,
+        // Independent vowels U+17A3..U+17B3 (the historic ones).
+        0x17A3..=0x17B3 => IndicCategory::Vowel,
+        // U+17B4..U+17B5 INHERENT VOWEL marks (visible in some fonts) —
+        // bindu-like.
+        0x17B4..=0x17B5 => IndicCategory::Bindu,
+        // U+17B6 vowel sign AA — post-base.
+        0x17B6 => IndicCategory::Matra,
+        // Vowel signs I / II / Y / YY / U / UU / UA — post-base / above.
+        0x17B7..=0x17BD => IndicCategory::Matra,
+        // U+17BE pre-base matra "oe" — Khmer pre-base.
+        0x17BE => IndicCategory::PreBaseMatra,
+        // U+17BF pre-base matra "ya".
+        0x17BF => IndicCategory::PreBaseMatra,
+        // U+17C0 pre-base matra "ie".
+        0x17C0 => IndicCategory::PreBaseMatra,
+        // U+17C1, U+17C2, U+17C3 pre-base matras E / AE / AI.
+        0x17C1..=0x17C3 => IndicCategory::PreBaseMatra,
+        // U+17C4, U+17C5 — precomposed two-part vowels OO / AU; their
+        // canonical decomposition begins with the pre-base U+17C1.
+        0x17C4..=0x17C5 => IndicCategory::PreBaseMatra,
+        // U+17C6 NIKAHIT / U+17C7 REAHMUK — bindu marks (anusvara /
+        // visarga family).
+        0x17C6..=0x17C7 => IndicCategory::Bindu,
+        // U+17C8 YUUKALEAPINTU — matra (length mark, post-base).
+        0x17C8 => IndicCategory::Matra,
+        // U+17C9..U+17D1 register / consonant signs — bindu-like (they
+        // attach to the cluster end without breaking it).
+        0x17C9..=0x17D1 => IndicCategory::Bindu,
+        // U+17D2 COENG — Khmer's halant. Stacks the next consonant as
+        // a subjoined letter.
+        0x17D2 => IndicCategory::Halant,
+        // U+17D3 BATHAMASAT — bindu.
+        0x17D3 => IndicCategory::Bindu,
+        // U+17D4..U+17D6 KHAN / BARIYOOSAN / CAMNUC PII KUUH — symbol
+        // (cluster-breaking punctuation).
+        0x17D4..=0x17D6 => IndicCategory::Symbol,
+        // U+17D7 LEK TOO — repeat sign (consonant-like).
+        0x17D7 => IndicCategory::Consonant,
+        // U+17D8..U+17D9 punctuation symbols.
+        0x17D8..=0x17D9 => IndicCategory::Symbol,
+        // U+17DA KOOMUUT — symbol.
+        0x17DA => IndicCategory::Symbol,
+        // U+17DB CURRENCY SYMBOL RIEL.
+        0x17DB => IndicCategory::Symbol,
+        // U+17DC AVAKRAHASANYA — sign; treat as bindu (attaches).
+        0x17DC => IndicCategory::Bindu,
+        // U+17DD ATTHACAN — bindu.
+        0x17DD => IndicCategory::Bindu,
+        // U+17E0..U+17E9 Khmer digits.
+        0x17E0..=0x17E9 => IndicCategory::Symbol,
+        // U+17F0..U+17F9 Khmer divination symbols.
+        0x17F0..=0x17F9 => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
+/// Look up the Indic category for `ch` within the Thai block
+/// (U+0E00..U+0E7F). Round 12 added.
+///
+/// Thai is structurally **different** from the Indic2 cluster shape:
+/// - **No halant.** Thai consonants render in-line; there's no
+///   conjunct formation in the Devanagari sense. The cluster boundary
+///   is therefore "every consonant starts a new cluster" — same as the
+///   no-halant default in [`cluster_boundaries_with`].
+/// - **Pre-base vowels exist as standalone codepoints in logical
+///   order.** SARA E (U+0E40), SARA AE (U+0E41), SARA O (U+0E42),
+///   SARA AI MAIMUAN (U+0E43), SARA AI MAIMALAI (U+0E44) appear
+///   BEFORE their consonant in storage / keyboard order — Thai is the
+///   one Indic-family script where this is the case. For consistency
+///   with the rest of the [`shaping::indic`] machinery (which expects
+///   pre-base matras to follow their base in storage order and reorder
+///   to the front for display), we classify these as `Vowel` rather
+///   than `PreBaseMatra` — the cluster boundary detector then starts a
+///   new cluster at each one, which preserves the storage order
+///   (already the visual order). No reorder is needed.
+/// - **Tone marks.** U+0E48..U+0E4B (mai ek / mai tho / mai tri / mai
+///   chattawa) are above-base tone marks; U+0E4C..U+0E4E
+///   (thanthakhat / nikhahit / yamakkan) are above-base signs. All
+///   classified as `Bindu` so they attach to the cluster end without
+///   breaking it.
+/// - **Above-base / below-base vowel signs.** U+0E31 (mai han-akat),
+///   U+0E34..U+0E37 (sara i / ii / ue / uee), U+0E47 (maitaikhu) sit
+///   above the base; U+0E38..U+0E3A (sara u / uu / phinthu) sit below.
+///   All `Matra` (post-base in storage order; visually attached).
+///
+/// Reph: Thai has no reph at all. The cluster machine never sets
+/// `has_reph` because [`THAI_RULES`] sets `reph_enabled = false` AND
+/// no Thai consonant matches `ra_codepoint`.
+pub fn thai_category(ch: char) -> IndicCategory {
+    let cp = ch as u32;
+    if cp < 0x0E00 || cp > 0x0E7F {
+        return IndicCategory::Other;
+    }
+    match cp {
+        // U+0E01..U+0E2E consonants KO KAI..HO NOK HUUK.
+        0x0E01..=0x0E2E => IndicCategory::Consonant,
+        // U+0E2F PAIYANNOI — abbreviation sign; symbol.
+        0x0E2F => IndicCategory::Symbol,
+        // U+0E30 SARA A — post-base vowel.
+        0x0E30 => IndicCategory::Matra,
+        // U+0E31 MAIHAN-AKAT — above-base vowel sign.
+        0x0E31 => IndicCategory::Matra,
+        // U+0E32 SARA AA — post-base vowel.
+        0x0E32 => IndicCategory::Matra,
+        // U+0E33 SARA AM — sara aa + nikhahit precomposed; post-base.
+        0x0E33 => IndicCategory::Matra,
+        // U+0E34..U+0E37 SARA I / II / UE / UEE — above-base vowels.
+        0x0E34..=0x0E37 => IndicCategory::Matra,
+        // U+0E38..U+0E3A SARA U / UU / PHINTHU — below-base.
+        0x0E38..=0x0E3A => IndicCategory::Matra,
+        // U+0E3F BAHT SIGN — currency symbol.
+        0x0E3F => IndicCategory::Symbol,
+        // U+0E40..U+0E44 pre-base vowels SARA E / AE / O / AI MAIMUAN /
+        // AI MAIMALAI. They sit in logical-order BEFORE the consonant
+        // in storage; that already matches the visual order, so no
+        // reorder is needed. Classify as `Vowel` so the cluster
+        // machine starts a new cluster at each (matching the standard
+        // "vowel after non-halant breaks the cluster" rule).
+        0x0E40..=0x0E44 => IndicCategory::Vowel,
+        // U+0E45 LAKKHANGYAO — vowel-length mark; treat as matra.
+        0x0E45 => IndicCategory::Matra,
+        // U+0E46 MAIYAMOK — repeat sign; symbol.
+        0x0E46 => IndicCategory::Symbol,
+        // U+0E47 MAITAIKHU — above-base vowel sign.
+        0x0E47 => IndicCategory::Matra,
+        // U+0E48..U+0E4B tone marks MAI EK / MAI THO / MAI TRI / MAI
+        // CHATTAWA — bindu (attach to cluster end).
+        0x0E48..=0x0E4B => IndicCategory::Bindu,
+        // U+0E4C..U+0E4E THANTHAKHAT / NIKHAHIT / YAMAKKAN — bindu.
+        0x0E4C..=0x0E4E => IndicCategory::Bindu,
+        // U+0E4F FONGMAN — symbol.
+        0x0E4F => IndicCategory::Symbol,
+        // U+0E50..U+0E59 Thai digits.
+        0x0E50..=0x0E59 => IndicCategory::Symbol,
+        // U+0E5A, U+0E5B punctuation.
+        0x0E5A..=0x0E5B => IndicCategory::Symbol,
+        _ => IndicCategory::Symbol,
+    }
+}
+
 /// Per-cluster shaping flags computed by [`reorder_cluster`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClusterFlags {
@@ -825,6 +1060,42 @@ pub const ORIYA_RULES: ReorderRules = ReorderRules {
     category: oriya_category,
     ra_codepoint: '\u{0B30}',
     reph_enabled: true,
+};
+
+/// Sinhala reorder rules. `reph_enabled = false` — Sinhala has no
+/// superscript reph rendering. Pre-base matras (U+0DD9 / U+0DDA /
+/// U+0DDB plus the precomposed two-part vowels U+0DDC / U+0DDD /
+/// U+0DDE) reorder to the front of the cluster. `ra_codepoint`
+/// U+0DBB is kept as a placeholder so the [`ReorderRules`] shape
+/// matches the rest of the family — the `reph_enabled = false` flag
+/// guarantees the field is never read.
+pub const SINHALA_RULES: ReorderRules = ReorderRules {
+    category: sinhala_category,
+    ra_codepoint: '\u{0DBB}',
+    reph_enabled: false,
+};
+
+/// Khmer reorder rules. `reph_enabled = false` — Khmer has no
+/// superscript reph (RA + coeng renders as a subjoined RA, not a
+/// reph). Pre-base matras (U+17BE / U+17BF / U+17C0..U+17C5) reorder
+/// to the front of the cluster. `ra_codepoint` U+179A is kept as a
+/// placeholder; never consulted (`reph_enabled = false`).
+pub const KHMER_RULES: ReorderRules = ReorderRules {
+    category: khmer_category,
+    ra_codepoint: '\u{179A}',
+    reph_enabled: false,
+};
+
+/// Thai reorder rules. `reph_enabled = false`; no halant either, so
+/// every consonant starts a new cluster and no pre-base matra reorder
+/// is needed (Thai pre-base vowels U+0E40..U+0E44 are already in their
+/// visually-correct storage position — they precede the consonant in
+/// raw input and are classified as `Vowel`, which starts a new cluster
+/// without any reorder). `ra_codepoint` U+0E23 is a placeholder.
+pub const THAI_RULES: ReorderRules = ReorderRules {
+    category: thai_category,
+    ra_codepoint: '\u{0E23}',
+    reph_enabled: false,
 };
 
 /// Apply Indic cluster reordering to a single cluster using `rules`.
@@ -991,6 +1262,42 @@ pub fn oriya_feature_tags() -> Vec<[u8; 4]> {
     ]
 }
 
+/// Sinhala feature tags (round 12). Sinhala uses the standard Indic2
+/// substitution + presentation chain but `rphf` is omitted (no reph in
+/// Sinhala). `akhn` is included for the historic "akhand" ligatures
+/// (e.g. SHA + halant + RA conjuncts that some fonts ship as a single
+/// glyph). `pref` / `blwf` / `pstf` are needed because the two-part
+/// vowel signs U+0DDC..U+0DDE decompose to a pre-base + post-base pair.
+pub fn sinhala_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"akhn", *b"pref", *b"blwf", *b"half", *b"pstf", *b"cjct", *b"init",
+        *b"pres", *b"abvs", *b"blws", *b"psts", *b"haln",
+    ]
+}
+
+/// Khmer feature tags (round 12). Khmer's substitution chain uses
+/// `pref` heavily (pre-base matras flow through it), `blwf` for the
+/// subjoined consonants formed by coeng + consonant, and `pstf` for
+/// the post-base components of two-part vowels. No `rphf` (no reph),
+/// no `vatu` (no vattu), no `nukt` (no nukta). The OpenType spec lists
+/// Khmer-specific features `pres` / `psts` in the presentation pass.
+pub fn khmer_feature_tags() -> Vec<[u8; 4]> {
+    vec![
+        *b"locl", *b"ccmp", *b"pref", *b"blwf", *b"abvf", *b"pstf", *b"cfar", *b"init", *b"pres",
+        *b"abvs", *b"blws", *b"psts", *b"haln",
+    ]
+}
+
+/// Thai feature tags (round 12). Thai's substitution pipeline is
+/// minimal — `ccmp` for compatibility decomposition; `locl` for any
+/// language-specific variants; the four presentation features
+/// (`pres` / `abvs` / `blws` / `psts`) cover tone-mark + vowel-sign
+/// positioning. No halant means no `half` / `pref` / `blwf` / `pstf` /
+/// `cjct`. No reph means no `rphf`.
+pub fn thai_feature_tags() -> Vec<[u8; 4]> {
+    vec![*b"locl", *b"ccmp", *b"pres", *b"abvs", *b"blws", *b"psts"]
+}
+
 /// OpenType script tags for the Indic scripts we shape. Each tuple
 /// returns `(modern_tag, legacy_tag)` — modern Indic2 tags
 /// (`dev2` / `bng2` / `tml2` / `gur2` / `gjr2` / `tel2` / `knd2` /
@@ -1010,6 +1317,14 @@ pub fn script_indic_tags(script: super::arabic::Script) -> Option<([u8; 4], [u8;
         super::arabic::Script::Kannada => Some((*b"knd2", *b"knda")),
         super::arabic::Script::Malayalam => Some((*b"mlm2", *b"mlym")),
         super::arabic::Script::Oriya => Some((*b"ory2", *b"orya")),
+        // Round 12 Brahmic non-Indic scripts. Sinhala's Indic2 tag is
+        // `sinh` (no separate v1/v2 split — Sinhala was added after the
+        // Indic2 transition); Khmer's tag is `khmr`; Thai's tag is `thai`.
+        // We return the same 4-byte tag in both slots so callers that
+        // walk both still get the lookup.
+        super::arabic::Script::Sinhala => Some((*b"sinh", *b"sinh")),
+        super::arabic::Script::Khmer => Some((*b"khmr", *b"khmr")),
+        super::arabic::Script::Thai => Some((*b"thai", *b"thai")),
         _ => None,
     }
 }
@@ -1721,5 +2036,370 @@ mod tests {
     #[test]
     fn gurmukhi_feature_tags_match_devanagari_shape() {
         assert_eq!(gurmukhi_feature_tags(), devanagari_feature_tags());
+    }
+
+    // ---------- Sinhala (round 12) ----------
+
+    #[test]
+    fn sinhala_category_classifies_ka_as_consonant() {
+        // U+0D9A SINHALA LETTER ALPAPRAANA KAYANNA.
+        assert_eq!(sinhala_category('\u{0D9A}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn sinhala_category_classifies_al_lakuna_as_halant() {
+        // U+0DCA SINHALA SIGN AL-LAKUNA — Sinhala's halant.
+        assert_eq!(sinhala_category('\u{0DCA}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn sinhala_pre_base_matras_e_ee_ai() {
+        // U+0DD9 (sign-e), U+0DDA (sign-ee), U+0DDB (sign-ai) — pre-base.
+        assert_eq!(sinhala_category('\u{0DD9}'), IndicCategory::PreBaseMatra);
+        assert_eq!(sinhala_category('\u{0DDA}'), IndicCategory::PreBaseMatra);
+        assert_eq!(sinhala_category('\u{0DDB}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn sinhala_pre_base_two_part_vowels_o_oo_au() {
+        // U+0DDC..U+0DDE — precomposed two-part vowels with pre-base
+        // component U+0DD9. Classified as PreBaseMatra so the cluster
+        // machine reorders raw input correctly.
+        assert_eq!(sinhala_category('\u{0DDC}'), IndicCategory::PreBaseMatra);
+        assert_eq!(sinhala_category('\u{0DDD}'), IndicCategory::PreBaseMatra);
+        assert_eq!(sinhala_category('\u{0DDE}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn sinhala_aa_matra_classified_as_matra() {
+        // U+0DCF SINHALA VOWEL SIGN AELA-PILLA — post-base matra.
+        assert_eq!(sinhala_category('\u{0DCF}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn sinhala_anusvara_classified_as_bindu() {
+        // U+0D82 SINHALA SIGN ANUSVARAYA.
+        assert_eq!(sinhala_category('\u{0D82}'), IndicCategory::Bindu);
+    }
+
+    #[test]
+    fn sinhala_independent_vowel_a_classified_as_vowel() {
+        // U+0D85 SINHALA LETTER AYANNA.
+        assert_eq!(sinhala_category('\u{0D85}'), IndicCategory::Vowel);
+    }
+
+    #[test]
+    fn sinhala_returns_other_for_devanagari_codepoint() {
+        // Devanagari is OUT of the Sinhala block.
+        assert_eq!(sinhala_category('\u{0915}'), IndicCategory::Other);
+    }
+
+    #[test]
+    fn sinhala_pre_base_matra_e_reorders_before_base() {
+        // KA + sign-e → sign-e + KA.
+        let cluster = ['\u{0D9A}', '\u{0DD9}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &SINHALA_RULES);
+        assert_eq!(out, vec!['\u{0DD9}', '\u{0D9A}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn sinhala_RA_plus_halant_does_NOT_set_reph_flag() {
+        // Sinhala has no superscript reph — RA + al-lakuna stays in-line.
+        let cluster = ['\u{0DBB}', '\u{0DCA}', '\u{0D9A}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &SINHALA_RULES);
+        assert!(!flags.has_reph, "Sinhala reph_enabled is false");
+    }
+
+    #[test]
+    fn sinhala_conjunct_keeps_in_one_cluster() {
+        // KA + al-lakuna + SHA → conjunct (single cluster).
+        let chars = ['\u{0D9A}', '\u{0DCA}', '\u{0DC2}'];
+        let bounds = cluster_boundaries_with(&chars, sinhala_category);
+        assert_eq!(bounds, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn sinhala_feature_tags_omit_rphf() {
+        let tags = sinhala_feature_tags();
+        assert!(!tags.contains(b"rphf"), "Sinhala has no reph feature");
+        assert!(tags.contains(b"pref"));
+        assert!(tags.contains(b"blwf"));
+        assert!(tags.contains(b"pstf"));
+        assert!(tags.contains(b"akhn"));
+    }
+
+    // ---------- Khmer (round 12) ----------
+
+    #[test]
+    fn khmer_category_classifies_ka_as_consonant() {
+        // U+1780 KHMER LETTER KA.
+        assert_eq!(khmer_category('\u{1780}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn khmer_category_classifies_coeng_as_halant() {
+        // U+17D2 KHMER SIGN COENG — Khmer's halant.
+        assert_eq!(khmer_category('\u{17D2}'), IndicCategory::Halant);
+    }
+
+    #[test]
+    fn khmer_pre_base_matras_oe_ya_ie_e_ae_ai() {
+        // U+17BE..U+17C3 — pre-base.
+        for cp in 0x17BE..=0x17C3 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                khmer_category(ch),
+                IndicCategory::PreBaseMatra,
+                "U+{cp:04X} should be PreBaseMatra"
+            );
+        }
+    }
+
+    #[test]
+    fn khmer_pre_base_two_part_vowels_oo_au() {
+        // U+17C4 / U+17C5 — precomposed two-part vowels (canonical
+        // decomposition starts with pre-base U+17C1).
+        assert_eq!(khmer_category('\u{17C4}'), IndicCategory::PreBaseMatra);
+        assert_eq!(khmer_category('\u{17C5}'), IndicCategory::PreBaseMatra);
+    }
+
+    #[test]
+    fn khmer_nikahit_and_reahmuk_classified_as_bindu() {
+        // U+17C6 NIKAHIT, U+17C7 REAHMUK.
+        assert_eq!(khmer_category('\u{17C6}'), IndicCategory::Bindu);
+        assert_eq!(khmer_category('\u{17C7}'), IndicCategory::Bindu);
+    }
+
+    #[test]
+    fn khmer_aa_classified_as_matra() {
+        // U+17B6 KHMER VOWEL SIGN AA.
+        assert_eq!(khmer_category('\u{17B6}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn khmer_independent_vowel_a_classified_as_vowel() {
+        // U+17A5 KHMER INDEPENDENT VOWEL QI.
+        assert_eq!(khmer_category('\u{17A5}'), IndicCategory::Vowel);
+    }
+
+    #[test]
+    fn khmer_returns_other_for_devanagari_codepoint() {
+        assert_eq!(khmer_category('\u{0915}'), IndicCategory::Other);
+    }
+
+    #[test]
+    fn khmer_pre_base_matra_e_reorders_before_base() {
+        // KA + sign-e → sign-e + KA.
+        let cluster = ['\u{1780}', '\u{17C1}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &KHMER_RULES);
+        assert_eq!(out, vec!['\u{17C1}', '\u{1780}']);
+        assert!(flags.pre_base_reordered);
+    }
+
+    #[test]
+    fn khmer_coeng_chains_subjoined_consonant_into_one_cluster() {
+        // KA + COENG + KHA → subjoined cluster (single cluster).
+        let chars = ['\u{1780}', '\u{17D2}', '\u{1781}'];
+        let bounds = cluster_boundaries_with(&chars, khmer_category);
+        assert_eq!(bounds, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn khmer_three_consonant_subjoined_chain_in_one_cluster() {
+        // KA + COENG + KHA + COENG + GA — three-deep subjoined chain.
+        let chars = ['\u{1780}', '\u{17D2}', '\u{1781}', '\u{17D2}', '\u{1782}'];
+        let bounds = cluster_boundaries_with(&chars, khmer_category);
+        assert_eq!(bounds, vec![(0, 5)]);
+    }
+
+    #[test]
+    fn khmer_RA_plus_coeng_does_NOT_set_reph_flag() {
+        // Khmer RA + COENG + KA — Khmer never forms a reph (subjoined RA).
+        let cluster = ['\u{179A}', '\u{17D2}', '\u{1780}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &KHMER_RULES);
+        assert!(!flags.has_reph, "Khmer reph_enabled is false");
+    }
+
+    #[test]
+    fn khmer_feature_tags_omit_rphf_keep_pref_blwf_pstf() {
+        let tags = khmer_feature_tags();
+        assert!(!tags.contains(b"rphf"), "Khmer has no reph feature");
+        assert!(tags.contains(b"pref"));
+        assert!(tags.contains(b"blwf"));
+        assert!(tags.contains(b"pstf"));
+        assert!(tags.contains(b"abvf"));
+        // Khmer-specific cfar (coeng-ra final reordering) tag.
+        assert!(tags.contains(b"cfar"), "Khmer emits cfar");
+    }
+
+    // ---------- Thai (round 12) ----------
+
+    #[test]
+    fn thai_category_classifies_ko_kai_as_consonant() {
+        // U+0E01 THAI CHARACTER KO KAI.
+        assert_eq!(thai_category('\u{0E01}'), IndicCategory::Consonant);
+    }
+
+    #[test]
+    fn thai_category_has_no_halant() {
+        // Thai has no halant in the block — every Thai consonant
+        // returns Consonant, no codepoint returns Halant. Spot-check
+        // the entire Thai consonant span.
+        for cp in 0x0E01..=0x0E2E {
+            let ch = char::from_u32(cp).unwrap();
+            assert_ne!(
+                thai_category(ch),
+                IndicCategory::Halant,
+                "U+{cp:04X} must not be Halant"
+            );
+        }
+    }
+
+    #[test]
+    fn thai_pre_base_vowels_classified_as_vowel() {
+        // U+0E40..U+0E44 SARA E / AE / O / AI MAIMUAN / AI MAIMALAI —
+        // already in pre-base storage order; classified as Vowel so
+        // the cluster machine starts a new cluster at each (no reorder
+        // needed since storage order matches visual order).
+        for cp in 0x0E40..=0x0E44 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                thai_category(ch),
+                IndicCategory::Vowel,
+                "U+{cp:04X} should be Vowel (pre-base in storage order)"
+            );
+        }
+    }
+
+    #[test]
+    fn thai_above_base_vowel_signs_classified_as_matra() {
+        // U+0E31, U+0E34..U+0E37, U+0E47 — above-base vowel signs.
+        assert_eq!(thai_category('\u{0E31}'), IndicCategory::Matra);
+        for cp in 0x0E34..=0x0E37 {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(thai_category(ch), IndicCategory::Matra);
+        }
+        assert_eq!(thai_category('\u{0E47}'), IndicCategory::Matra);
+    }
+
+    #[test]
+    fn thai_below_base_vowel_signs_classified_as_matra() {
+        // U+0E38..U+0E3A SARA U / UU / PHINTHU.
+        for cp in 0x0E38..=0x0E3A {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(thai_category(ch), IndicCategory::Matra);
+        }
+    }
+
+    #[test]
+    fn thai_tone_marks_classified_as_bindu() {
+        // U+0E48..U+0E4B tone marks.
+        for cp in 0x0E48..=0x0E4B {
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(thai_category(ch), IndicCategory::Bindu);
+        }
+    }
+
+    #[test]
+    fn thai_returns_other_for_devanagari_codepoint() {
+        assert_eq!(thai_category('\u{0915}'), IndicCategory::Other);
+    }
+
+    #[test]
+    fn thai_pre_base_vowel_starts_new_cluster_before_consonant() {
+        // SARA E + KO KAI — SARA E is a Vowel (pre-base in storage),
+        // KO KAI is a Consonant — both start their own cluster.
+        let chars = ['\u{0E40}', '\u{0E01}'];
+        let bounds = cluster_boundaries_with(&chars, thai_category);
+        assert_eq!(bounds, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn thai_consonant_with_tone_mark_in_one_cluster() {
+        // KO KAI + MAI EK (tone mark) — bindu attaches to consonant.
+        let chars = ['\u{0E01}', '\u{0E48}'];
+        let bounds = cluster_boundaries_with(&chars, thai_category);
+        assert_eq!(bounds, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn thai_consonant_with_above_vowel_and_tone_mark_in_one_cluster() {
+        // KO KAI + SARA I (above-base) + MAI THO (tone) — single cluster.
+        let chars = ['\u{0E01}', '\u{0E34}', '\u{0E49}'];
+        let bounds = cluster_boundaries_with(&chars, thai_category);
+        assert_eq!(bounds, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn thai_each_consonant_starts_new_cluster() {
+        // KO KAI + KHO KHAI + KHO KHUAT — three independent clusters
+        // (no halant to glue them).
+        let chars = ['\u{0E01}', '\u{0E02}', '\u{0E03}'];
+        let bounds = cluster_boundaries_with(&chars, thai_category);
+        assert_eq!(bounds, vec![(0, 1), (1, 2), (2, 3)]);
+    }
+
+    #[test]
+    fn thai_no_pre_base_matra_reorder() {
+        // KO KAI + SARA AA (post-base) — no reorder required.
+        let cluster = ['\u{0E01}', '\u{0E32}'];
+        let (out, flags) = reorder_cluster_with(&cluster, &THAI_RULES);
+        assert_eq!(out, vec!['\u{0E01}', '\u{0E32}']);
+        assert!(!flags.pre_base_reordered);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn thai_RA_plus_anything_does_NOT_set_reph_flag() {
+        // Thai RO RUA U+0E23 — no halant in Thai so the RA + halant +
+        // consonant pattern can't even be formed. Confirm reph_enabled
+        // stays false on the rules.
+        let cluster = ['\u{0E23}', '\u{0E01}'];
+        let (_out, flags) = reorder_cluster_with(&cluster, &THAI_RULES);
+        assert!(!flags.has_reph);
+    }
+
+    #[test]
+    fn thai_feature_tags_omit_halant_features() {
+        let tags = thai_feature_tags();
+        assert!(!tags.contains(b"rphf"));
+        assert!(!tags.contains(b"half"));
+        assert!(!tags.contains(b"pref"));
+        assert!(!tags.contains(b"blwf"));
+        assert!(!tags.contains(b"pstf"));
+        assert!(!tags.contains(b"cjct"));
+        // Presentation-pass features still apply.
+        assert!(tags.contains(b"pres"));
+        assert!(tags.contains(b"abvs"));
+        assert!(tags.contains(b"blws"));
+        assert!(tags.contains(b"psts"));
+    }
+
+    // ---------- script_indic_tags expansions for round 12 ----------
+
+    #[test]
+    fn script_indic_tags_returns_pair_for_round12_scripts() {
+        use super::super::arabic::Script;
+        assert_eq!(
+            script_indic_tags(Script::Sinhala),
+            Some((*b"sinh", *b"sinh"))
+        );
+        assert_eq!(script_indic_tags(Script::Khmer), Some((*b"khmr", *b"khmr")));
+        assert_eq!(script_indic_tags(Script::Thai), Some((*b"thai", *b"thai")));
+    }
+
+    #[test]
+    fn script_of_recognises_round12_blocks() {
+        use super::super::arabic::{script_of, Script};
+        // Sinhala block.
+        assert_eq!(script_of('\u{0D9A}'), Script::Sinhala);
+        assert_eq!(script_of('\u{0DCA}'), Script::Sinhala);
+        // Khmer block.
+        assert_eq!(script_of('\u{1780}'), Script::Khmer);
+        assert_eq!(script_of('\u{17D2}'), Script::Khmer);
+        // Thai block.
+        assert_eq!(script_of('\u{0E01}'), Script::Thai);
+        assert_eq!(script_of('\u{0E40}'), Script::Thai);
     }
 }

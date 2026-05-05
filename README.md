@@ -57,30 +57,39 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   (U+FE70..U+FEFF) before cmap so cmap-only fonts render the
   visually-correct contextual shapes (including LAM-ALEF ligatures
   via the existing GSUB pass).
-- **Indic complex-script shaping (rounds 8 + 10 + 11)** — `shaping::indic`
-  classifies Devanagari (U+0900..U+097F), Bengali (U+0980..U+09FF),
-  Tamil (U+0B80..U+0BFF), Gurmukhi (U+0A00..U+0A7F),
-  Gujarati (U+0A80..U+0AFF), Telugu (U+0C00..U+0C7F),
-  Kannada (U+0C80..U+0CFF), Malayalam (U+0D00..U+0D7F), and
-  Oriya (U+0B00..U+0B7F) codepoints, segments runs into
-  orthographic clusters, applies per-script pre-base matra reorder,
-  and identifies reph where applicable (Tamil + Malayalam are
-  reph-disabled — Tamil RA does not form a reph; modern Malayalam
-  uses chillu independent half-forms instead). When the active face
-  publishes a `rphf` GSUB lookup for the active script, the leading
-  RA glyph is rewritten to its reph form via
-  `Font::gsub_apply_lookup_type_1` and the halant glyph is dropped
-  (round 10). Round 11 also wires cluster-position-aware GSUB
+- **Indic + Brahmic non-Indic complex-script shaping (rounds 8 + 10 +
+  11 + 12)** — `shaping::indic` classifies Devanagari (U+0900..U+097F),
+  Bengali (U+0980..U+09FF), Tamil (U+0B80..U+0BFF),
+  Gurmukhi (U+0A00..U+0A7F), Gujarati (U+0A80..U+0AFF),
+  Telugu (U+0C00..U+0C7F), Kannada (U+0C80..U+0CFF),
+  Malayalam (U+0D00..U+0D7F), Oriya (U+0B00..U+0B7F),
+  Sinhala (U+0D80..U+0DFF), Khmer (U+1780..U+17FF), and
+  Thai (U+0E00..U+0E7F) codepoints, segments runs into orthographic
+  clusters, applies per-script pre-base matra reorder, and identifies
+  reph where applicable (Tamil + Malayalam + Sinhala + Khmer + Thai
+  are reph-disabled — Tamil RA does not form a reph; modern Malayalam
+  uses chillu independent half-forms; Sinhala renders RA + al-lakuna
+  in-line; Khmer renders RA + coeng as a subjoined RA; Thai has no
+  halant at all). When the active face publishes a `rphf` GSUB lookup
+  for the active script, the leading RA glyph is rewritten to its reph
+  form via `Font::gsub_apply_lookup_type_1` and the halant glyph is
+  dropped (round 10). Round 11 also wires cluster-position-aware GSUB
   features: `half` for non-final consonants in conjuncts;
   `pref` / `blwf` / `abvf` / `pstf` (cascaded — first that returns a
   substitute wins) for post-halant consonants; and the presentation-
   pass features `pres` / `psts` / `abvs` / `blws` over every glyph
   in the cluster. Coverage misses pass through unchanged so a font
-  without a given lookup degrades gracefully. Per-script reorder
-  rules are exposed as `DEVANAGARI_RULES` / `BENGALI_RULES` /
-  `TAMIL_RULES` / `GURMUKHI_RULES` / `GUJARATI_RULES` /
-  `TELUGU_RULES` / `KANNADA_RULES` / `MALAYALAM_RULES` /
-  `ORIYA_RULES` for callers reusing the cluster machine.
+  without a given lookup degrades gracefully. Round 12 generalises the
+  cluster machine over Khmer (where U+17D2 COENG plays the halant role
+  and stacks subjoined consonants 2-3 deep in Pali borrowings), Sinhala
+  (Indic-shaped halant with U+0DCA AL-LAKUNA), and Thai (no halant —
+  pre-base vowels U+0E40..U+0E44 already in storage order so each
+  consonant simply starts a new cluster and tone marks attach). Per-
+  script reorder rules are exposed as `DEVANAGARI_RULES` /
+  `BENGALI_RULES` / `TAMIL_RULES` / `GURMUKHI_RULES` /
+  `GUJARATI_RULES` / `TELUGU_RULES` / `KANNADA_RULES` /
+  `MALAYALAM_RULES` / `ORIYA_RULES` / `SINHALA_RULES` / `KHMER_RULES`
+  / `THAI_RULES` for callers reusing the cluster machine.
 - **Variable fonts (round 9)** — `Face::set_variation_coords` /
   `variation_axes` / `named_instances` / `is_variable` surface the
   font's `fvar` declarations and let callers shape against a custom
@@ -113,9 +122,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **Sinhala / Burmese / Khmer / Thai / Lao**
-  (Brahmic but with stack-form / split-vowel rules outside the
-  Indic2 cluster machine), **variable-font metrics**
+- **Bidi (UAX #9)**, **Burmese (U+1000..U+109F)** + **Lao
+  (U+0E80..U+0EFF)** Brahmic non-Indic scripts (Burmese has medial
+  consonants U+103B..U+103E that need their own categorisation pass;
+  Lao mirrors Thai's structure but with distinct codepoints — both
+  deferred to a future round), **variable-font metrics**
   (`MVAR` / `HVAR` / `VVAR` / `STAT`), **CFF2 variable fonts**,
   **TrueType bytecode hinting**, **subpixel LCD filtering**,
   **GPOS cursive attachment** — deferred.

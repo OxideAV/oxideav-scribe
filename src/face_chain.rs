@@ -30,8 +30,8 @@ use crate::shaping::arabic::{compute_forms, script_of, Script};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::indic::{
     cluster_boundaries_with, reorder_cluster_with, script_indic_tags, IndicCategory, ReorderRules,
-    BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
-    MALAYALAM_RULES, ORIYA_RULES, TAMIL_RULES, TELUGU_RULES,
+    BENGALI_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES,
+    MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
 };
 use crate::style::Style;
 use crate::Error;
@@ -704,6 +704,9 @@ fn indic_category_for_script(script: Script, ch: char) -> IndicCategory {
         Script::Kannada => indic::kannada_category(ch),
         Script::Malayalam => indic::malayalam_category(ch),
         Script::Oriya => indic::oriya_category(ch),
+        Script::Sinhala => indic::sinhala_category(ch),
+        Script::Khmer => indic::khmer_category(ch),
+        Script::Thai => indic::thai_category(ch),
         _ => IndicCategory::Other,
     }
 }
@@ -721,6 +724,9 @@ fn indic_rules_for_script(script: Script) -> Option<&'static ReorderRules> {
         Script::Kannada => Some(&KANNADA_RULES),
         Script::Malayalam => Some(&MALAYALAM_RULES),
         Script::Oriya => Some(&ORIYA_RULES),
+        Script::Sinhala => Some(&SINHALA_RULES),
+        Script::Khmer => Some(&KHMER_RULES),
+        Script::Thai => Some(&THAI_RULES),
         _ => None,
     }
 }
@@ -975,6 +981,88 @@ mod tests {
         let chars = vec!['\u{0D7A}', '\u{0D15}'];
         let (_out, _marks, spans) = apply_indic_reorder(&chars);
         assert_eq!(spans.len(), 2);
+    }
+
+    // ---------- Round 12 (Brahmic non-Indic) ----------
+
+    #[test]
+    fn sinhala_pre_base_matra_reorders_with_sinhala_span() {
+        // Sinhala KA U+0D9A + sign-e U+0DD9 → sign-e + KA.
+        let chars = vec!['\u{0D9A}', '\u{0DD9}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{0DD9}', '\u{0D9A}']);
+        assert!(marks.is_empty(), "Sinhala has no reph");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Sinhala);
+    }
+
+    #[test]
+    fn sinhala_RA_plus_al_lakuna_does_NOT_emit_reph_mark() {
+        // Sinhala has no superscript reph rendering.
+        let chars = vec!['\u{0DBB}', '\u{0DCA}', '\u{0D9A}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Sinhala);
+    }
+
+    #[test]
+    fn khmer_pre_base_matra_reorders_with_khmer_span() {
+        // Khmer KA U+1780 + sign-e U+17C1 → sign-e + KA.
+        let chars = vec!['\u{1780}', '\u{17C1}'];
+        let (out, _marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, vec!['\u{17C1}', '\u{1780}']);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].script, Script::Khmer);
+    }
+
+    #[test]
+    fn khmer_coeng_keeps_subjoined_chain_in_one_cluster_span() {
+        // KA + COENG + KHA + COENG + GA — three-deep subjoined chain.
+        let chars = vec!['\u{1780}', '\u{17D2}', '\u{1781}', '\u{17D2}', '\u{1782}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars); // no reorder (no pre-base matra)
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (0, 5));
+        assert_eq!(spans[0].script, Script::Khmer);
+    }
+
+    #[test]
+    fn thai_no_reorder_preserves_storage_order() {
+        // Thai SARA E (pre-base in storage) + KO KAI — already in
+        // visual order; cluster machine starts a new cluster at each.
+        let chars = vec!['\u{0E40}', '\u{0E01}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Thai);
+        assert_eq!(spans[1].script, Script::Thai);
+    }
+
+    #[test]
+    fn thai_consonant_with_above_vowel_and_tone_emits_one_span() {
+        // KO KAI + SARA I (above) + MAI THO (tone) — single cluster.
+        let chars = vec!['\u{0E01}', '\u{0E34}', '\u{0E49}'];
+        let (out, marks, spans) = apply_indic_reorder(&chars);
+        assert_eq!(out, chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (0, 3));
+        assert_eq!(spans[0].script, Script::Thai);
+    }
+
+    #[test]
+    fn mixed_devanagari_and_thai_segments_at_script_boundary() {
+        // Devanagari KA + Thai KO KAI — different scripts, two
+        // independent clusters.
+        let chars = vec!['\u{0915}', '\u{0E01}'];
+        let (_out, marks, spans) = apply_indic_reorder(&chars);
+        assert!(marks.is_empty());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].script, Script::Devanagari);
+        assert_eq!(spans[1].script, Script::Thai);
     }
 
     #[test]
