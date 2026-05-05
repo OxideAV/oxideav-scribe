@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.4...v0.1.5) - 2026-05-04
+
+### Other
+
+- Bengali + Tamil + reph GSUB wiring (round 10)
+- variable-font axis selection (round 9)
+- add Arabic + Devanagari rows to capability list
+- Devanagari complex-script cluster reorder (round 8)
+- Arabic contextual joining (round 7)
+- drop pixel pipeline — vector-only refactor ([#354](https://github.com/OxideAV/oxideav-scribe/pull/354))
+
 ### Added — Bengali + Tamil shaping + reph GSUB wiring (round 10)
 
 Round 10 extends Indic complex-script shaping beyond Devanagari
