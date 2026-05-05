@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.6...v0.1.7) - 2026-05-05
+
+### Other
+
+- Sinhala + Khmer + Thai (round 12, Brahmic non-Indic)
+
 ### Added — three Brahmic non-Indic scripts (round 12)
 
 Round 12 extends the cluster machine across the script-family boundary
