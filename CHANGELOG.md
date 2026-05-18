@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.7...v0.1.8) - 2026-05-18
+
+### Other
+
+- hygiene round 75 (Error::source, lib.rs doc refresh, no_run doctests)
+- drop committed Cargo.lock + relax oxideav-core to "0.1"
+- backfill Unreleased entry for round 14 + round 13
+- variable fonts (CFF2/MVAR/HVAR/VVAR/STAT/name_id) + Brahmic round 13 (Burmese + Lao)
+
 ### Changed — hygiene (round 75)
 
 Internal-only hygiene round. No new spec material consulted; the
