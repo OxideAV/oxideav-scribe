@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — hygiene (round 75)
+
+Internal-only hygiene round. No new spec material consulted; the
+shaper's behavioural surface is unchanged.
+
+- `Error::source()` is now wired so callers walking the source chain
+  (anyhow, thiserror's `#[from]` walker, the `?` operator with
+  `dyn Error` conversion) see the underlying `oxideav_ttf::Error` /
+  `oxideav_otf::Error` rather than just the wrapper. Previously the
+  `From` impls preserved the inner error but the `source()` method
+  returned `None`.
+- Crate-level `lib.rs` doc-comment is brought current with rounds
+  13 (Burmese + Lao + multi-glyph context-aware GSUB) and 14
+  (`Face::mvar` / `hvar` / `vvar` / `stat` / `cff2` / `name_id`),
+  matching the README's already-updated capabilities tour. Same
+  text — the README was already in sync; the lib doc had drifted.
+- The two `Shaper::with_variation_coords` doctest snippets are
+  converted from `ignore` to `no_run`. They now compile-check
+  against the public API (catching any future signature drift) but
+  still skip execution because both need a non-trivial `Face`
+  instance to be meaningful.
+- Added a small `error_tests` module covering the `Error` /
+  `Display` / `From` surface (4 new lib tests; total 264 → 268).
+  Round-trips `Face::from_ttf_bytes` / `from_otf_bytes` with 4-byte
+  garbage to confirm the wrapper variants carry the inner parser
+  error.
+
 ### Added — variable-font metrics + style attributes (round 14, #454)
 
 Round 14 closes the variable-font metrics gap that the round-9 outline

@@ -220,9 +220,14 @@ impl Shaper {
     /// vector is in user-space units and is silently length-capped /
     /// clamped per [`crate::Face::set_variation_coords`].
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use oxideav_scribe::{Face, FaceChain, Shaper};
+    /// # fn demo(face: Face) {
+    /// let mut chain = FaceChain::new(face);
     /// let placed = Shaper::with_variation_coords(vec![900.0, 14.0])
-    ///     .shape_to_paths(&mut chain, "Hello", 32.0)?;
+    ///     .shape_to_paths(&mut chain, "Hello", 32.0);
+    /// # let _ = placed;
+    /// # }
     /// ```
     pub fn with_variation_coords(coords: Vec<f32>) -> ShaperBuilder {
         ShaperBuilder { coords }
@@ -256,9 +261,14 @@ impl Shaper {
 ///
 /// Construction:
 ///
-/// ```ignore
+/// ```no_run
+/// # use oxideav_scribe::{Face, FaceChain, Shaper};
+/// # fn demo(face: Face) {
+/// let mut chain = FaceChain::new(face);
 /// let builder = Shaper::with_variation_coords(vec![700.0]);
-/// let placed  = builder.shape_to_paths(&mut chain, "Bold!", 24.0)?;
+/// let placed  = builder.shape_to_paths(&mut chain, "Bold!", 24.0);
+/// # let _ = placed;
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct ShaperBuilder {
