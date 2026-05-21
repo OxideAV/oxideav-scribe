@@ -50,6 +50,21 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   kerning) + GPOS type 4/5/6 (mark-to-base, mark-to-mark stacking),
   enough for Latin / Cyrillic / Greek / basic CJK / Vietnamese /
   polytonic Greek.
+- **General-script GSUB features (round 15)** — `shaping::general`
+  wires the OpenType **required-feature** `ccmp` (Glyph Composition /
+  Decomposition) as a pre-ligature pass and `calt` (Contextual
+  Alternates) as a post-ligature pass into `shape_run_with_font` for
+  every Latin / Cyrillic / Greek / DFLT run. Lookups are dispatched
+  per their declared GSUB type — types **1 / 2 / 3 / 4 / 5 / 6 / 8**
+  are all routed via the appropriate `Font::gsub_apply_lookup_type_N`
+  entry points (previously only type 4 ligatures were touched on Latin
+  runs, and types 1 / 5 / 6 only via the per-script Indic / Arabic
+  dispatchers). Concrete win against DejaVu Sans: `chain.shape("i\u{0307}")`
+  now substitutes the dotless-i variant before the combining-above
+  mark (matching the font's published `ccmp` rule). Coverage tables
+  decide per-glyph whether each lookup fires — fonts without a `ccmp`
+  / `calt` feature, or runs whose glyphs aren't in the lookup's
+  coverage, are a no-op.
 - **Arabic contextual joining (round 7)** — `shaping::arabic`
   picks `isol` / `init` / `medi` / `fina` per character via the
   Unicode joining-class state machine; `FaceChain::shape` rewrites

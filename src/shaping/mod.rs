@@ -26,9 +26,20 @@
 //!   kinzi reph-equivalent). The [`indic::RephKind`] enum carries the
 //!   kinzi pattern (NGA + Asat + Virama + Cons) as a separate variant
 //!   so the cluster reorderer dispatches the right reph detector.
+//! - Round 15: [`general`] — general-script (`latn` / `cyrl` / `grek` /
+//!   `DFLT`) GSUB feature pass. Wires `ccmp` (Glyph Composition /
+//!   Decomposition — the OpenType required-feature for any script) as
+//!   a pre-ligature pass, and `calt` (Contextual Alternates) as a
+//!   post-ligature pass, into [`crate::shaper::shape_run_with_font`].
+//!   Dispatches GSUB LookupTypes 1 / 2 / 3 / 4 / 5 / 6 / 8 per the
+//!   declared type — previously the pipeline only used types 1 / 4 / 5
+//!   / 6 (and only via the per-script Indic / Arabic dispatchers, never
+//!   for Latin runs). Type 2 (multiple substitution / decomposition)
+//!   becomes reachable for the first time.
 
 pub mod arabic;
 pub mod arabic_pf;
+pub mod general;
 pub mod indic;
 
 pub use arabic::{
@@ -36,6 +47,7 @@ pub use arabic::{
     Script,
 };
 pub use arabic_pf::presentation_form;
+pub use general::{apply_calt, apply_ccmp};
 pub use indic::{
     bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,
     cluster_boundaries, cluster_boundaries_with, devanagari_category, devanagari_feature_tags,

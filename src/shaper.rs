@@ -375,6 +375,22 @@ pub fn shape_run_with_font(
     let upem = font.units_per_em().max(1) as f32;
     let scale = size_px / upem;
 
+    // Step 1.5 (round 15): `ccmp` — Glyph Composition / Decomposition.
+    // The OpenType required-feature for every script. Production fonts
+    // (Inter has 7 such lookups, DejaVu has 2, Noto Sans Arabic has 1)
+    // rely on `ccmp` decomposing precomposed codepoints into base +
+    // combining sequences (typically via GSUB LookupType 2 multiple
+    // substitution) so the round-3/4 mark-to-base attachment pass can
+    // place the diacritic correctly. Skipping `ccmp` is what made the
+    // round-1..14 pipeline output drifted away from spec for marked-up
+    // Latin / Cyrillic / Greek runs. The general-script dispatcher in
+    // [`crate::shaping::general`] probes the `latn` / `cyrl` / `grek` /
+    // `DFLT` script tags in order and applies every `ccmp` lookup the
+    // chosen script publishes. Coverage tables decide per-glyph
+    // whether each lookup fires; fonts without `ccmp` are a no-op.
+    let ccmp_gids: Vec<u16> = crate::shaping::general::apply_ccmp(font, raw_glyphs);
+    let raw_glyphs: &[u16] = &ccmp_gids;
+
     // Step 2: ligature substitution. Walk through and let the font
     // collapse runs of input glyphs into single output glyphs.
     let mut shaped_gids: Vec<u16> = Vec::with_capacity(raw_glyphs.len());
@@ -390,6 +406,16 @@ pub fn shape_run_with_font(
         shaped_gids.push(raw_glyphs[i]);
         i += 1;
     }
+
+    // Step 2.5 (round 15): `calt` — Contextual Alternates. Refines the
+    // post-ligature glyph run with context-driven substitutions
+    // (historical "ct" / "st" ligatures gated on word-boundary
+    // context, swash variants in display faces, etc.). Inter ships 2
+    // `calt` lookups; DejaVu Sans has none under `latn`. Dispatches
+    // GSUB LookupTypes 1 / 2 / 3 / 4 / 5 / 6 / 8 per declared type via
+    // the general-script feature dispatcher. Coverage misses are
+    // silent no-ops.
+    shaped_gids = crate::shaping::general::apply_calt(font, &shaped_gids);
 
     // Step 3: kerning. Apply the kerning between each adjacent glyph
     // pair as an x_offset on the right-hand glyph.

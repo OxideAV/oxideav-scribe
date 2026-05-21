@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — general-script `ccmp` + `calt` (round 15)
+
+Wires the OpenType **required-feature** `ccmp` (Glyph Composition /
+Decomposition) as a pre-ligature pass and `calt` (Contextual
+Alternates) as a post-ligature pass into the post-cmap path of
+`shape_run_with_font`. Both passes resolve features through the new
+`shaping::general` module, which probes the script-tag list `latn` /
+`cyrl` / `grek` / `DFLT` in priority order and dispatches every lookup
+under the chosen feature according to its declared GSUB LookupType:
+
+- LookupType 1 (single substitution) — already used by Indic.
+- **LookupType 2 (multiple substitution)** — now reachable for the
+  first time. The canonical decomposition site: `ç → c + combining
+  cedilla`, etc.
+- LookupType 3 (alternate substitution) — picks the spec-default
+  alternate index 0 (user-driven indices belong on a higher API).
+- LookupType 4 (ligature substitution) — feature-tag-aware variant of
+  the existing untargeted walker.
+- LookupType 5 / 6 (contextual / chained context) — already used by
+  Indic; now reachable for Latin too. Fonts use type-6 chained context
+  to make `ccmp` rules condition on whether a following mark is
+  present (e.g. DejaVu Sans rewrites `i → dotless-i` only before a
+  combining-above mark).
+- LookupType 8 (reverse chained context) — single-position dispatch.
+
+**Measured delta against DejaVu Sans:**
+
+- `chain.shape("i\u{0307}")` previously produced `[gid_i, gid_dot]`
+  (visually wrong — dot of "i" collides with combining dot). Now
+  produces `[gid_dotless_i, gid_dot]`, matching the font's published
+  ccmp rule.
+- `chain.shape("I\u{0307}")` previously produced
+  `[gid_I, gid_dot_default]`; now produces
+  `[gid_I, gid_dot_capital_variant]`, matching the case-specific
+  ccmp lookup.
+- ASCII-only runs (`"Hello, world!"`) are bit-identical to round-14
+  output — the coverage tables ensure the new pass is a no-op for any
+  glyph not in the `ccmp` / `calt` coverage.
+
+Four new integration tests (`tests/round15_ccmp_calt.rs`) lock the
+positive cases AND the negative-control (`"a\u{0301}"` is a pass-through
+because DejaVu Sans publishes no rule for that pair). Total test count:
+lib 268→270, integration 64→68.
+
+No external library source was consulted. The feature-application
+ordering follows the spec's "required features first" rule + the
+public OpenType registry's documented feature semantics for `ccmp` /
+`calt`; the round-15 lookup-dispatch code is built from `oxideav-ttf`'s
+public per-type entry points and the lookup-type metadata returned by
+`Font::gsub_lookup_list`.
+
 ### Changed — hygiene (round 75)
 
 Internal-only hygiene round. No new spec material consulted; the
