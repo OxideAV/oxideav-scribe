@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GSUB feature-tag introspection (round 88)
+
+Two new accessors on `Face` surface the OpenType feature-tag set the
+underlying GSUB table publishes:
+
+- `Face::gsub_features_for_script(script_tag, lang_tag)` → `Vec<[u8; 4]>` —
+  returns the four-byte feature tags published under a script (in
+  declaration order, required-feature first per the underlying
+  `oxideav-ttf` contract).
+- `Face::has_gsub_feature(script_tag, feature_tag)` → `bool` —
+  convenience predicate for callers that just need to gate on
+  feature presence.
+
+Both are pure pass-through accessors over
+`oxideav_ttf::Font::gsub_features_for_script`; semantics live in
+`oxideav-ttf`. Returns an empty vec / `false` for OTF faces, fonts
+without a GSUB table, and unknown / absent script tags.
+
+Round-88 test coverage adds 10 new tests in
+`tests/round88_gsub_features.rs`:
+
+- Introspection: unknown-script / unknown-feature empty cases.
+- Introspection: DejaVu Sans `latn` publishes `ccmp` and `liga`;
+  every tag is printable ASCII.
+- Introspection: Inter Variable `latn` snapshots the full tag set
+  (38 tags including `aalt` / `c2sc` / `calt` / `case` / `ccmp` /
+  `cv01..cv13` / `dlig` / `dnom` / `frac` / `numr` / `ordn` / `pnum` /
+  `salt` / `sinf` / `smcp` / `ss01..ss08` / `subs` / `sups` / `tnum` /
+  `zero`). Documents Inter's deliberate omission of `liga` (lives in
+  `dlig`/`calt`) and `kern` (GPOS-only — a future GPOS introspection
+  accessor is needed).
+- Round-15 pipeline on a second font: Inter Variable's `ccmp` lookup
+  substitutes the dotless-i variant before a combining-above mark, and
+  a 56-char ASCII pangram is byte-identical to the cmap-only output
+  (no calt false-positives).
+
 ### Added — general-script `ccmp` + `calt` (round 15)
 
 Wires the OpenType **required-feature** `ccmp` (Glyph Composition /

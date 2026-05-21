@@ -609,6 +609,74 @@ impl Face {
         }
     }
 
+    /// List the GSUB feature tags this face publishes under `script_tag`
+    /// (and, optionally, `lang_tag`). Returns the four-byte feature
+    /// identifiers in the order the active LangSys declares them — the
+    /// required feature, if any, comes first. Duplicates are preserved
+    /// (rare in practice, but possible when a font lists the same tag in
+    /// both the default LangSys and a script-specific override that fell
+    /// through to default).
+    ///
+    /// The companion `oxideav-ttf` API also exposes the per-feature
+    /// lookup-index list; this accessor surfaces only the tag set, which
+    /// is what callers picking which OpenType features to enable
+    /// typically need. For the lookup-index detail, drop down via
+    /// [`Self::with_font`] and call
+    /// [`oxideav_ttf::Font::gsub_features_for_script`] directly.
+    ///
+    /// Returns `Vec::new()` when:
+    /// - the face has no GSUB table (most pre-2000 fonts),
+    /// - the requested script tag isn't in the ScriptList,
+    /// - `lang_tag` is `Some(_)` and the LangSys isn't in the script,
+    ///   and the script has no default LangSys.
+    ///
+    /// OTF (CFF-flavour) faces also work — `oxideav-otf` shares the
+    /// same sfnt container, so the GSUB table sits at the same place.
+    /// This accessor uses the TTF path; CFF-only faces fall through to
+    /// the empty vec when called (the kind check inside `with_font`
+    /// rejects OTF).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Which features does this font publish for Latin?
+    /// let tags = face.gsub_features_for_script(*b"latn", None);
+    /// for tag in &tags {
+    ///     println!("{}", std::str::from_utf8(tag).unwrap_or("????"));
+    /// }
+    /// # }
+    /// ```
+    pub fn gsub_features_for_script(
+        &self,
+        script_tag: [u8; 4],
+        lang_tag: Option<[u8; 4]>,
+    ) -> Vec<[u8; 4]> {
+        self.with_font(|font| {
+            font.gsub_features_for_script(script_tag, lang_tag)
+                .into_iter()
+                .map(|f| f.tag)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// `true` when this face publishes `feature_tag` for `script_tag`
+    /// (under the default LangSys). Convenience predicate over
+    /// [`Self::gsub_features_for_script`] for callers that just need to
+    /// gate behaviour on feature presence without iterating the full
+    /// list.
+    ///
+    /// Cheap for the typical hit-or-miss check — internally this re-runs
+    /// the script-walk every call (the same cost as
+    /// `gsub_features_for_script(...).iter().any(...)`); cache the full
+    /// tag vec if you query many tags against the same script.
+    pub fn has_gsub_feature(&self, script_tag: [u8; 4], feature_tag: [u8; 4]) -> bool {
+        self.gsub_features_for_script(script_tag, None)
+            .contains(&feature_tag)
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.

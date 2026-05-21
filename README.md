@@ -50,6 +50,16 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   kerning) + GPOS type 4/5/6 (mark-to-base, mark-to-mark stacking),
   enough for Latin / Cyrillic / Greek / basic CJK / Vietnamese /
   polytonic Greek.
+- **GSUB feature-tag introspection (round 88)** — `Face::gsub_features_for_script(script_tag, lang_tag)`
+  returns the four-byte feature tags the active face publishes under
+  an OpenType script tag (in declaration order, required-feature
+  first); `Face::has_gsub_feature(script_tag, feature_tag)` is the
+  one-shot predicate variant. Useful for higher-level shaping APIs
+  that gate behaviour on feature presence (e.g. enabling `smcp`
+  small-caps only when the font ships it). Pure pass-through over
+  `oxideav-ttf`'s GSUB walker; OTF / GSUB-less faces return an empty
+  vec. A GPOS introspection mirror is a known follow-up — GPOS-only
+  features like `kern` are not visible through this accessor.
 - **General-script GSUB features (round 15)** — `shaping::general`
   wires the OpenType **required-feature** `ccmp` (Glyph Composition /
   Decomposition) as a pre-ligature pass and `calt` (Contextual
