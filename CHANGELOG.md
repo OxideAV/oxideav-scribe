@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — caller-driven GSUB LookupType 1 application (round 89)
+
+A new public surface — `Face::shape_text(text, features) -> Vec<u16>` —
+cmap's the input text and applies every **GSUB LookupType 1 (Single
+Substitution)** lookup the requested feature tags reference under
+`latn` / `cyrl` / `grek` / `DFLT`. Format 1 (delta) and Format 2
+(substitute-array) sub-tables per OpenType §6.2.1 are both
+dispatched through `oxideav_ttf::Font::gsub_apply_lookup_type_1`;
+LookupType-7 ExtensionSubst wrappers around a Type-1 lookup are
+unwrapped transparently.
+
+Round-89 scope is single-substitution only. Lookups of other
+declared types (Multiple, Alternate, Ligature, Contextual,
+ChainContext, ReverseChainContext) referenced by the requested
+features are silently skipped — ligature collapsing and contextual
+rules remain on the existing `Shaper::shape` / `FaceChain::shape`
+pipeline.
+
+Typical feature tags this surface unlocks (none of which the
+always-on round-15 `ccmp` / `calt` passes touch):
+
+- `smcp` / `c2sc` — small caps (from lower / from upper).
+- `case` — case-sensitive forms.
+- `salt` / `ss01..ss20` / `cv01..cv99` — stylistic alternates,
+  sets, and per-character variants.
+- `sups` / `subs` / `numr` / `dnom` / `ordn` — vertical /
+  role-based number forms.
+- `frac` — fractions (the Type-1 digit reshape component only;
+  the contextual `1/2` collapse rule is a Type-4/5 lookup and
+  remains a TODO for a later round).
+- `zero` — slashed zero.
+- `pnum` / `tnum` — proportional / tabular numerals.
+
+Round-89 test coverage adds 20 new tests (9 in
+`src/shaping/feature_subst.rs`, 11 in
+`tests/round89_single_subst.rs`):
+
+- Empty-text and empty-features baselines (cmap identity).
+- Inter Variable `smcp` reshapes lowercase ASCII (`"Hi"` →
+  `[H_gid, smcp(i_gid)]` — upper-case stays unchanged because it's
+  outside `smcp` coverage; lowercase reshapes to small-cap variant).
+- Inter `sups` reshapes most digit slots; `subs` is independent
+  from `sups`.
+- Inter `salt` is well-defined on lowercase.
+- Caller-ordered features: `[*b"smcp", *b"case"]` on lowercase
+  matches `[*b"smcp"]` alone (case is a no-op for letters);
+  `[*b"smcp", *b"smcp"]` is idempotent (re-applying smcp doesn't
+  match the post-substitution glyphs).
+- DejaVu Sans's `liga` (LookupType 4) is the documented no-op —
+  proves the Type-1-only contract.
+- Unknown feature tag (`zzzz`) and font without the requested
+  feature (DejaVu's missing `smcp`) both pass through unchanged.
+
+Clean-room note: OpenType §6.2.1 Format 1/2 byte layouts are
+implemented inside `oxideav-ttf` (which has its own clean-room
+provenance); scribe's round-89 layer is a thin dispatcher and does
+not re-derive the table format itself. No HarfBuzz / FreeType /
+Pango / Skia source was consulted; no WebSearch / WebFetch was
+invoked during this round.
+
 ### Added — GSUB feature-tag introspection (round 88)
 
 Two new accessors on `Face` surface the OpenType feature-tag set the

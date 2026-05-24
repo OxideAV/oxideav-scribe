@@ -677,6 +677,64 @@ impl Face {
             .contains(&feature_tag)
     }
 
+    /// Shape `text` with the caller-specified GSUB feature tags applied
+    /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
+    ///
+    /// **Round-89 scope: GSUB LookupType 1 (Single Substitution) only.**
+    /// Both Format 1 (delta) and Format 2 (substitute-array) sub-tables
+    /// are supported (the underlying `oxideav-ttf` accessor handles
+    /// both; ExtensionSubst LookupType-7 wrappers around a Type-1
+    /// lookup are also unwrapped transparently). Lookups of other types
+    /// (Multiple, Alternate, Ligature, Contextual, ChainContext,
+    /// ReverseChainContext) referenced by the requested features are
+    /// silently skipped — see [`crate::shaper::Shaper::shape`] for the
+    /// full multi-type pipeline.
+    ///
+    /// Typical feature tags this is useful for are the display-toggled
+    /// features that the always-on round-15 `ccmp` + `calt` passes
+    /// don't reach:
+    /// - `smcp` / `c2sc` — small caps (from lower / from upper).
+    /// - `case` — case-sensitive forms.
+    /// - `frac` — fractions (Type-1 component only; the contextual
+    ///   `1/2` collapse is a Type-4/5 rule and skipped here).
+    /// - `salt` — stylistic alternates.
+    /// - `ss01..ss20` — stylistic sets.
+    /// - `sups` / `subs` / `numr` / `dnom` / `ordn` — vertical /
+    ///   role-based number forms.
+    /// - `cv01..cv99` — per-character variants.
+    /// - `zero` — slashed zero.
+    /// - `pnum` / `tnum` — proportional / tabular numerals.
+    ///
+    /// Features are applied in caller order. Each lookup's coverage
+    /// table determines per-glyph whether it fires. Script-tag probe
+    /// order is `latn` → `cyrl` → `grek` → `DFLT`; the first script
+    /// whose feature list publishes the requested tag wins for that
+    /// feature.
+    ///
+    /// Returns an empty vec for OTF (CFF) faces — GSUB substitution
+    /// requires the TTF parser surface; OTF callers must drop to
+    /// [`Self::with_otf_font`] (the CFF flavour shares the same GSUB
+    /// table layout in principle but scribe doesn't yet route it).
+    ///
+    /// Empty `text` always returns an empty `Vec`. Empty `features`
+    /// returns the pure-cmap output (useful as a baseline).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Small-caps + case-sensitive punctuation on "Hello".
+    /// let gids = face.shape_text("Hello", &[*b"smcp", *b"case"]);
+    /// // GIDs are now the small-cap variants where coverage matched.
+    /// # let _ = gids;
+    /// # }
+    /// ```
+    pub fn shape_text(&self, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
+        self.with_font(|font| crate::shaping::shape_text_with_font(font, text, features))
+            .unwrap_or_default()
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.
