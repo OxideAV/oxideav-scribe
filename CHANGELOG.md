@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GSUB LookupType 2 (Multiple Substitution) in `shape_text` (round 125)
+
+`Face::shape_text` now dispatches GSUB LookupType 2 (Multiple
+Substitution, Format 1) alongside the round-89 LookupType 1
+(Single Substitution) path. The shaper walks the cmap'd run
+left-to-right; when a Type-2 lookup's coverage matches a slot,
+the single input glyph is spliced out and replaced by the
+`Sequence` record's `glyphCount` substituteGlyphIDs, and the
+cursor advances past the inserted run so the same lookup
+doesn't re-match its own output. The OpenType spec (§6.2.2)
+explicitly permits `glyphCount = 0` as a deletion form; the
+returned `Vec<u16>` reflects the post-substitution length,
+which may be 0, shorter than, equal to, or longer than the
+input.
+
+The canonical use case is `ccmp` "split a precomposed glyph
+into base + combining mark" so a subsequent GPOS mark-
+attachment pass can position the mark independently. The
+`shaping::general` `ccmp` / `calt` pipeline already dispatched
+Type 2 since round 15; round 125 brings the same capability
+to the caller-driven `shape_text(text, features)` surface so
+explicit per-call feature lists (`smcp`, `c2sc`, `frac`,
+`salt`, `ss01..ss20`, `cv01..cv99`, etc.) can now express
+multiple-substitution lookups as well.
+
+Tests: `tests/round125_multi_subst.rs` adds 11 new integration
+tests around a per-byte synthetic TTF (no external library
+consulted; every byte layout follows the Microsoft Typography
+OpenType spec):
+
+- A minimal 4-glyph TTF (`.notdef` + 'a' + 'b' + 'c') with a
+  Format-4 cmap mapping 'a'/'b'/'c' to GIDs 1/2/3 and a GSUB
+  table publishing one `ccmp` feature under script `DFLT`
+  with one MultipleSubstFormat1 lookup. The lookup's
+  coverage and Sequence record are parameterised, so the
+  same builder produces both the split-variant (gid 1 →
+  [2, 3]) and the deletion-variant (gid 1 → []).
+- `synthetic_font_cmap_routes_a_b_c`,
+  `synthetic_font_publishes_ccmp_under_dflt`, and
+  `synthetic_font_has_one_lookup_type_2` lock the parsed shape
+  of the synthetic font (cmap mapping + feature publication +
+  GSUB lookup count / type).
+- `ccmp_splits_a_into_b_c_via_lookup_type_2` is the headline
+  contract: shape_text("a", [ccmp]) returns [2, 3] instead of
+  the cmap [1].
+- `ccmp_is_noop_on_uncovered_glyph` asserts coverage gating
+  (gid 2 isn't in the lookup's coverage; shaping "b" is
+  identity).
+- `ccmp_mixed_input_expands_only_covered_slot` verifies "ab"
+  expands the 'a' slot and leaves 'b' intact → output is
+  `[2, 3, 2]`, length 3.
+- `ccmp_walker_does_not_re_match_its_own_output` /
+  `ccmp_lookup_type_2_glyph_count_zero_deletes_input` cover
+  the walker's advance-past-substitution contract and the
+  spec-legal `glyphCount = 0` deletion form.
+- `ccmp_empty_text_yields_empty_run`,
+  `ccmp_empty_features_is_cmap_identity_on_a`, and
+  `unknown_feature_skips_type_2_lookup` are the empty-input
+  and unknown-feature baselines.
+
+Plus three new in-module tests in
+`src/shaping/feature_subst.rs` (existing 9 → 12) updating the
+`liga`-is-skipped contract docstring to reflect the
+LookupType-1/2 surface (LookupType 4 ligature work still
+flows through `Shaper::shape` / `FaceChain::shape`).
+
+Lookups of any other declared type (Alternate = 3, Ligature
+= 4, Context = 5, ChainContext = 6, ReverseChainContext = 8)
+referenced by the requested features remain silently skipped
+on the `shape_text` surface; the broader `apply_one_lookup`
+walker in `shaping::general` continues to dispatch all
+declared types.
+
+Clean-room note: OpenType §6.2.2 MultipleSubstFormat1 byte
+layout is implemented inside `oxideav-ttf` (already shipped;
+no scribe-side decode work this round); scribe's round-125
+layer is a thin dispatcher plus a per-byte synthetic-fixture
+builder transcribed from the published OpenType spec. No
+HarfBuzz / FreeType / Pango / Skia source was consulted; no
+WebSearch / WebFetch was invoked during this round.
+
 ### Added — caller-driven GSUB LookupType 1 application (round 89)
 
 A new public surface — `Face::shape_text(text, features) -> Vec<u16>` —

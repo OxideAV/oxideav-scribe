@@ -60,25 +60,30 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `oxideav-ttf`'s GSUB walker; OTF / GSUB-less faces return an empty
   vec. A GPOS introspection mirror is a known follow-up — GPOS-only
   features like `kern` are not visible through this accessor.
-- **Caller-driven GSUB LookupType 1 application (round 89)** —
-  `Face::shape_text(text, features) -> Vec<u16>` cmap's the text, then
-  applies every **single-substitution** lookup the requested feature
-  tags reference under `latn` / `cyrl` / `grek` / `DFLT`. Both
-  OpenType §6.2.1 Format 1 (delta) and Format 2 (substitute-array)
-  are dispatched through `oxideav-ttf`'s
-  `gsub_apply_lookup_type_1`. Useful for the display-toggled
-  catalogue the always-on round-15 `ccmp` / `calt` passes don't
-  reach: `smcp` / `c2sc` (small caps), `case`, `salt`, `frac` (Type-1
-  digit reshape only), `sups` / `subs` / `numr` / `dnom` / `ordn`,
-  `ss01..ss20`, `cv01..cv99`, `zero`, `pnum` / `tnum`. Features are
-  applied in caller order. Lookups of other declared types (2 / 3 /
-  4 / 5 / 6 / 8) referenced by the requested features are silently
-  skipped — ligature collapsing and contextual rules still flow
-  through `Shaper::shape` / `FaceChain::shape`. Worked example: on
-  Inter Variable, `face.shape_text("Hi", &[*b"smcp"])` returns
-  `[cmap("H"), smcp(cmap("i"))]` — upper-case passes through (out of
-  smcp coverage) while lower-case "i" reshapes to its small-cap
-  variant.
+- **Caller-driven GSUB LookupType 1 + 2 application (rounds 89 +
+  125)** — `Face::shape_text(text, features) -> Vec<u16>` cmap's the
+  text, then applies every **single-substitution** (Type 1) and
+  **multiple-substitution** (Type 2) lookup the requested feature
+  tags reference under `latn` / `cyrl` / `grek` / `DFLT`. OpenType
+  §6.2.1 Format 1 (delta) + Format 2 (substitute-array) and §6.2.2
+  Format 1 (Sequence-record splice, including the spec-legal
+  `glyphCount = 0` deletion form) are dispatched through
+  `oxideav-ttf`'s `gsub_apply_lookup_type_{1,2}`. A Type-2 hit may
+  change the returned glyph count — `ccmp` "split precomposed glyph
+  → base + combining mark" rules now express through `shape_text` as
+  well as the always-on `shaping::general::apply_ccmp` pass.
+  Useful for the display-toggled catalogue the round-15 `ccmp` /
+  `calt` passes don't reach: `smcp` / `c2sc`, `case`, `salt`, `frac`,
+  `sups` / `subs` / `numr` / `dnom` / `ordn`, `ss01..ss20`,
+  `cv01..cv99`, `zero`, `pnum` / `tnum`. Features are applied in
+  caller order. Lookups of other declared types (3 / 4 / 5 / 6 / 8)
+  referenced by the requested features are silently skipped —
+  ligature collapsing and contextual rules still flow through
+  `Shaper::shape` / `FaceChain::shape`. Worked examples: on Inter
+  Variable, `face.shape_text("Hi", &[*b"smcp"])` returns
+  `[cmap("H"), smcp(cmap("i"))]`; on the round-125 synthetic
+  fixture, `face.shape_text("a", &[*b"ccmp"])` returns
+  `[gid 2, gid 3]` (one input → two outputs).
 - **General-script GSUB features (round 15)** — `shaping::general`
   wires the OpenType **required-feature** `ccmp` (Glyph Composition /
   Decomposition) as a pre-ligature pass and `calt` (Contextual

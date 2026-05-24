@@ -1,4 +1,4 @@
-//! Round 89 — caller-driven GSUB LookupType 1 (Single Substitution)
+//! Round 89 / 125 — caller-driven GSUB single + multiple substitution
 //! feature application.
 //!
 //! Where the round-15 [`crate::shaping::general`] pass hard-codes the
@@ -12,29 +12,43 @@
 //! (numerator / denominator), `ordn` (ordinal), `zero` (slashed
 //! zero), `pnum` / `tnum` (proportional / tabular numerals), and the
 //! `cv01..cv99` per-character variant family — and applies the
-//! single-substitution lookups those features dispatch.
+//! single-/multiple-substitution lookups those features dispatch.
 //!
 //! ## What's wired
 //!
-//! - **GSUB LookupType 1 (Single Substitution)** only. The OpenType
-//!   spec §6.2.1 (a.k.a. chapter 6 "GSUB - Glyph Substitution Table",
-//!   section 2.1 "Single Substitution Subtable") defines two formats —
-//!   **Format 1 (delta)** replaces every covered glyph by
+//! - **GSUB LookupType 1 (Single Substitution)** (round 89). The
+//!   OpenType spec §6.2.1 (a.k.a. chapter 6 "GSUB - Glyph Substitution
+//!   Table", section 2.1 "Single Substitution Subtable") defines two
+//!   formats — **Format 1 (delta)** replaces every covered glyph by
 //!   `gid + deltaGlyphID` (mod 65536), and **Format 2 (substitute-array)**
 //!   replaces every covered glyph by the entry at the same coverage
 //!   index in a `substituteGlyphIDs[]` array. Both formats are
 //!   implemented inside `oxideav-ttf`'s
 //!   [`oxideav_ttf::Font::gsub_apply_lookup_type_1`]; this module is
 //!   pure dispatcher logic on top.
-//! - **LookupType 7 (Extension)** wrappers around a Type 1 lookup are
-//!   transparent — the underlying `oxideav-ttf` accessor unwraps
-//!   ExtensionSubst before reporting the lookup type.
+//! - **GSUB LookupType 2 (Multiple Substitution)** (round 125). The
+//!   OpenType spec §6.2.2 ("Multiple Substitution Subtable") defines
+//!   **Format 1** — a Coverage on the first input glyph plus a
+//!   per-coverage `Sequence` record with a `glyphCount` and a
+//!   `substituteGlyphIDs[]` array. The substitution replaces the
+//!   covered input glyph with the `glyphCount`-long sequence
+//!   (`glyphCount = 0` is legal and is interpreted as a deletion —
+//!   the input glyph is removed without replacement). The decode
+//!   itself lives in `oxideav-ttf`'s
+//!   [`oxideav_ttf::Font::gsub_apply_lookup_type_2`]; this module
+//!   walks every covered slot and splices the returned sequence into
+//!   the running glyph buffer, advancing past the inserted run so a
+//!   re-application of the same lookup doesn't re-match the
+//!   substitution's output.
+//! - **LookupType 7 (Extension)** wrappers around a Type 1 / Type 2
+//!   lookup are transparent — the underlying `oxideav-ttf` accessor
+//!   unwraps ExtensionSubst before reporting the lookup type.
 //!
-//! Lookups of any other declared type (Multiple = 2, Alternate = 3,
-//! Ligature = 4, Context = 5, ChainContext = 6, ReverseChainContext
-//! = 8) are **silently skipped**. The brief for round 89 is single
-//! substitution only — multi / ligature / context will come back in
-//! a later round through the broader `apply_one_lookup` walker in
+//! Lookups of any other declared type (Alternate = 3, Ligature = 4,
+//! Context = 5, ChainContext = 6, ReverseChainContext = 8) are
+//! **silently skipped**. The brief for round 125 is single + multiple
+//! substitution only — ligature / context will come back in a later
+//! round through the broader `apply_one_lookup` walker in
 //! [`crate::shaping::general`].
 //!
 //! ## Why "single substitution only"
@@ -94,8 +108,10 @@ use oxideav_ttf::Font;
 /// 1. cmap every character in `text` (`.notdef` for missing chars).
 /// 2. For each requested feature tag (in caller order), resolve the
 ///    lookup-index list under the script-tag priority and apply
-///    every LookupType-1 lookup to the running glyph list.
-/// 3. Return the final glyph IDs.
+///    every LookupType-1 (single) and LookupType-2 (multiple)
+///    lookup to the running glyph list.
+/// 3. Return the final glyph IDs (length may differ from the cmap'd
+///    input when a LookupType-2 lookup splits or deletes glyphs).
 ///
 /// Empty `text` yields an empty `Vec`. Empty `features` yields the
 /// pure-cmap output (no GSUB applied) — useful as a "what does this
@@ -117,7 +133,7 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
         return gids;
     }
 
-    // Step 2: per-feature LookupType-1 dispatch.
+    // Step 2: per-feature dispatch.
     let lookup_list = font.gsub_lookup_list();
     let lookup_type_of = |idx: u16| -> Option<u16> {
         lookup_list
@@ -129,16 +145,45 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
     for feature_tag in features {
         let lookups = resolve_feature_lookups(font, feature_tag);
         for lookup_idx in lookups {
-            // Single-substitution only — silently skip any other
-            // declared type. The brief for round 89 is type 1; the
-            // broader walker in `shaping::general::apply_one_lookup`
-            // is the place to call for full type dispatch.
-            if lookup_type_of(lookup_idx) != Some(1) {
-                continue;
-            }
-            for slot in gids.iter_mut() {
-                if let Some(rep) = font.gsub_apply_lookup_type_1(lookup_idx, *slot) {
-                    *slot = rep;
+            match lookup_type_of(lookup_idx) {
+                Some(1) => {
+                    // LookupType 1 (Single Substitution): one input
+                    // glyph → one output glyph. Length-preserving.
+                    for slot in gids.iter_mut() {
+                        if let Some(rep) = font.gsub_apply_lookup_type_1(lookup_idx, *slot) {
+                            *slot = rep;
+                        }
+                    }
+                }
+                Some(2) => {
+                    // LookupType 2 (Multiple Substitution, Format 1):
+                    // one input glyph → N output glyphs (N may be 0
+                    // for the deletion edge case the spec permits).
+                    // Walk the buffer left-to-right; when a slot is
+                    // covered, splice the returned sequence in place
+                    // of the single input glyph and advance past the
+                    // inserted run so the same lookup doesn't re-
+                    // match its own output (mirrors the
+                    // `apply_one_lookup` strategy in
+                    // `shaping::general`).
+                    let mut pos = 0usize;
+                    while pos < gids.len() {
+                        if let Some(seq) = font.gsub_apply_lookup_type_2(lookup_idx, gids[pos]) {
+                            let new_len = seq.len();
+                            gids.splice(pos..pos + 1, seq);
+                            pos += new_len;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                }
+                _ => {
+                    // Any other declared type is silently skipped —
+                    // the round-89/125 surface is single + multiple
+                    // substitution only. Ligature / Contextual /
+                    // Chained / Reverse-Chained lookups belong to
+                    // the broader `apply_one_lookup` walker in
+                    // `shaping::general`.
                 }
             }
         }
@@ -329,12 +374,12 @@ mod tests {
         .unwrap();
     }
 
-    /// Non-LookupType-1 lookups must be silently skipped. The `liga`
-    /// feature on DejaVu Sans ships a LookupType-4 lookup; pointing
-    /// `shape_text_with_font` at `liga` is a no-op (the round-89
-    /// surface is single-substitution only — `liga` ligature work
-    /// happens through `Shaper::shape` / `FaceChain::shape`'s
-    /// existing pipeline).
+    /// LookupType 4 (ligature substitution) must be silently skipped.
+    /// The `liga` feature on DejaVu Sans ships a LookupType-4 lookup;
+    /// pointing `shape_text_with_font` at `liga` is a no-op (the
+    /// round-89/125 surface is single + multiple substitution only —
+    /// `liga` ligature work happens through `Shaper::shape` /
+    /// `FaceChain::shape`'s existing pipeline).
     #[test]
     fn liga_is_skipped_because_it_is_lookup_type_4() {
         let bytes = DEJAVU_BYTES.to_vec();
@@ -354,7 +399,7 @@ mod tests {
             let liga_attempted = shape_text_with_font(font, "fi", &[*b"liga"]);
             assert_eq!(
                 cmap_only, liga_attempted,
-                "liga (lookup type 4) must be silently skipped by the round-89 type-1 surface"
+                "liga (lookup type 4) must be silently skipped by the round-89/125 type-1/2 surface"
             );
         })
         .unwrap();

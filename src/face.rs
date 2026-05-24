@@ -680,15 +680,20 @@ impl Face {
     /// Shape `text` with the caller-specified GSUB feature tags applied
     /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
     ///
-    /// **Round-89 scope: GSUB LookupType 1 (Single Substitution) only.**
-    /// Both Format 1 (delta) and Format 2 (substitute-array) sub-tables
-    /// are supported (the underlying `oxideav-ttf` accessor handles
-    /// both; ExtensionSubst LookupType-7 wrappers around a Type-1
-    /// lookup are also unwrapped transparently). Lookups of other types
-    /// (Multiple, Alternate, Ligature, Contextual, ChainContext,
-    /// ReverseChainContext) referenced by the requested features are
-    /// silently skipped — see [`crate::shaper::Shaper::shape`] for the
-    /// full multi-type pipeline.
+    /// **Round-89/125 scope: GSUB LookupType 1 (Single Substitution)
+    /// and LookupType 2 (Multiple Substitution, Format 1).** Type 1
+    /// Format 1 (delta) and Format 2 (substitute-array) plus Type 2
+    /// Format 1 are all dispatched through `oxideav-ttf`'s
+    /// `gsub_apply_lookup_type_{1,2}` accessors; ExtensionSubst
+    /// LookupType-7 wrappers around a Type-1 / Type-2 lookup are
+    /// unwrapped transparently. A Type-2 lookup may change the glyph
+    /// count (split one glyph into N, or delete one with
+    /// `glyphCount = 0`); the returned `Vec` reflects the post-
+    /// substitution length. Lookups of other types (Alternate,
+    /// Ligature, Contextual, ChainContext, ReverseChainContext)
+    /// referenced by the requested features are silently skipped —
+    /// see [`crate::shaper::Shaper::shape`] for the full multi-type
+    /// pipeline.
     ///
     /// Typical feature tags this is useful for are the display-toggled
     /// features that the always-on round-15 `ccmp` + `calt` passes
