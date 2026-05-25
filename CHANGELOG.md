@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GSUB LookupType 4 (Ligature Substitution) in `shape_text` (round 128)
+
+`Face::shape_text` now dispatches GSUB LookupType 4 (Ligature
+Substitution, Format 1) alongside the round-89 LookupType 1
+(Single Substitution) and round-125 LookupType 2 (Multiple
+Substitution) paths. The shaper walks the cmap'd run
+left-to-right; at each cursor position it asks
+`oxideav-ttf::Font::gsub_apply_lookup_type_4(idx, &gids[pos..])`
+whether the lookup matches a prefix starting at the cursor.
+On a hit the `consumed` glyphs `gids[pos..pos+consumed]` are
+spliced to the single replacement glyph and the cursor advances
+by 1 (past the new ligature). The advance-by-1 is what
+`Shaper::shape`'s round-1 ligature pass already does and is
+the natural mirror of the round-125 Type-2 walker.
+
+The canonical use case is `liga` / `dlig` / `rlig` collapsing
+multi-glyph component sequences into a single ligature glyph
+(e.g. fi / fl / ffi / ffl on DejaVu Sans, or the historic
+ct / st discretionary ligatures on serif text fonts). The
+`Shaper::shape` / `FaceChain::shape` pipeline already collapsed
+ligatures via the round-1 `lookup_ligature` walker; round 128
+brings the same capability to the caller-driven
+`shape_text(text, features)` surface so explicit per-call feature
+lists can now express ligature substitution as well.
+
+Tests: `tests/round128_ligature_subst.rs` adds 17 new
+integration tests around a per-byte synthetic TTF (no external
+library consulted; every byte layout follows the Microsoft
+Typography OpenType spec — chapter 6 §6.2.4 LigatureSubstFormat1
+plus the common-table Coverage Format 1 layout, transcribed
+from the published spec):
+
+- A parameterised builder that produces a 5-glyph TTF
+  (`.notdef` + up to 4 letters + ligature glyphs) with a
+  Format-12 cmap and a GSUB table publishing one `liga` feature
+  under script `DFLT` with one LigatureSubstFormat1 lookup
+  populated from a caller-supplied `LigatureSet` table.
+- `synthetic_font_cmap_routes_a_b_c`,
+  `synthetic_font_publishes_liga_under_dflt`, and
+  `synthetic_font_has_one_lookup_type_4` lock the parsed shape
+  of the synthetic font (cmap mapping + feature publication +
+  GSUB lookup count / type).
+- `liga_collapses_two_components_into_ligature` is the headline
+  contract: shape_text("ab", [liga]) returns the single
+  replacement glyph instead of the cmap'd [1, 2].
+- `liga_is_noop_on_uncovered_prefix` /
+  `liga_is_noop_when_tail_doesnt_match` cover the two miss
+  paths (first-component-not-in-coverage and
+  first-matches-but-tail-doesn't).
+- `liga_mixed_input_collapses_only_matching_prefix` verifies
+  multiple ligature matches in a single run.
+- `liga_partial_then_match` walks past an uncovered glyph and
+  fires the ligature at the next position.
+- `liga_does_not_re_match_its_own_output` is the idempotence
+  guard.
+- `liga_empty_text_yields_empty_run`,
+  `liga_empty_features_is_cmap_identity_on_ab`, and
+  `unknown_feature_skips_type_4_lookup` are the empty-input and
+  unknown-feature baselines.
+- `liga_longest_match_first_picks_3_glyph_ligature` /
+  `liga_longest_match_first_falls_back_when_tail_missing` cover
+  the spec-mandated longest-match-first ordering within a single
+  LigatureSet (a 3-glyph ligature with the same first component
+  must win over a 2-glyph one when the trailing components are
+  present, and fall back to the 2-glyph one when they aren't).
+- `liga_two_sets_each_fires_independently` /
+  `liga_two_sets_first_set_only_on_partial_input` cover
+  multiple LigatureSets routed by coverage (different first
+  components, each with their own ligature record).
+- `liga_single_component_record_behaves_like_single_subst`
+  covers the spec-legal-but-rare `componentCount = 1` edge case
+  (effectively a Single Substitution dressed as a ligature).
+
+Plus three new in-module tests in
+`src/shaping/feature_subst.rs` (existing 9 → 11) replacing the
+pre-128 `liga_is_skipped_because_it_is_lookup_type_4` test with
+three new tests against real DejaVu Sans:
+`liga_collapses_fi_via_lookup_type_4` (fi → single ligature
+glyph), `liga_leaves_uncovered_glyphs_alone` (mixed "abfi" → 3
+glyphs not 4), and `liga_is_identity_on_uncovered_run` ("abc"
+unchanged because no f/l/i prefix matches).
+
+The pre-existing `tests/round89_single_subst.rs ::
+dejavu_liga_is_skipped_because_lookup_type_is_4` test was
+renamed to `dejavu_liga_is_now_dispatched_as_lookup_type_4`
+and its assertions flipped to lock the new round-128 contract
+(fi cmap'd to 2 glyphs, liga collapses to 1 different glyph).
+
+Lookups of any other declared type (Alternate = 3, Context = 5,
+ChainContext = 6, ReverseChainContext = 8) referenced by the
+requested features remain silently skipped on the `shape_text`
+surface; the broader `apply_one_lookup` walker in
+`shaping::general` continues to dispatch all declared types end-
+to-end through the always-on `ccmp` / `calt` passes.
+
+Clean-room note: OpenType §6.2.4 LigatureSubstFormat1 byte
+layout is implemented inside `oxideav-ttf` (already shipped; no
+scribe-side decode work this round); scribe's round-128 layer
+is a thin dispatcher plus a per-byte synthetic-fixture builder
+transcribed from the published OpenType spec. No HarfBuzz /
+FreeType / Pango / Skia source was consulted; no WebSearch /
+WebFetch was invoked during this round.
+
 ### Added — GSUB LookupType 2 (Multiple Substitution) in `shape_text` (round 125)
 
 `Face::shape_text` now dispatches GSUB LookupType 2 (Multiple

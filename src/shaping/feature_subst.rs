@@ -1,5 +1,5 @@
-//! Round 89 / 125 — caller-driven GSUB single + multiple substitution
-//! feature application.
+//! Round 89 / 125 / 128 — caller-driven GSUB single + multiple +
+//! ligature substitution feature application.
 //!
 //! Where the round-15 [`crate::shaping::general`] pass hard-codes the
 //! two OpenType "always-on" features (`ccmp` + `calt`) into the run
@@ -40,39 +40,65 @@
 //!   the running glyph buffer, advancing past the inserted run so a
 //!   re-application of the same lookup doesn't re-match the
 //!   substitution's output.
+//! - **GSUB LookupType 4 (Ligature Substitution)** (round 128). The
+//!   OpenType spec §6.2.4 ("Ligature Substitution Subtable") defines
+//!   **Format 1** — a Coverage on the *first* component glyph plus a
+//!   per-coverage `LigatureSet`, each of which lists `Ligature`
+//!   records carrying the trailing component glyph IDs (positions 2,
+//!   3, …) and the replacement `ligGlyph`. When the input prefix
+//!   starting at the cursor matches all components, the matched
+//!   `componentCount` glyphs are replaced by the single ligature
+//!   glyph. The decode itself lives in `oxideav-ttf`'s
+//!   [`oxideav_ttf::Font::gsub_apply_lookup_type_4`] which returns
+//!   `Some((replacement_gid, consumed))` on a hit; this module walks
+//!   the glyph run left-to-right, splices `gids[pos..pos+consumed]`
+//!   to `[replacement]`, and advances the cursor by 1 (past the new
+//!   ligature glyph). The advance-by-1 is what `Shaper::shape`'s
+//!   round-1 ligature pass does as well — and it's correct because a
+//!   ligature lookup's coverage is on the *first* component, so the
+//!   ligature glyph (whose GID typically lives outside the basic
+//!   alphabet) won't re-match the same lookup.
 //! - **LookupType 7 (Extension)** wrappers around a Type 1 / Type 2
-//!   lookup are transparent — the underlying `oxideav-ttf` accessor
-//!   unwraps ExtensionSubst before reporting the lookup type.
+//!   / Type 4 lookup are transparent — the underlying `oxideav-ttf`
+//!   accessor unwraps ExtensionSubst before reporting the lookup
+//!   type.
 //!
-//! Lookups of any other declared type (Alternate = 3, Ligature = 4,
-//! Context = 5, ChainContext = 6, ReverseChainContext = 8) are
-//! **silently skipped**. The brief for round 125 is single + multiple
-//! substitution only — ligature / context will come back in a later
-//! round through the broader `apply_one_lookup` walker in
-//! [`crate::shaping::general`].
+//! Lookups of any other declared type (Alternate = 3, Context = 5,
+//! ChainContext = 6, ReverseChainContext = 8) are **silently
+//! skipped**. The brief for round 128 is single + multiple +
+//! ligature substitution only — contextual / chained-contextual /
+//! reverse-chained substitution dispatch on the caller-driven
+//! surface is left for a later round (the always-on `ccmp` / `calt`
+//! passes in [`crate::shaping::general`] already cover those types
+//! end-to-end through the broader `apply_one_lookup` walker).
 //!
-//! ## Why "single substitution only"
+//! ## What lookup types the display-toggled catalogue uses
 //!
-//! The display-toggled feature catalogue is overwhelmingly
-//! type-1-driven in practice:
+//! Most display-toggled features the caller-driven `shape_text` API
+//! is meant to expose are dispatched as one or more of the three
+//! supported lookup types. The mapping:
 //!
 //! - `smcp` / `c2sc` → one upper / lower glyph → one small-cap glyph
-//!   (Format 2 array typically).
+//!   (LookupType 1, typically Format 2 array).
 //! - `case` → one paren / bracket / hyphen → its case-sensitive
-//!   variant (Format 2).
+//!   variant (LookupType 1, typically Format 2).
 //! - `salt` / `ss01..ss20` → one glyph → one stylistic alternate
-//!   (Format 1 delta or Format 2 array).
-//! - `frac` → digit-to-numerator/denominator routing (the actual
-//!   `1/2` collapsing is contextual, but the digit reshape is type
-//!   1).
-//! - `sups` / `subs` → digit → superscript / subscript digit (Format
-//!   2 typically).
+//!   (LookupType 1, Format 1 delta or Format 2 array).
+//! - `frac` → digit-to-numerator / denominator routing (LookupType 1
+//!   for the digit reshape; the contextual `1/2` collapse is a
+//!   chained-context Type-6 rule and is silently skipped here).
+//! - `sups` / `subs` → digit → superscript / subscript digit
+//!   (LookupType 1, Format 2 typically).
+//! - `liga` / `dlig` / `rlig` → multi-glyph → single ligature glyph
+//!   (LookupType 4, Format 1 — exclusively in practice).
+//! - `ccmp` → split precomposed glyph → base + combining mark
+//!   (LookupType 2 Format 1 — already wired in round 125).
 //!
-//! Fonts that ship a type-2 / type-4 sub-lookup under `frac` (the
+//! Fonts that ship a non-Type-1/2/4 sub-lookup under `frac` (the
 //! contextual collapse rule) get the type-1 component applied here
 //! and the contextual rule **silently skipped** — which is enough
 //! for the round-89 surface (digits visibly reshape) but doesn't
-//! exhaust the `frac` feature. The TODO marker covers that gap.
+//! exhaust the `frac` feature.
 //!
 //! ## Script tag probing
 //!
@@ -108,10 +134,12 @@ use oxideav_ttf::Font;
 /// 1. cmap every character in `text` (`.notdef` for missing chars).
 /// 2. For each requested feature tag (in caller order), resolve the
 ///    lookup-index list under the script-tag priority and apply
-///    every LookupType-1 (single) and LookupType-2 (multiple)
-///    lookup to the running glyph list.
+///    every LookupType-1 (single), LookupType-2 (multiple), and
+///    LookupType-4 (ligature) lookup to the running glyph list.
 /// 3. Return the final glyph IDs (length may differ from the cmap'd
-///    input when a LookupType-2 lookup splits or deletes glyphs).
+///    input when a LookupType-2 lookup splits or deletes glyphs, or
+///    when a LookupType-4 lookup collapses N components into one
+///    ligature glyph).
 ///
 /// Empty `text` yields an empty `Vec`. Empty `features` yields the
 /// pure-cmap output (no GSUB applied) — useful as a "what does this
@@ -177,13 +205,53 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
                         }
                     }
                 }
+                Some(4) => {
+                    // LookupType 4 (Ligature Substitution, Format 1):
+                    // N input component glyphs → one ligature glyph.
+                    // Walk the buffer left-to-right; at each cursor
+                    // position, ask `oxideav-ttf` whether the lookup
+                    // matches the prefix starting at the cursor.
+                    // `gsub_apply_lookup_type_4(idx, &gids[pos..])`
+                    // returns `Some((replacement, consumed))` when a
+                    // ligature applies; we splice
+                    // `gids[pos..pos+consumed]` to the single
+                    // replacement glyph and advance the cursor by 1
+                    // (past the new ligature). The ligature glyph
+                    // typically lives outside the basic-alphabet GID
+                    // range, so re-matching the same lookup on the
+                    // output is benign — but advancing by 1 is what
+                    // `Shaper::shape`'s round-1 ligature pass already
+                    // does and is the natural mirror of the type-2
+                    // walker above.
+                    let mut pos = 0usize;
+                    while pos < gids.len() {
+                        if let Some((replacement, consumed)) =
+                            font.gsub_apply_lookup_type_4(lookup_idx, &gids[pos..])
+                        {
+                            if consumed == 0 {
+                                // Defensive: a degenerate
+                                // `componentCount = 0` ligature record
+                                // would loop without this guard. The
+                                // spec doesn't allow it, but a
+                                // malformed font shouldn't be able to
+                                // hang the shaper.
+                                pos += 1;
+                                continue;
+                            }
+                            gids.splice(pos..pos + consumed, std::iter::once(replacement));
+                            pos += 1;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                }
                 _ => {
                     // Any other declared type is silently skipped —
-                    // the round-89/125 surface is single + multiple
-                    // substitution only. Ligature / Contextual /
-                    // Chained / Reverse-Chained lookups belong to
-                    // the broader `apply_one_lookup` walker in
-                    // `shaping::general`.
+                    // the round-89/125/128 surface is single +
+                    // multiple + ligature substitution only.
+                    // Contextual / Chained / Reverse-Chained lookups
+                    // belong to the broader `apply_one_lookup` walker
+                    // in `shaping::general`.
                 }
             }
         }
@@ -374,32 +442,86 @@ mod tests {
         .unwrap();
     }
 
-    /// LookupType 4 (ligature substitution) must be silently skipped.
-    /// The `liga` feature on DejaVu Sans ships a LookupType-4 lookup;
-    /// pointing `shape_text_with_font` at `liga` is a no-op (the
-    /// round-89/125 surface is single + multiple substitution only —
-    /// `liga` ligature work happens through `Shaper::shape` /
-    /// `FaceChain::shape`'s existing pipeline).
+    /// LookupType 4 (Ligature Substitution) is dispatched by
+    /// `shape_text` as of round 128. DejaVu Sans publishes `liga`
+    /// as a LookupType-4 lookup that collapses 'f'+'i' into the
+    /// fi-ligature glyph. The round-128 contract: shaping "fi"
+    /// with the `liga` feature returns *one* glyph (the ligature),
+    /// not two (cmap output) — and that glyph is *different* from
+    /// either input glyph.
     #[test]
-    fn liga_is_skipped_because_it_is_lookup_type_4() {
+    fn liga_collapses_fi_via_lookup_type_4() {
         let bytes = DEJAVU_BYTES.to_vec();
         let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
         face.with_font(|font| {
             assert!(
                 face.has_gsub_feature(*b"latn", *b"liga"),
-                "DejaVu publishes `liga` — round-89 must observe the lookup type 4 skip on it"
+                "DejaVu publishes `liga` — round-128 dispatches its lookup type 4"
             );
-            // "fi" cmap'd individually then "shape_text"-applied
-            // through `liga` must NOT collapse into the fi-ligature
-            // glyph (the round-89 surface filters out non-type-1
-            // lookups). The pre-existing `Shaper::shape` path still
-            // produces the ligature — this test isolates the
-            // single-substitution-only contract of `shape_text`.
             let cmap_only = shape_text_with_font(font, "fi", &[]);
-            let liga_attempted = shape_text_with_font(font, "fi", &[*b"liga"]);
+            let liga_on = shape_text_with_font(font, "fi", &[*b"liga"]);
+            assert_eq!(cmap_only.len(), 2, "cmap maps 'f' and 'i' to two glyphs");
             assert_eq!(
-                cmap_only, liga_attempted,
-                "liga (lookup type 4) must be silently skipped by the round-89/125 type-1/2 surface"
+                liga_on.len(),
+                1,
+                "round-128 collapses 'fi' into a single ligature glyph"
+            );
+            assert_ne!(
+                liga_on[0], cmap_only[0],
+                "the fi-ligature glyph differs from cmap('f')"
+            );
+            assert_ne!(
+                liga_on[0], cmap_only[1],
+                "the fi-ligature glyph differs from cmap('i')"
+            );
+        })
+        .unwrap();
+    }
+
+    /// `liga` on a run of text where some slots can ligate and
+    /// others can't must collapse only the ligatable prefix. DejaVu
+    /// publishes "fi", "fl", and "ffi" / "ffl" but not e.g. "ab"; a
+    /// string mixing both must keep the non-ligatable letters at
+    /// their cmap output.
+    #[test]
+    fn liga_leaves_uncovered_glyphs_alone() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            // "abfi" → 'a', 'b' (no ligature) + 'fi' (ligature).
+            let cmap_only = shape_text_with_font(font, "abfi", &[]);
+            let liga_on = shape_text_with_font(font, "abfi", &[*b"liga"]);
+            assert_eq!(cmap_only.len(), 4);
+            assert_eq!(
+                liga_on.len(),
+                3,
+                "'a', 'b' pass through; 'fi' collapses to one glyph"
+            );
+            // First two slots must be exactly the cmap output.
+            assert_eq!(liga_on[0], cmap_only[0]);
+            assert_eq!(liga_on[1], cmap_only[1]);
+            // Trailing slot is the fi-ligature, which is a different
+            // glyph from either 'f' or 'i'.
+            assert_ne!(liga_on[2], cmap_only[2]);
+            assert_ne!(liga_on[2], cmap_only[3]);
+        })
+        .unwrap();
+    }
+
+    /// `liga` applied to a string with no covered components is the
+    /// cmap-identity. We use "abc" — DejaVu's `liga` lookup only
+    /// fires on f/i/l/t component sequences, so a pure-alphabetical
+    /// input must pass through unchanged.
+    #[test]
+    fn liga_is_identity_on_uncovered_run() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abc", &[]);
+            let liga_on = shape_text_with_font(font, "abc", &[*b"liga"]);
+            assert_eq!(
+                cmap_only, liga_on,
+                "no component prefix in 'abc' matches DejaVu's liga lookup"
             );
         })
         .unwrap();

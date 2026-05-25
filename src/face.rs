@@ -680,20 +680,22 @@ impl Face {
     /// Shape `text` with the caller-specified GSUB feature tags applied
     /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
     ///
-    /// **Round-89/125 scope: GSUB LookupType 1 (Single Substitution)
-    /// and LookupType 2 (Multiple Substitution, Format 1).** Type 1
-    /// Format 1 (delta) and Format 2 (substitute-array) plus Type 2
-    /// Format 1 are all dispatched through `oxideav-ttf`'s
-    /// `gsub_apply_lookup_type_{1,2}` accessors; ExtensionSubst
-    /// LookupType-7 wrappers around a Type-1 / Type-2 lookup are
-    /// unwrapped transparently. A Type-2 lookup may change the glyph
-    /// count (split one glyph into N, or delete one with
-    /// `glyphCount = 0`); the returned `Vec` reflects the post-
-    /// substitution length. Lookups of other types (Alternate,
-    /// Ligature, Contextual, ChainContext, ReverseChainContext)
-    /// referenced by the requested features are silently skipped —
-    /// see [`crate::shaper::Shaper::shape`] for the full multi-type
-    /// pipeline.
+    /// **Round-89/125/128 scope: GSUB LookupType 1 (Single
+    /// Substitution), LookupType 2 (Multiple Substitution, Format
+    /// 1), and LookupType 4 (Ligature Substitution, Format 1).**
+    /// Type 1 Format 1 (delta) and Format 2 (substitute-array), Type
+    /// 2 Format 1, and Type 4 Format 1 are all dispatched through
+    /// `oxideav-ttf`'s `gsub_apply_lookup_type_{1,2,4}` accessors;
+    /// ExtensionSubst LookupType-7 wrappers around any of those
+    /// lookups are unwrapped transparently. A Type-2 lookup may
+    /// change the glyph count (split one glyph into N, or delete one
+    /// with `glyphCount = 0`); a Type-4 lookup *always* shortens the
+    /// run (N component glyphs → 1 ligature). The returned `Vec`
+    /// reflects the post-substitution length. Lookups of other
+    /// types (Alternate, Contextual, ChainContext,
+    /// ReverseChainContext) referenced by the requested features are
+    /// silently skipped — see [`crate::shaper::Shaper::shape`] for
+    /// the full multi-type pipeline.
     ///
     /// Typical feature tags this is useful for are the display-toggled
     /// features that the always-on round-15 `ccmp` + `calt` passes
@@ -701,7 +703,7 @@ impl Face {
     /// - `smcp` / `c2sc` — small caps (from lower / from upper).
     /// - `case` — case-sensitive forms.
     /// - `frac` — fractions (Type-1 component only; the contextual
-    ///   `1/2` collapse is a Type-4/5 rule and skipped here).
+    ///   `1/2` collapse is a Type-6 rule and skipped here).
     /// - `salt` — stylistic alternates.
     /// - `ss01..ss20` — stylistic sets.
     /// - `sups` / `subs` / `numr` / `dnom` / `ordn` — vertical /
@@ -709,6 +711,9 @@ impl Face {
     /// - `cv01..cv99` — per-character variants.
     /// - `zero` — slashed zero.
     /// - `pnum` / `tnum` — proportional / tabular numerals.
+    /// - `liga` / `dlig` / `rlig` — standard / discretionary /
+    ///   required ligatures (Type-4 ligature substitution as of
+    ///   round 128).
     ///
     /// Features are applied in caller order. Each lookup's coverage
     /// table determines per-glyph whether it fires. Script-tag probe

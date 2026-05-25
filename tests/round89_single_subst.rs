@@ -158,25 +158,28 @@ fn applying_smcp_then_smcp_is_idempotent() {
 // ---------- single-substitution-only contract ---------------------------
 
 #[test]
-fn dejavu_liga_is_skipped_because_lookup_type_is_4() {
-    // The round-89 brief explicitly scopes shape_text to LookupType 1.
-    // DejaVu Sans's `liga` feature publishes a LookupType-4 lookup
-    // (the fi / fl ligature). shape_text(&[liga]) must NOT collapse
-    // "fi" — callers wanting ligatures go through Shaper::shape /
-    // FaceChain::shape (which run the full multi-type pipeline).
+fn dejavu_liga_is_now_dispatched_as_lookup_type_4() {
+    // Round 128 extends `shape_text` to dispatch GSUB LookupType 4
+    // (Ligature Substitution). DejaVu Sans's `liga` feature publishes
+    // a LookupType-4 lookup (the fi / fl / ffi / ffl ligatures);
+    // shape_text(&[liga]) on "fi" now collapses the 2-glyph cmap'd
+    // run into the single fi-ligature glyph (different from either
+    // input glyph). The pre-round-128 contract that "liga is silently
+    // skipped on the caller-driven surface" no longer holds; the new
+    // contract is "the round-89/125/128 surface is single + multiple +
+    // ligature substitution".
     let face = Face::from_ttf_bytes(DEJAVU_BYTES.to_vec()).expect("DejaVu parses");
     assert!(face.has_gsub_feature(*b"latn", *b"liga"));
     let cmap_only = face.shape_text("fi", &[]);
-    let liga_attempt = face.shape_text("fi", &[*b"liga"]);
+    let liga_on = face.shape_text("fi", &[*b"liga"]);
+    assert_eq!(cmap_only.len(), 2, "cmap maps 'f' and 'i' to two glyphs");
     assert_eq!(
-        cmap_only, liga_attempt,
-        "liga (Type 4) is silently skipped by the round-89 Type-1-only surface"
+        liga_on.len(),
+        1,
+        "round-128 collapses fi into one ligature glyph"
     );
-    assert_eq!(
-        cmap_only.len(),
-        2,
-        "fi stays 2 glyphs without ligature collapse"
-    );
+    assert_ne!(liga_on[0], cmap_only[0]);
+    assert_ne!(liga_on[0], cmap_only[1]);
 }
 
 #[test]
