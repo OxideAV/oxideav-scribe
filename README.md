@@ -60,30 +60,36 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `oxideav-ttf`'s GSUB walker; OTF / GSUB-less faces return an empty
   vec. A GPOS introspection mirror is a known follow-up — GPOS-only
   features like `kern` are not visible through this accessor.
-- **Caller-driven GSUB LookupType 1 + 2 + 4 application (rounds
-  89 + 125 + 128)** — `Face::shape_text(text, features) -> Vec<u16>`
+- **Caller-driven GSUB LookupType 1 + 2 + 3 + 4 application (rounds
+  89 + 125 + 128 + 156)** — `Face::shape_text(text, features) -> Vec<u16>`
   cmap's the text, then applies every **single-substitution** (Type
-  1), **multiple-substitution** (Type 2), and **ligature-substitution**
+  1), **multiple-substitution** (Type 2), **alternate-substitution**
+  (Type 3, default `alternateIndex = 0`), and **ligature-substitution**
   (Type 4) lookup the requested feature tags reference under `latn` /
   `cyrl` / `grek` / `DFLT`. OpenType §6.2.1 Format 1 (delta) + Format
   2 (substitute-array), §6.2.2 Format 1 (Sequence-record splice,
-  including the spec-legal `glyphCount = 0` deletion form), and
-  §6.2.4 Format 1 (LigatureSet / Ligature records, longest-match-
-  first per the spec ordering rule) are dispatched through
-  `oxideav-ttf`'s `gsub_apply_lookup_type_{1,2,4}`. A Type-2 hit may
-  change the returned glyph count (split / delete); a Type-4 hit
+  including the spec-legal `glyphCount = 0` deletion form), §6.2.3
+  Format 1 (AlternateSet, first entry picked), and §6.2.4 Format 1
+  (LigatureSet / Ligature records, longest-match-first per the spec
+  ordering rule) are dispatched through `oxideav-ttf`'s
+  `gsub_apply_lookup_type_{1,2,3,4}`. A Type-2 hit may change the
+  returned glyph count (split / delete); a Type-3 hit is
+  length-preserving (one alternate per covered slot); a Type-4 hit
   *always* shortens the run (N components → 1 ligature). `ccmp`
   "split precomposed glyph → base + combining mark" rules express
   through `shape_text` as well as the always-on
   `shaping::general::apply_ccmp` pass; `liga` / `dlig` / `rlig`
   collapse the standard / discretionary / required ligatures (e.g.
   fi / fl / ffi / ffl on DejaVu Sans) end-to-end on the caller-
-  driven surface. Useful for the display-toggled catalogue the
-  round-15 `ccmp` / `calt` passes don't reach: `smcp` / `c2sc`,
-  `case`, `salt`, `frac`, `sups` / `subs` / `numr` / `dnom` /
+  driven surface; `aalt` (Access All Alternates) now reshapes the
+  slots its Type-3 lookup covers (e.g. the lowercase 'a' single-storey
+  alternate on Inter Variable, the small set of `aalt` entries on
+  DejaVu Sans). Useful for the display-toggled catalogue the round-15
+  `ccmp` / `calt` passes don't reach: `smcp` / `c2sc`, `case`,
+  `salt`, `aalt`, `frac`, `sups` / `subs` / `numr` / `dnom` /
   `ordn`, `ss01..ss20`, `cv01..cv99`, `zero`, `pnum` / `tnum`, plus
-  `liga` / `dlig` / `rlig` as of round 128. Features are applied
-  in caller order. Lookups of other declared types (3 / 5 / 6 / 8)
+  `liga` / `dlig` / `rlig` as of round 128. Features are applied in
+  caller order. Lookups of other declared types (5 / 6 / 8)
   referenced by the requested features are silently skipped —
   contextual / chained-contextual / reverse-chained substitutions
   still flow through `Shaper::shape` / `FaceChain::shape`. Worked
@@ -91,7 +97,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   returns `[cmap("H"), smcp(cmap("i"))]`; on DejaVu Sans,
   `face.shape_text("fi", &[*b"liga"])` returns a single
   ligature-glyph id (the fi-ligature) instead of the 2-glyph cmap
-  output.
+  output; on Inter Variable, `face.shape_text("a", &[*b"aalt"])`
+  reshapes via the Type-3 alternate-0 (different glyph id from
+  `cmap('a')`, length still 1) where previously the Type-3 lookup
+  was silently skipped.
 - **General-script GSUB features (round 15)** — `shaping::general`
   wires the OpenType **required-feature** `ccmp` (Glyph Composition /
   Decomposition) as a pre-ligature pass and `calt` (Contextual

@@ -1,5 +1,5 @@
-//! Round 89 / 125 / 128 — caller-driven GSUB single + multiple +
-//! ligature substitution feature application.
+//! Round 89 / 125 / 128 / 156 — caller-driven GSUB single + multiple +
+//! ligature + alternate substitution feature application.
 //!
 //! Where the round-15 [`crate::shaping::general`] pass hard-codes the
 //! two OpenType "always-on" features (`ccmp` + `calt`) into the run
@@ -10,9 +10,10 @@
 //! `salt` (stylistic alternates), `ss01..ss20` (stylistic sets),
 //! `sups` / `subs` (superscript / subscript), `numr` / `dnom`
 //! (numerator / denominator), `ordn` (ordinal), `zero` (slashed
-//! zero), `pnum` / `tnum` (proportional / tabular numerals), and the
-//! `cv01..cv99` per-character variant family — and applies the
-//! single-/multiple-substitution lookups those features dispatch.
+//! zero), `pnum` / `tnum` (proportional / tabular numerals),
+//! `aalt` (access all alternates), and the `cv01..cv99` per-character
+//! variant family — and applies the single-/multiple-/ligature-/
+//! alternate-substitution lookups those features dispatch.
 //!
 //! ## What's wired
 //!
@@ -58,24 +59,38 @@
 //!   ligature lookup's coverage is on the *first* component, so the
 //!   ligature glyph (whose GID typically lives outside the basic
 //!   alphabet) won't re-match the same lookup.
+//! - **GSUB LookupType 3 (Alternate Substitution)** (round 156). The
+//!   OpenType spec §6.2.3 ("Alternate Substitution Subtable") defines
+//!   **Format 1** — a Coverage on each input glyph plus, per-coverage,
+//!   an `AlternateSet` listing one or more `alternateGlyphIDs[]`. The
+//!   substitution replaces a covered glyph with one entry from its
+//!   `AlternateSet`; the spec doesn't pin an inter-alternate selection
+//!   policy ("the application of the OpenType Layout engine selects an
+//!   alternate") so we default to `alternateIndex = 0`, which is what
+//!   `aalt` / `salt` are designed to produce when consulted without a
+//!   user-specified pick. The decode itself lives in `oxideav-ttf`'s
+//!   [`oxideav_ttf::Font::gsub_apply_lookup_type_3`]; this module
+//!   walks every covered slot and substitutes the alternate-0 glyph
+//!   (length-preserving, mirrors the Type-1 walker — Alternate is
+//!   single-substitution-with-a-twist).
 //! - **LookupType 7 (Extension)** wrappers around a Type 1 / Type 2
-//!   / Type 4 lookup are transparent — the underlying `oxideav-ttf`
-//!   accessor unwraps ExtensionSubst before reporting the lookup
-//!   type.
+//!   / Type 3 / Type 4 lookup are transparent — the underlying
+//!   `oxideav-ttf` accessor unwraps ExtensionSubst before reporting
+//!   the lookup type.
 //!
-//! Lookups of any other declared type (Alternate = 3, Context = 5,
-//! ChainContext = 6, ReverseChainContext = 8) are **silently
-//! skipped**. The brief for round 128 is single + multiple +
-//! ligature substitution only — contextual / chained-contextual /
-//! reverse-chained substitution dispatch on the caller-driven
-//! surface is left for a later round (the always-on `ccmp` / `calt`
-//! passes in [`crate::shaping::general`] already cover those types
-//! end-to-end through the broader `apply_one_lookup` walker).
+//! Lookups of the remaining declared types (Context = 5, ChainContext
+//! = 6, ReverseChainContext = 8) are **silently skipped**. The brief
+//! for round 156 is single + multiple + ligature + alternate
+//! substitution — contextual / chained-contextual / reverse-chained
+//! substitution dispatch on the caller-driven surface is left for a
+//! later round (the always-on `ccmp` / `calt` passes in
+//! [`crate::shaping::general`] already cover those types end-to-end
+//! through the broader `apply_one_lookup` walker).
 //!
 //! ## What lookup types the display-toggled catalogue uses
 //!
 //! Most display-toggled features the caller-driven `shape_text` API
-//! is meant to expose are dispatched as one or more of the three
+//! is meant to expose are dispatched as one or more of the four
 //! supported lookup types. The mapping:
 //!
 //! - `smcp` / `c2sc` → one upper / lower glyph → one small-cap glyph
@@ -83,7 +98,13 @@
 //! - `case` → one paren / bracket / hyphen → its case-sensitive
 //!   variant (LookupType 1, typically Format 2).
 //! - `salt` / `ss01..ss20` → one glyph → one stylistic alternate
-//!   (LookupType 1, Format 1 delta or Format 2 array).
+//!   (LookupType 1, Format 1 delta or Format 2 array; some fonts
+//!   use LookupType 3 here when there's more than one alternate per
+//!   covered glyph — the round-156 pass picks alternate 0).
+//! - `aalt` → "access all alternates" — typically a mix of LookupType
+//!   1 (single substitution into the principal alternate) and
+//!   LookupType 3 (the full per-glyph `AlternateSet` for ad-hoc
+//!   alternate access). Round 156 dispatches both.
 //! - `frac` → digit-to-numerator / denominator routing (LookupType 1
 //!   for the digit reshape; the contextual `1/2` collapse is a
 //!   chained-context Type-6 rule and is silently skipped here).
@@ -134,7 +155,8 @@ use oxideav_ttf::Font;
 /// 1. cmap every character in `text` (`.notdef` for missing chars).
 /// 2. For each requested feature tag (in caller order), resolve the
 ///    lookup-index list under the script-tag priority and apply
-///    every LookupType-1 (single), LookupType-2 (multiple), and
+///    every LookupType-1 (single), LookupType-2 (multiple),
+///    LookupType-3 (alternate, default `alternateIndex = 0`), and
 ///    LookupType-4 (ligature) lookup to the running glyph list.
 /// 3. Return the final glyph IDs (length may differ from the cmap'd
 ///    input when a LookupType-2 lookup splits or deletes glyphs, or
@@ -205,6 +227,26 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
                         }
                     }
                 }
+                Some(3) => {
+                    // LookupType 3 (Alternate Substitution, Format 1):
+                    // covered glyph → one entry from its `AlternateSet`.
+                    // The spec doesn't pin which alternate the engine
+                    // picks ("the application of the OpenType Layout
+                    // engine selects an alternate"); we default to
+                    // index 0, which is what `aalt` / `salt` are
+                    // designed to produce without a user-specified
+                    // pick. Length-preserving, mirrors the Type-1
+                    // walker exactly. A higher-level surface that
+                    // wanted to expose user-driven alternate selection
+                    // would belong above this layer (see
+                    // `oxideav-ttf`'s `gsub_apply_lookup_type_3` for
+                    // the per-call `alternate_index` argument).
+                    for slot in gids.iter_mut() {
+                        if let Some(rep) = font.gsub_apply_lookup_type_3(lookup_idx, *slot, 0) {
+                            *slot = rep;
+                        }
+                    }
+                }
                 Some(4) => {
                     // LookupType 4 (Ligature Substitution, Format 1):
                     // N input component glyphs → one ligature glyph.
@@ -247,11 +289,11 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
                 }
                 _ => {
                     // Any other declared type is silently skipped —
-                    // the round-89/125/128 surface is single +
-                    // multiple + ligature substitution only.
-                    // Contextual / Chained / Reverse-Chained lookups
-                    // belong to the broader `apply_one_lookup` walker
-                    // in `shaping::general`.
+                    // the round-89/125/128/156 surface is single +
+                    // multiple + ligature + alternate substitution
+                    // only. Contextual / Chained / Reverse-Chained
+                    // lookups belong to the broader `apply_one_lookup`
+                    // walker in `shaping::general`.
                 }
             }
         }
@@ -523,6 +565,45 @@ mod tests {
                 cmap_only, liga_on,
                 "no component prefix in 'abc' matches DejaVu's liga lookup"
             );
+        })
+        .unwrap();
+    }
+
+    /// LookupType 3 (Alternate Substitution) is dispatched by
+    /// `shape_text` as of round 156. Inter's `aalt` references a
+    /// Type-3 lookup that covers lowercase 'a' with a non-cmap
+    /// alternate at `alternateIndex = 0`. The round-156 contract:
+    /// `shape_text("a", &[aalt])` reshapes the slot via Type 3,
+    /// distinct from `cmap('a')`, with length preserved at 1.
+    #[test]
+    fn aalt_dispatches_lookup_type_3_on_inter() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "a", &[]);
+            let aalt = shape_text_with_font(font, "a", &[*b"aalt"]);
+            assert_eq!(cmap_only.len(), 1);
+            assert_eq!(aalt.len(), 1, "Type 3 is length-preserving");
+            assert_ne!(
+                cmap_only[0], aalt[0],
+                "round-156 reshapes 'a' via aalt's Type-3 alternate-0"
+            );
+        })
+        .unwrap();
+    }
+
+    /// `aalt` on DejaVu Sans is a single Type-3 lookup. Re-applying
+    /// the feature is a no-op because the AlternateSet coverage
+    /// matches the input glyphs only, not the substitutes — so two
+    /// applications must produce the same output as one.
+    #[test]
+    fn aalt_is_idempotent_on_dejavu() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let once = shape_text_with_font(font, "Iaaly", &[*b"aalt"]);
+            let twice = shape_text_with_font(font, "Iaaly", &[*b"aalt", *b"aalt"]);
+            assert_eq!(once, twice, "aalt's Type-3 component must be idempotent");
         })
         .unwrap();
     }

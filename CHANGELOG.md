@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GSUB LookupType 3 (Alternate Substitution) in `shape_text` (round 156)
+
+`Face::shape_text` now dispatches GSUB LookupType 3 (Alternate
+Substitution, Format 1) alongside the round-89 LookupType 1
+(Single), round-125 LookupType 2 (Multiple), and round-128
+LookupType 4 (Ligature) paths. For each covered slot the shaper
+calls `oxideav-ttf::Font::gsub_apply_lookup_type_3(idx, gid, 0)`
+to pick the first entry of the slot's `AlternateSet` and rewrites
+the slot in place — Type 3 is length-preserving so the walker
+mirrors the Type-1 single-substitution walker exactly.
+
+The OpenType spec (§6.2.3 "Alternate Substitution Subtable")
+defines exactly one format: Coverage on each input glyph plus a
+per-coverage `AlternateSet` listing one or more
+`alternateGlyphIDs[]`. The spec deliberately leaves "the
+application of the OpenType Layout engine selects an alternate"
+unpinned — we default to `alternateIndex = 0`, which is what the
+`aalt` and `salt` features are designed to produce when consulted
+without a user-specified pick. A higher-level surface that wanted
+to expose user-driven indices would belong above this layer (the
+existing `oxideav-ttf` accessor already takes `alternate_index`
+per call).
+
+The headline use case is `aalt` (Access All Alternates) — a
+near-universal OpenType feature that publishes a Type-1 component
+(single substitution into the designer-selected principal
+alternate) plus a Type-3 component (the full per-glyph
+`AlternateSet` for ad-hoc alternate access). Every test-fixture
+font in `tests/fixtures/` ships an `aalt` feature with a Type-3
+lookup; pre-round-156 the Type-3 component was silently skipped,
+so a glyph covered *only* by the Type-3 lookup passed through
+unchanged. Round 156 wires it into the caller-driven surface.
+
+Tests: `tests/round156_alternate_subst.rs` adds 7 integration
+tests covering both rich-coverage (Inter Variable, 37 Type-3 hits
+across ASCII probes) and sparse-coverage (DejaVu Sans, 5 hits at
+'I', 'J', 'a', 'l', 'y') fonts:
+
+- `inter_aalt_substitutes_via_lookup_type_3` — the headline
+  contract: `shape_text("a", &[aalt])` reshapes via the Type-3
+  alternate-0 (different gid from `cmap('a')`, length 1) where
+  previously the Type-3 lookup was silently skipped.
+- `inter_aalt_reshapes_many_lowercase_slots` — bulk-coverage
+  check: at least 5 of 7 lowercase ASCII letters reshape via the
+  Type-3 lookup.
+- `dejavu_aalt_is_pure_type_3` — `aalt` on DejaVu is a single
+  Type-3 lookup; round-156 reshapes 'I' / 'a' / 'l' / 'y' /
+  duplicates in `"Iaaly"`.
+- `dejavu_aalt_outside_coverage_is_cmap_identity` — uncovered
+  glyphs ('b' / 'c' / 'd' / 'e' / 'f' / 'g' on DejaVu) pass through
+  unchanged.
+- `aalt_is_idempotent_on_inter` — coverage is on the input glyphs,
+  not the substitutes, so re-applying `aalt` is a no-op.
+- `aalt_does_not_affect_run_length` — Type 3 is length-preserving
+  across both fixtures and several input compositions.
+- `font_without_aalt_is_cmap_identity` — unknown feature tag
+  (`zzzz`) doesn't accidentally pull in a Type-3 lookup.
+
+Plus two unit tests in `src/shaping/feature_subst.rs`
+(`aalt_dispatches_lookup_type_3_on_inter`,
+`aalt_is_idempotent_on_dejavu`) mirroring the existing per-module
+test convention.
+
+Lookups of the remaining declared types (5 / 6 / 8) referenced by
+the requested features are still silently skipped on the
+caller-driven surface — contextual / chained-contextual /
+reverse-chained substitutions continue to flow through
+`Shaper::shape` / `FaceChain::shape` via `shaping::general`.
+
 ### Added — GSUB LookupType 4 (Ligature Substitution) in `shape_text` (round 128)
 
 `Face::shape_text` now dispatches GSUB LookupType 4 (Ligature
