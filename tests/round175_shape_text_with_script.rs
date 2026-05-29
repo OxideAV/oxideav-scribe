@@ -27,8 +27,8 @@
 
 use oxideav_scribe::Face;
 
-const DEJAVU_BYTES: &[u8] = include_bytes!("../../oxideav-ttf/tests/fixtures/DejaVuSans.ttf");
-const INTER_BYTES: &[u8] = include_bytes!("../tests/fixtures/InterVariable.ttf");
+const DEJAVU_BYTES: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
+const INTER_BYTES: &[u8] = include_bytes!("fixtures/InterVariable.ttf");
 
 /// Explicit `latn` resolution matches the auto-probe output on
 /// Inter's `smcp` — the auto-probe picks `latn` first for `smcp`, so
