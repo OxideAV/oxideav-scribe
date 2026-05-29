@@ -80,6 +80,31 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   GSUB through the caller-driven surface for the first time. The
   round-15 four-tag prefix is preserved verbatim so existing Latin /
   Cyrillic / Greek / DFLT callers see no behaviour change.
+- **Caller-driven Type-3 alternate-index selection (round 183)** —
+  `Face::shape_text_with_alternates(text, &[(feature_tag, alternate_index)])`
+  and the explicit-script mirror
+  `Face::shape_text_with_script_and_alternates(text, script_tag,
+  &[(feature_tag, alternate_index)])` let the caller name the
+  `AlternateSet` entry the Type-3 (Alternate Substitution) walker
+  picks per feature, instead of the round-156 hardcoded `0`. Useful
+  for `salt` / `aalt` / `ss01..ss20` features whose AlternateSets
+  ship more than one entry — e.g. `face.shape_text_with_alternates(
+  "Ag", &[(*b"salt", 2)])` asks for the third stylistic alternate
+  for every `salt`-covered slot. Out-of-range indices fall back to
+  cmap-identity per slot (the safe contract for callers that don't
+  pre-probe per-font alternate counts; the underlying
+  `oxideav-ttf` accessor returns `None` and we leave the slot
+  unchanged). Length-preservation per OpenType §6.2.3 is invariant
+  across indices. Non-Type-3 lookups (Type 1 / 2 / 4) dispatched by
+  the same feature tag silently ignore the index — `liga`'s
+  Type-4 ligature collapse still works regardless of which
+  alternate-index payload is attached. Two paired entry points
+  inherit the round-89 / round-175 auto-probe vs explicit-script
+  split: the auto-probe variant walks the broadened script-tag
+  priority list, the explicit-script variant resolves against one
+  named script tag for deterministic single-script resolution. Index
+  0 reproduces the round-156 default byte-for-byte — the round-183
+  surface is a strict superset.
 - **Caller-driven GSUB LookupType 1 + 2 + 3 + 4 application (rounds
   89 + 125 + 128 + 156)** — `Face::shape_text(text, features) -> Vec<u16>`
   cmap's the text, then applies every **single-substitution** (Type

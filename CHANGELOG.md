@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Caller-driven Type-3 alternate-index selection (round 183)
+
+A pair of new `Face` methods that let callers pick which
+`AlternateSet` entry the GSUB Type-3 (Alternate Substitution) walker
+applies per feature, instead of the round-156 hardcoded
+`alternateIndex = 0`:
+
+- **`Face::shape_text_with_alternates(text, feature_alternates)`** —
+  auto-probe script-resolution variant. `feature_alternates` is a
+  list of `(feature_tag, alternate_index)` pairs; the set of features
+  applied is the union of the tags listed.
+- **`Face::shape_text_with_script_and_alternates(text, script_tag,
+  feature_alternates)`** — explicit-script variant. Mirrors the
+  round-175 `shape_text_with_script` resolution semantics; every
+  feature resolves against `script_tag` alone (no priority walk).
+
+Contract:
+
+1. **Index 0 reproduces the round-156 default** — the round-183
+   surface is a strict superset, not a re-derivation. Asserted by
+   `round183_index_zero_matches_round156_aalt_on_inter` /
+   `_on_dejavu` against the existing fixtures.
+2. **Out-of-range index falls back to cmap-identity per slot.**
+   When `alternate_index` exceeds a covered glyph's `AlternateSet`
+   entry count, `oxideav_ttf::Font::gsub_apply_lookup_type_3`
+   returns `None` and we leave the slot's GID unchanged. Safe
+   fallback for callers that don't pre-probe per-font alternate
+   counts.
+3. **Type-3 length-preservation is invariant across indices** —
+   per OpenType §6.2.3, the run length matches `cmap_only.len()`
+   regardless of which `alternate_index` the caller requests.
+4. **Non-Type-3 features ignore the index.** Features that mix
+   Type-3 with Type-1 (Single) / Type-2 (Multiple) / Type-4
+   (Ligature) lookups still dispatch the non-Type-3 components
+   with their existing walkers — `liga`'s Type-4 ligature collapse
+   produces identical output whether the caller passes
+   `(*b"liga", 0)` or `(*b"liga", u16::MAX)`.
+
+Underlying mechanism: the new methods route through
+`crate::shaping::shape_text_with_alternates_with_font` /
+`shape_text_with_script_and_alternates_with_font`, which call the
+existing private `shape_text_inner` with a per-call
+`feature_alternates: &[(feature_tag, alternate_index)]` slice.
+Inside the dispatch loop, the per-feature alternate index is
+looked up via a linear scan (the list is short in practice) and
+passed to `font.gsub_apply_lookup_type_3(lookup_idx, gid,
+alt_index)` instead of the hardcoded `0`. Types 1, 2, and 4 are
+dispatched unchanged.
+
+Coverage: 7 new unit tests in `src/shaping/feature_subst.rs`
+(empty-list contract, index-0-matches-156 contract, out-of-range
+fallback, explicit-script unknown-tag contract, explicit-script
+index-0 contract, non-Type-3 ignore-index contract, multi-sample
+length-preservation matrix) + 13 new integration tests in
+`tests/round183_alternate_index.rs` (the same contracts asserted
+against the public `Face` surface, including a multi-feature mixed-
+index walk).
+
 ### Added — Explicit-script-tag entry point + broadened script-tag probe list (round 175)
 
 Two paired changes that broaden the caller-driven GSUB surface to

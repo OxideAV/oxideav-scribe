@@ -48,7 +48,10 @@ pub use arabic::{
     Script,
 };
 pub use arabic_pf::presentation_form;
-pub use feature_subst::{shape_text_with_font, shape_text_with_script_with_font};
+pub use feature_subst::{
+    shape_text_with_alternates_with_font, shape_text_with_font,
+    shape_text_with_script_and_alternates_with_font, shape_text_with_script_with_font,
+};
 pub use general::{apply_calt, apply_ccmp};
 pub use indic::{
     bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,

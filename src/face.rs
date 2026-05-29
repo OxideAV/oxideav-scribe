@@ -816,6 +816,111 @@ impl Face {
         .unwrap_or_default()
     }
 
+    /// Round 183 — shape `text` with caller-specified GSUB feature
+    /// tags and per-feature **alternate-index** selection for Type-3
+    /// (Alternate Substitution) lookups.
+    ///
+    /// `feature_alternates` is a list of `(feature_tag, alternate_index)`
+    /// pairs. The set of features applied is the union of the tags
+    /// listed — callers don't need a separate `features` argument.
+    /// Feature application order is the order entries appear in
+    /// `feature_alternates`.
+    ///
+    /// **What the alternate index changes:** the OpenType spec §6.2.3
+    /// (Alternate Substitution) doesn't pin which entry of a coverage
+    /// glyph's `AlternateSet` the layout engine picks. The round-156
+    /// default ([`Self::shape_text`] and friends) hardcodes
+    /// `alternateIndex = 0` — the first listed alternate. Round 183
+    /// gives callers explicit control: requesting
+    /// `(*b"salt", 2)` picks the third alternate for every Type-3
+    /// covered slot under `salt`.
+    ///
+    /// **Out-of-range index → cmap-identity for that slot.** When a
+    /// covered glyph's `AlternateSet` has fewer entries than the
+    /// requested `alternate_index`, the slot passes through unchanged
+    /// rather than panicking or rolling over to index 0 (the
+    /// underlying `oxideav_ttf::Font::gsub_apply_lookup_type_3`
+    /// returns `None` and we leave the slot at its current GID). This
+    /// is the safest fallback for callers that don't pre-probe the
+    /// per-font alternate count — request alternate-3 unconditionally
+    /// and get "alternate-3 if the font has one, default cmap glyph
+    /// otherwise".
+    ///
+    /// **Only Type-3 lookups consult the alternate index.** Features
+    /// that mix Type-3 with Type-1 (Single), Type-2 (Multiple), or
+    /// Type-4 (Ligature) lookups — `aalt` is the canonical example —
+    /// still dispatch the non-Type-3 components with their existing
+    /// length-preserving / length-changing walkers. The alternate
+    /// index is silently ignored for those.
+    ///
+    /// Auto-probes the broadened script-tag priority list — see
+    /// [`Self::shape_text`] for the resolution order. Drop to
+    /// [`Self::shape_text_with_script_and_alternates`] for the
+    /// deterministic-resolution mirror that bypasses the priority
+    /// walk.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Ask for `salt` alternate-2 (third stylistic alternate).
+    /// let gids = face.shape_text_with_alternates("Ag", &[(*b"salt", 2)]);
+    /// // Falls back to cmap glyph for slots whose `salt`
+    /// // AlternateSet has fewer than 3 entries.
+    /// # let _ = gids;
+    /// # }
+    /// ```
+    pub fn shape_text_with_alternates(
+        &self,
+        text: &str,
+        feature_alternates: &[([u8; 4], u16)],
+    ) -> Vec<u16> {
+        self.with_font(|font| {
+            crate::shaping::shape_text_with_alternates_with_font(font, text, feature_alternates)
+        })
+        .unwrap_or_default()
+    }
+
+    /// Round 183 — explicit-script-tag mirror of
+    /// [`Self::shape_text_with_alternates`]. Every requested feature
+    /// resolves against `script_tag` alone (no priority walk); per-
+    /// feature Type-3 alternate indices come from
+    /// `feature_alternates`.
+    ///
+    /// Combines the determinism of
+    /// [`Self::shape_text_with_script`] (round 175) with the caller-
+    /// driven alternate-index selection of
+    /// [`Self::shape_text_with_alternates`] (round 183). Use it when
+    /// you already know the run's script and also want non-default
+    /// Type-3 alternates — for example, a CJK pipeline forcing `aalt`
+    /// against `hani` with `alternate_index = 1` to expose the font's
+    /// second-stylistic-set glyph for a particular CJK codepoint
+    /// without risking a `latn`/`aalt` cross-script collision from
+    /// the auto-probe walk.
+    ///
+    /// Unknown `script_tag` yields cmap-identity (every feature
+    /// resolves to an empty lookup list); out-of-range alternate
+    /// index falls back to cmap-identity per slot; non-Type-3
+    /// lookups dispatch with their existing semantics, all matching
+    /// the round-183 contract on the auto-probe variant.
+    pub fn shape_text_with_script_and_alternates(
+        &self,
+        text: &str,
+        script_tag: [u8; 4],
+        feature_alternates: &[([u8; 4], u16)],
+    ) -> Vec<u16> {
+        self.with_font(|font| {
+            crate::shaping::shape_text_with_script_and_alternates_with_font(
+                font,
+                text,
+                script_tag,
+                feature_alternates,
+            )
+        })
+        .unwrap_or_default()
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.

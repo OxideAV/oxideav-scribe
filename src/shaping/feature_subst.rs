@@ -147,6 +147,45 @@
 //! occasional ambiguity when two scripts publish the same feature
 //! tag (e.g. `liga` under both `latn` and `arab`).
 //!
+//! ## Caller-driven Type-3 alternate-index selection (round 183)
+//!
+//! The OpenType spec doesn't pin which entry of an `AlternateSet` the
+//! layout engine picks for a Type-3 (Alternate Substitution) hit —
+//! §6.2.3 reads "the application of the OpenType Layout engine selects
+//! an alternate". The round-89/125/128/156 surface defaults to
+//! `alternateIndex = 0`, which matches what `aalt` / `salt` are designed
+//! to produce without an explicit pick. Round 183 adds two paired
+//! entry points — [`shape_text_with_alternates_with_font`] and
+//! [`shape_text_with_script_and_alternates_with_font`] — that take a
+//! caller-provided per-feature alternate index, so a higher-level shaper
+//! can expose the "show me alternate #1" / "show me alternate #2" UX
+//! that fonts like Inter Variable and DejaVu ship multi-entry
+//! AlternateSets for.
+//!
+//! - The per-feature index is only consulted on Type-3 (Alternate)
+//!   lookups. Lookups of Type 1 / 2 / 4 referenced by the same feature
+//!   tag dispatch through their existing length-changing / length-
+//!   preserving walkers unchanged — the alternate index is silently
+//!   ignored for those.
+//! - When `alternate_index` is out of range for a covered slot's
+//!   `AlternateSet` (the underlying `oxideav-ttf` accessor returns
+//!   `None`), the slot passes through unchanged rather than panicking
+//!   or substituting a different index. This is the safest fallback
+//!   for callers that don't know the per-font alternate count — they
+//!   can request index 3 unconditionally and get "alternate 3 if the
+//!   font has one, default cmap glyph otherwise".
+//! - Features not present in the caller's per-feature list use the
+//!   round-156 default `alternateIndex = 0`. So
+//!   `shape_text_with_alternates(text, &[(*b"salt", 2)])` flips `salt`
+//!   to alternate-2 while leaving `aalt` / any other Type-3 feature
+//!   the caller bundles in at the default-0 contract.
+//!
+//! Two paired script-resolution surfaces mirror the round-89 /
+//! round-175 split: [`shape_text_with_alternates_with_font`] auto-probes
+//! the broadened script-tag priority list;
+//! [`shape_text_with_script_and_alternates_with_font`] takes an explicit
+//! script tag and resolves every feature against it directly.
+//!
 //! ## Idempotence + ordering
 //!
 //! Features are applied in the order they appear in the caller's
@@ -186,7 +225,47 @@ use oxideav_ttf::Font;
 /// See the module-level docs for the lookup-type and script-tag
 /// scoping rules.
 pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
-    shape_text_inner(font, text, features, None)
+    shape_text_inner(font, text, features, None, &[])
+}
+
+/// Round 183 — shape `text` against `font` with the caller-specified
+/// GSUB feature tags applied, allowing per-feature **alternate-index**
+/// selection for Type-3 (Alternate Substitution) lookups.
+///
+/// `feature_alternates` is a list of `(feature_tag, alternate_index)`
+/// pairs. When a feature in `feature_alternates` dispatches a Type-3
+/// lookup, the named `alternate_index` is used instead of the
+/// round-156 default `0`. Features not in this list (whether
+/// present in some other way or implicitly via the priority walk)
+/// retain the default `alternateIndex = 0` contract.
+///
+/// The set of features applied is the union of the tags listed in
+/// `feature_alternates` (so the caller doesn't need to repeat tags
+/// in a separate `features` argument). Feature application order is
+/// the order they appear in `feature_alternates`.
+///
+/// When `alternate_index` is out of range for a covered glyph's
+/// `AlternateSet`, the slot passes through unchanged — the safe
+/// fallback for callers that don't pre-probe per-font alternate
+/// counts. Length-preservation of Type-3 lookups is unchanged.
+///
+/// Type-1 (Single), Type-2 (Multiple), and Type-4 (Ligature)
+/// lookups dispatched by the same feature tag ignore the alternate
+/// index and follow the round-89 / round-125 / round-128 semantics
+/// unchanged.
+///
+/// Mirrors the auto-probe script-tag resolution of
+/// [`shape_text_with_font`] — every feature tag is resolved against
+/// the broadened priority list ([`script_tag_probe_list`]). Use
+/// [`shape_text_with_script_and_alternates_with_font`] for the
+/// deterministic-resolution mirror.
+pub fn shape_text_with_alternates_with_font(
+    font: &Font<'_>,
+    text: &str,
+    feature_alternates: &[([u8; 4], u16)],
+) -> Vec<u16> {
+    let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
+    shape_text_inner(font, text, &features, None, feature_alternates)
 }
 
 /// Shape `text` against `font` with the caller-specified GSUB feature
@@ -226,19 +305,51 @@ pub fn shape_text_with_script_with_font(
     script_tag: [u8; 4],
     features: &[[u8; 4]],
 ) -> Vec<u16> {
-    shape_text_inner(font, text, features, Some(script_tag))
+    shape_text_inner(font, text, features, Some(script_tag), &[])
+}
+
+/// Round 183 — explicit-script-tag mirror of
+/// [`shape_text_with_alternates_with_font`].
+///
+/// Every requested feature is resolved against `script_tag` alone (no
+/// priority walk); per-feature Type-3 alternate indices come from
+/// `feature_alternates`. Semantics for Type-1 / 2 / 3 / 4 dispatch are
+/// identical to [`shape_text_with_alternates_with_font`] except for the
+/// single-script resolution.
+///
+/// Useful for callers that already know the script of their run and
+/// also want non-default Type-3 alternates — for example, a CJK
+/// pipeline forcing `aalt` against `hani` with alternate-1 to expose
+/// the font's second-stylistic-set glyph for a particular CJK
+/// codepoint.
+pub fn shape_text_with_script_and_alternates_with_font(
+    font: &Font<'_>,
+    text: &str,
+    script_tag: [u8; 4],
+    feature_alternates: &[([u8; 4], u16)],
+) -> Vec<u16> {
+    let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
+    shape_text_inner(font, text, &features, Some(script_tag), feature_alternates)
 }
 
 /// Internal shared body for [`shape_text_with_font`] and
-/// [`shape_text_with_script_with_font`]. When `script_tag` is
-/// `Some(tag)`, every feature is resolved against `tag` alone; when
-/// `None`, the script-tag priority list is walked per
-/// [`resolve_feature_lookups`].
+/// [`shape_text_with_script_with_font`] (and the round-183 alternate-
+/// index variants). When `script_tag` is `Some(tag)`, every feature is
+/// resolved against `tag` alone; when `None`, the script-tag priority
+/// list is walked per [`resolve_feature_lookups`].
+///
+/// `feature_alternates` (round 183) provides per-feature alternate
+/// indices for Type-3 dispatch. When a feature being walked appears
+/// in this list, its first matching entry's alternate index is used
+/// for Type-3 lookups; otherwise the round-156 default `0` applies.
+/// The list is short in practice (typically 1-3 entries), so a linear
+/// search per feature is cheaper than building a hash map.
 fn shape_text_inner(
     font: &Font<'_>,
     text: &str,
     features: &[[u8; 4]],
     script_tag: Option<[u8; 4]>,
+    feature_alternates: &[([u8; 4], u16)],
 ) -> Vec<u16> {
     if text.is_empty() {
         return Vec::new();
@@ -267,6 +378,14 @@ fn shape_text_inner(
             Some(tag) => resolve_feature_lookups_single_script(font, tag, feature_tag),
             None => resolve_feature_lookups(font, feature_tag),
         };
+        // Round 183: per-feature Type-3 alternate index — defaults to
+        // 0 (round-156 contract) when this feature isn't named in
+        // `feature_alternates`.
+        let alt_index: u16 = feature_alternates
+            .iter()
+            .find(|(t, _)| t == feature_tag)
+            .map(|(_, idx)| *idx)
+            .unwrap_or(0);
         for lookup_idx in lookups {
             match lookup_type_of(lookup_idx) {
                 Some(1) => {
@@ -305,17 +424,24 @@ fn shape_text_inner(
                     // covered glyph → one entry from its `AlternateSet`.
                     // The spec doesn't pin which alternate the engine
                     // picks ("the application of the OpenType Layout
-                    // engine selects an alternate"); we default to
+                    // engine selects an alternate"); the default is
                     // index 0, which is what `aalt` / `salt` are
                     // designed to produce without a user-specified
-                    // pick. Length-preserving, mirrors the Type-1
-                    // walker exactly. A higher-level surface that
-                    // wanted to expose user-driven alternate selection
-                    // would belong above this layer (see
-                    // `oxideav-ttf`'s `gsub_apply_lookup_type_3` for
-                    // the per-call `alternate_index` argument).
+                    // pick. As of round 183, the caller can provide a
+                    // per-feature alternate index via the
+                    // `feature_alternates` argument — see the
+                    // module-level "Caller-driven Type-3 alternate-
+                    // index selection" section. Length-preserving,
+                    // mirrors the Type-1 walker exactly. When the
+                    // requested `alternate_index` is out of range for
+                    // a covered slot's AlternateSet, `oxideav-ttf`'s
+                    // `gsub_apply_lookup_type_3` returns `None` and
+                    // we leave the slot unchanged (round-183
+                    // out-of-range fallback contract).
                     for slot in gids.iter_mut() {
-                        if let Some(rep) = font.gsub_apply_lookup_type_3(lookup_idx, *slot, 0) {
+                        if let Some(rep) =
+                            font.gsub_apply_lookup_type_3(lookup_idx, *slot, alt_index)
+                        {
                             *slot = rep;
                         }
                     }
@@ -890,6 +1016,157 @@ mod tests {
                 round15_hits, round175_hits,
                 "broadened probe must preserve the round-15 `smcp`/`latn` resolution"
             );
+        })
+        .unwrap();
+    }
+
+    // ----- Round 183: caller-driven Type-3 alternate-index selection ----
+
+    /// Round 183 surface with an empty `feature_alternates` list must
+    /// return the pure-cmap output — no features means no features,
+    /// regardless of which entry point the caller picks.
+    #[test]
+    fn round183_empty_alternates_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abc", &[]);
+            let round183 = shape_text_with_alternates_with_font(font, "abc", &[]);
+            assert_eq!(cmap_only, round183);
+            let round183_script =
+                shape_text_with_script_and_alternates_with_font(font, "abc", *b"latn", &[]);
+            assert_eq!(cmap_only, round183_script);
+        })
+        .unwrap();
+    }
+
+    /// Round 183 with `alternate_index = 0` must agree with the
+    /// round-156 default surface — the new entry points are a
+    /// strict superset of the round-156 contract, not a re-derived
+    /// implementation. We probe on `aalt` because the round-156
+    /// suite already pins its Type-3 dispatch on Inter.
+    #[test]
+    fn round183_index_zero_matches_round156_default() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let round156 = shape_text_with_font(font, "abcdefg", &[*b"aalt"]);
+            let round183 = shape_text_with_alternates_with_font(font, "abcdefg", &[(*b"aalt", 0)]);
+            assert_eq!(
+                round156, round183,
+                "round-183 with index 0 must reproduce the round-156 default"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Round 183 with an out-of-range `alternate_index` must fall
+    /// back to cmap-identity per slot — the `oxideav-ttf` accessor
+    /// returns `None` and we leave the slot unchanged. We use a
+    /// huge index (65535) so the test holds regardless of how many
+    /// alternates the fixture ships per glyph.
+    #[test]
+    fn round183_out_of_range_index_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abcdefg", &[]);
+            let out_of_range =
+                shape_text_with_alternates_with_font(font, "abcdefg", &[(*b"aalt", u16::MAX)]);
+            assert_eq!(
+                cmap_only, out_of_range,
+                "an out-of-range alternate index must fall back to cmap-identity per slot"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Round 183 explicit-script entry point with an unknown
+    /// `script_tag` must return cmap-identity — mirrors the
+    /// round-175 unknown-script contract.
+    #[test]
+    fn round183_explicit_unknown_script_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abc", &[]);
+            let unknown = shape_text_with_script_and_alternates_with_font(
+                font,
+                "abc",
+                *b"zzzz",
+                &[(*b"aalt", 0)],
+            );
+            assert_eq!(cmap_only, unknown);
+        })
+        .unwrap();
+    }
+
+    /// Round 183 with index 0 on the explicit-script entry point
+    /// must agree with the round-175 single-script default surface.
+    #[test]
+    fn round183_explicit_index_zero_matches_round175_default() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let round175 = shape_text_with_script_with_font(font, "abcdefg", *b"latn", &[*b"aalt"]);
+            let round183 = shape_text_with_script_and_alternates_with_font(
+                font,
+                "abcdefg",
+                *b"latn",
+                &[(*b"aalt", 0)],
+            );
+            assert_eq!(round175, round183);
+        })
+        .unwrap();
+    }
+
+    /// Round 183 with non-Type-3 features must dispatch their
+    /// existing walker semantics — the alternate index is silently
+    /// ignored. `liga` on DejaVu is a pure Type-4 (Ligature)
+    /// lookup; requesting `(*b"liga", 5)` must still collapse "fi"
+    /// the same way `shape_text(text, &[*b"liga"])` does.
+    #[test]
+    fn round183_alternate_index_ignored_for_non_type_3_features() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let round128 = shape_text_with_font(font, "fi", &[*b"liga"]);
+            let round183_with_bogus_index =
+                shape_text_with_alternates_with_font(font, "fi", &[(*b"liga", 5)]);
+            assert_eq!(
+                round128.len(),
+                1,
+                "DejaVu's `liga` Type-4 lookup collapses 'fi' to one glyph"
+            );
+            assert_eq!(
+                round128, round183_with_bogus_index,
+                "non-Type-3 features must ignore the alternate index"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Round 183 length-preservation contract for Type-3 lookups —
+    /// the run length is invariant regardless of which alternate
+    /// index the caller requests (matches OpenType §6.2.3, mirrors
+    /// the round-156 contract).
+    #[test]
+    fn round183_alternate_index_preserves_run_length() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            for sample in ["a", "ab", "abcdefg", "Hello, world!"] {
+                let cmap_only = shape_text_with_font(font, sample, &[]);
+                for idx in [0u16, 1, 2, 7, u16::MAX] {
+                    let out =
+                        shape_text_with_alternates_with_font(font, sample, &[(*b"aalt", idx)]);
+                    assert_eq!(
+                        cmap_only.len(),
+                        out.len(),
+                        "Type-3 length-preservation on {sample:?} for alt-index {idx} failed"
+                    );
+                }
+            }
         })
         .unwrap();
     }
