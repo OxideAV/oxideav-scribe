@@ -73,12 +73,25 @@
 //! - **Face chain** — multi-face fallback (primary → fallback chain),
 //!   per-codepoint resolution.
 //! - **Layout** — line measurement + word-wrap (no bidi).
+//! - **BiDi (round 186)** — `bidi::bidi_class(c)` returns the UAX #9
+//!   §3.2 normative bidirectional class for every code point scribe
+//!   needs today (the 12 explicit-format controls, ASCII / Latin-1,
+//!   Hebrew, four core Arabic blocks + Syriac + Thaana + N'Ko + the
+//!   two Arabic Presentation Forms blocks, combining-mark NSMs);
+//!   `bidi::paragraph_level(text)` implements UAX #9 rules P1 / P2 /
+//!   P3, returning the paragraph embedding level (0 = LTR, 1 = RTL).
+//!   `bidi::split_paragraphs(text)` is P1's split (every type-`B`
+//!   character is kept with the previous paragraph). The W / N / I /
+//!   X / L rules are deferred to follow-up rounds — this round
+//!   establishes the foundation surface every subsequent rule
+//!   dispatches against.
 //!
 //! See `README.md` for a tour and the deferral list.
 
 #![deny(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
+pub mod bidi;
 pub mod color;
 pub mod color_glyph;
 pub mod face;
@@ -89,6 +102,7 @@ pub mod shaping;
 pub mod style;
 pub mod variations;
 
+pub use bidi::{bidi_class, paragraph_level, split_paragraphs, BidiClass};
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};

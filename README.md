@@ -259,14 +259,35 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **CBDT/CBLC colour bitmaps** — Noto Color Emoji and friends decode to
   `Node::Image` carrying a `VideoFrame`; the resampling to the requested
   size happens in scribe (bilinear, straight-alpha).
-- **Layout** — line measurement + word-wrap (no bidi; round-3 work).
+- **Layout** — line measurement + word-wrap (no full bidi reorder
+  yet; round 186 lands the foundation surface, see next bullet).
+- **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
+  UAX #9 §3.2 normative bidirectional class for every code point
+  scribe needs today (the 12 explicit-format controls in full, ASCII
+  / Latin-1, Hebrew, four core Arabic blocks + Syriac + Thaana +
+  N'Ko + the two Arabic Presentation Forms blocks, Combining
+  Diacritical Marks + Arabic NSM ranges). `bidi::paragraph_level(s)`
+  implements UAX #9 rules **P1 / P2 / P3** end-to-end: walks the
+  text, skips the contents of any `LRI` / `RLI` / `FSI` ... `PDI`
+  isolate region (nested arbitrarily deep), finds the first strong
+  (`L` / `R` / `AL`) character, and returns the paragraph embedding
+  level (`0` for LTR or first-strong-L, `1` for first-strong-R-or-AL,
+  default `0`). `bidi::split_paragraphs(s)` is P1's split that keeps
+  every type-`B` separator with the preceding paragraph (the
+  returned slices concatenate back to `s` exactly).  The W / N / I /
+  X / L rules are deferred to follow-up rounds — this round
+  establishes the surface every subsequent rule dispatches against.
+  21 unit + integration tests cover the explicit-format set, ASCII
+  / Latin-1 / Hebrew / Arabic class assignments, isolate-skip with
+  nested initiators, embedding initiators *not* skipping (only
+  isolates do), and P3 default-when-no-strong-character.
 
 ## Out of scope
 
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9)**, **CFF2 variable charstrings**
+- **Bidi (UAX #9) W / N / I / X / L rules**, **CFF2 variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD

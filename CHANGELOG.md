@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Unicode Bidirectional Algorithm foundation: UAX #9 character classes + P1/P2/P3 paragraph-level resolution (round 186)
+
+First concrete UAX #9 (*Unicode Bidirectional Algorithm*) surface
+landed on scribe. The crate had no BiDi at all before this round —
+`layout` was advertised as "no bidi" and the `shaping::arabic`
+module documented "logical-order input is assumed (post-bidi)" with
+no helper to produce that ordering. Round 186 lands the **foundation**
+surface every subsequent UBA rule (W / N / I / X / L) will dispatch
+against:
+
+- **`bidi::BidiClass`** — the 23 normative bidirectional character
+  types from UAX #9 §3.2 Table 4 (3 Strong: `L` / `R` / `AL`; 7 Weak:
+  `EN` / `ES` / `ET` / `AN` / `CS` / `NSM` / `BN`; 4 Neutral: `B` /
+  `S` / `WS` / `ON`; 9 Explicit Formatting: `LRE` / `LRO` / `RLE` /
+  `RLO` / `PDF` / `LRI` / `RLI` / `FSI` / `PDI`).
+- **`bidi::bidi_class(c: char) -> BidiClass`** — `char` → class
+  lookup. Coverage: the 12 explicit-formatting control characters
+  (LRM, RLM, ALM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI)
+  exhaustively; the paragraph / segment / line separators (LF / CR /
+  NEL / U+2029 / TAB / VT / U+001F / FF / SPACE / U+1680 / U+2028 /
+  U+2000..U+200A / U+202F / U+205F / U+3000); ASCII digits (EN),
+  separators (`+ -` ES; `, . / :` CS; `# $ %` ET) and letters (L);
+  C0 / DEL boundary-neutral controls; the Latin-1 supplement (NBSP =
+  CS, currency / degree = ET, SOFT HYPHEN = BN, Latin-1 letters = L);
+  the Combining Diacritical Marks (U+0300..U+036F = NSM); the Hebrew
+  block (U+0590..U+05FF = R) and Hebrew Presentation Forms
+  (U+FB1D..U+FB4F = R); the four core Arabic blocks (U+0600..U+06FF
+  with `U+0660..U+0669` split out as AN, `U+06F0..U+06F9` as EN, and
+  the documented Arabic NSM ranges separated out) and Syriac +
+  Arabic Supplement + Arabic Presentation Forms A and B (all AL);
+  Thaana (AL); N'Ko (R); ZWJ / ZWNJ / word-joiner family (BN); object
+  replacement character U+FFFC (ON). Unmapped code points fall back
+  to `L` per the UAX #9 §3.2 default ("Unassigned characters are
+  given strong types in the algorithm.").
+- **`bidi::paragraph_level(text: &str) -> u8`** — UAX #9 **P1 + P2
+  + P3** in a single call. Walks the text, tracks isolate depth so
+  the contents of any `LRI` / `RLI` / `FSI` ... `PDI` region are
+  skipped (nested arbitrarily — overflow / overflow-isolate
+  accounting from X5a..X5c is **not** implemented because P2 only
+  needs to skip), finds the first strong character (L / R / AL),
+  and returns 1 if it is R or AL, 0 otherwise. The default when no
+  strong character is found is also 0. An unmatched `PDI` at top
+  level is ignored (the spec achieves this by "skip until matching
+  PDI or end of paragraph" but the top-level case is symmetric).
+  Embedding initiators (`LRE` / `RLE` / `LRO` / `RLO` / `PDF`) are
+  *not* skipped by P2, only isolates are — asserted by a dedicated
+  test pair.
+- **`bidi::split_paragraphs(text: &str) -> Vec<&str>`** — UAX #9
+  **P1**. Splits at every type-`B` character and **keeps the
+  separator with the preceding paragraph** (per the spec's wording
+  "A paragraph separator (type B) is kept with the previous
+  paragraph."). The returned slices concatenate back to the input
+  byte-for-byte; two adjacent `B` characters yield an empty
+  middle paragraph.
+- **Predicates on `BidiClass`** — `is_strong()` (L / R / AL) and
+  `is_isolate_initiator()` (LRI / RLI / FSI) for use by P2 + the
+  forthcoming X-rules.
+
+Coverage: 15 unit tests in `src/bidi.rs` (explicit-format set,
+isolate-initiator + strong predicates, ASCII + Latin-1 + Hebrew +
+Arabic + Combining Diacriticals class assignments, P1 split, P2
+isolate-skip including nested initiators, P3 LTR/RTL defaults, P2
+non-skip-of-embedding-initiators, unmatched-PDI tolerance) + 6
+integration tests in `tests/round186_bidi_paragraph_level.rs` (the
+same contracts asserted through the public re-export surface
+`oxideav_scribe::{BidiClass, bidi_class, paragraph_level,
+split_paragraphs}`).
+
+Out of scope for this round (each is its own follow-up):
+
+- **W1..W7** weak type resolution (NSM + EN/ES/CS + AN/ET joining
+  rules).
+- **N0..N2** neutral type resolution, including the §3.1.3 bracket
+  pairs algorithm (`BidiBrackets.txt`).
+- **I1..I2** implicit embedding level resolution.
+- **X1..X10** explicit embedding / override / isolate stack
+  machinery + the isolating-run-sequence partition + overflow
+  counters.
+- **L1..L4** line-level reordering + mirroring (`BidiMirroring.txt`).
+- Filling out the per-code-point class table beyond the listed
+  ranges — needs `DerivedBidiClass.txt` from the Unicode Character
+  Database (UAX #9 references but does not include this file).
+
+Provenance: every class assignment and every rule mirrors the
+dated snapshot at
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` (UAX #9
+Revision 50, Unicode 16.0, fetched 2026-05-29). No external
+library source was consulted at any point.
+
 ### Added — Caller-driven Type-3 alternate-index selection (round 183)
 
 A pair of new `Face` methods that let callers pick which
