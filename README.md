@@ -60,6 +60,26 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `oxideav-ttf`'s GSUB walker; OTF / GSUB-less faces return an empty
   vec. A GPOS introspection mirror is a known follow-up — GPOS-only
   features like `kern` are not visible through this accessor.
+- **Explicit-script-tag caller-driven shaping (round 175)** —
+  `Face::shape_text_with_script(text, script_tag, features) -> Vec<u16>`
+  is the deterministic-resolution mirror of `Face::shape_text`: every
+  requested feature is resolved against the explicit `script_tag` alone
+  (no priority walk), so callers that already know the script of the
+  run get a one-tag resolution without the cross-script collision risk
+  the auto-probe walk has when two scripts publish the same feature
+  tag (e.g. `liga` under both `latn` and `arab`). Two concrete uses: an
+  Arabic shaper forcing `liga` / `dlig` against `arab`, and a CJK
+  pipeline forcing `vert` / `vrt2` against `hani` / `kana` / `hang`. An
+  unknown `script_tag` yields cmap-identity. The companion auto-probe
+  surface `Face::shape_text` now walks a broadened script-tag priority
+  list — `latn` → `cyrl` → `grek` → `DFLT` → `arab` → `hebr` → `thai`
+  / `lao ` → Indic v1+v2 (`deva` / `dev2`, `beng` / `bng2`, `taml` /
+  `tml2`, `gujr` / `gjr2`, `guru` / `gur2`, `knda` / `knd2`, `mlym`
+  / `mlm2`, `orya` / `ory2`, `telu` / `tel2`, `sinh`) → `khmr` →
+  `mymr` / `mym2` → `hang` / `hani` / `kana` — so non-Latin runs reach
+  GSUB through the caller-driven surface for the first time. The
+  round-15 four-tag prefix is preserved verbatim so existing Latin /
+  Cyrillic / Greek / DFLT callers see no behaviour change.
 - **Caller-driven GSUB LookupType 1 + 2 + 3 + 4 application (rounds
   89 + 125 + 128 + 156)** — `Face::shape_text(text, features) -> Vec<u16>`
   cmap's the text, then applies every **single-substitution** (Type

@@ -722,10 +722,18 @@ impl Face {
     ///   round 128).
     ///
     /// Features are applied in caller order. Each lookup's coverage
-    /// table determines per-glyph whether it fires. Script-tag probe
-    /// order is `latn` → `cyrl` → `grek` → `DFLT`; the first script
-    /// whose feature list publishes the requested tag wins for that
-    /// feature.
+    /// table determines per-glyph whether it fires. The script-tag
+    /// probe order keeps `latn` → `cyrl` → `grek` → `DFLT` at the
+    /// head for backwards-compatibility with the round-89 surface,
+    /// then falls through to `arab` / `hebr` / `thai` / `lao ` /
+    /// Indic v1+v2 (`deva` / `dev2` / `beng` / `bng2` / ... ) / `khmr`
+    /// / `mymr` / `mym2` / CJK (`hang` / `hani` / `kana`) (round 175)
+    /// so that non-Latin runs reach GSUB through this caller-driven
+    /// surface. The first script whose feature list publishes the
+    /// requested tag wins for that feature. Callers that already
+    /// know the run's script should drop to
+    /// [`Self::shape_text_with_script`] (round 175) to bypass the
+    /// probe walk and resolve against one explicit script tag.
     ///
     /// Returns an empty vec for OTF (CFF) faces — GSUB substitution
     /// requires the TTF parser surface; OTF callers must drop to
@@ -749,6 +757,63 @@ impl Face {
     pub fn shape_text(&self, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
         self.with_font(|font| crate::shaping::shape_text_with_font(font, text, features))
             .unwrap_or_default()
+    }
+
+    /// Shape `text` with the caller-specified GSUB feature tags
+    /// applied under the explicit `script_tag`. Returns the post-
+    /// substitution glyph IDs.
+    ///
+    /// Differs from [`Self::shape_text`] in that the script-tag
+    /// priority walk is bypassed — every requested feature is
+    /// resolved against `script_tag` alone (with the script's
+    /// DefaultLangSys). Useful when the caller already knows the
+    /// script of the run, e.g.:
+    ///
+    /// - An Arabic shaper resolving `liga` / `dlig` against `arab`
+    ///   rather than letting the auto-probe pick `latn` first when
+    ///   the font publishes both.
+    /// - A CJK pipeline resolving `vert` / `vrt2` against `hani` /
+    ///   `kana` / `hang` to switch a horizontal-form run to the
+    ///   vertical-form glyphs.
+    /// - An Indic shaper resolving an OT 1.6 v2-tag feature
+    ///   (`tml2`, `dev2`, etc.) explicitly when the font ships both
+    ///   v1 and v2 script lookups.
+    ///
+    /// An unknown `script_tag` (or one not present in the font's
+    /// ScriptList) yields the pure-cmap output — every requested
+    /// feature resolves to an empty lookup list.
+    ///
+    /// Mirrors [`Self::shape_text`]'s LookupType-1/2/3/4 dispatch
+    /// semantics — single / multiple / alternate / ligature
+    /// substitution are all wired; contextual / chained-contextual /
+    /// reverse-chained lookups referenced by the requested features
+    /// are silently skipped (use [`crate::shaper::Shaper::shape`] for
+    /// the full multi-type pipeline).
+    ///
+    /// Returns an empty vec for OTF (CFF) faces — same constraint as
+    /// [`Self::shape_text`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Force-resolve `liga` against the Arabic ScriptList rather
+    /// // than letting the auto-probe pick a Latin-side lookup.
+    /// let gids = face.shape_text_with_script("لا", *b"arab", &[*b"liga"]);
+    /// # let _ = gids;
+    /// # }
+    /// ```
+    pub fn shape_text_with_script(
+        &self,
+        text: &str,
+        script_tag: [u8; 4],
+        features: &[[u8; 4]],
+    ) -> Vec<u16> {
+        self.with_font(|font| {
+            crate::shaping::shape_text_with_script_with_font(font, text, script_tag, features)
+        })
+        .unwrap_or_default()
     }
 
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`

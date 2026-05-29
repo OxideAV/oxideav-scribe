@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Explicit-script-tag entry point + broadened script-tag probe list (round 175)
+
+Two paired changes that broaden the caller-driven GSUB surface to
+non-Latin scripts:
+
+1. **`Face::shape_text_with_script(text, script_tag, features)`** —
+   the deterministic-resolution mirror of `Face::shape_text`. Every
+   requested feature tag is resolved against the explicit
+   `script_tag` alone (with the script's DefaultLangSys), bypassing
+   the script-tag priority walk. Useful when the caller already
+   knows the script of the run — typically because the run came out
+   of a script-segmenter or because the caller is shaping a
+   known-language string — and the auto-probe walk's cross-script
+   collision risk is unacceptable (e.g. `liga` published under both
+   `latn` and `arab`). LookupType-1/2/3/4 dispatch semantics mirror
+   `shape_text` exactly; lookup types 5/6/8 referenced by the
+   requested features are silently skipped (same caller-driven
+   contract as round 89/125/128/156).
+2. **Broadened script-tag probe list in `shape_text`** — the
+   underlying `resolve_feature_lookups` helper used by the
+   auto-probing surface now walks `latn` → `cyrl` → `grek` → `DFLT`
+   → `arab` → `hebr` → `thai` → `lao ` → Indic v1+v2 (`deva` /
+   `dev2`, `beng` / `bng2`, `taml` / `tml2`, `gujr` / `gjr2`, `guru`
+   / `gur2`, `knda` / `knd2`, `mlym` / `mlm2`, `orya` / `ory2`,
+   `telu` / `tel2`, `sinh`) → `khmr` → `mymr` / `mym2` → `hang` /
+   `hani` / `kana`. The round-15 four-tag prefix is preserved
+   verbatim at the head of the list — every Latin / Cyrillic / Greek
+   / DFLT resolution sees identical behaviour (no-regression
+   guarantee, asserted by
+   `round175_broadened_probe_preserves_latn_smcp_result`). Non-Latin
+   tags resolve only when none of the round-15 four publishes the
+   requested feature, which is the typical case for non-Latin runs.
+
+The two together close a long-standing gap: until round 175, the
+caller-driven `shape_text` API was limited to scripts that publish
+the requested feature under one of `latn` / `cyrl` / `grek` /
+`DFLT`. A font publishing `liga` only under `arab` (typical for
+Arabic-only fonts) or a CJK font publishing `vert` under `hani` /
+`kana` / `hang` was unreachable. Round 175 makes both paths work
+without requiring callers to drop to `with_font` and call the raw
+`oxideav-ttf` accessors.
+
+A new export `shape_text_with_script_with_font` mirrors
+`shape_text_with_font` at the function level for callers using
+`Face::with_font` directly.
+
+Tests:
+
+- `src/shaping/feature_subst.rs` adds 6 in-module tests covering
+  the probe-list invariants
+  (`round175_probe_list_prefix_is_round15_priority`,
+  `round175_probe_list_covers_broadened_scripts`), the explicit-
+  script API contracts
+  (`round175_explicit_unknown_script_is_cmap_identity`,
+  `round175_explicit_empty_features_is_cmap_identity`,
+  `round175_explicit_latn_matches_auto_probe_on_smcp`,
+  `round175_explicit_dflt_unknown_feature_is_cmap_identity`), and
+  the no-regression guarantee on the broadened auto-probe
+  (`round175_broadened_probe_preserves_latn_smcp_result`).
+- `tests/round175_shape_text_with_script.rs` adds 8 integration
+  tests covering the public `Face::shape_text_with_script` surface
+  (auto-probe agreement on `smcp` / `liga`, unknown-script
+  cmap-identity, empty-text / empty-features baselines, `DFLT`
+  resolution, caller-order preservation, and the cmap-baseline
+  agreement with the auto-probe path).
+
+Doc updates: README "Capabilities" gets a round-175 paragraph;
+`lib.rs` re-exports `shape_text_with_script_with_font`;
+`Face::shape_text` docstring is updated to describe the broadened
+probe list.
+
 ### Added — GSUB LookupType 3 (Alternate Substitution) in `shape_text` (round 156)
 
 `Face::shape_text` now dispatches GSUB LookupType 3 (Alternate

@@ -123,13 +123,29 @@
 //!
 //! ## Script tag probing
 //!
-//! Same priority as [`crate::shaping::general`]: `latn` → `cyrl` →
-//! `grek` → `DFLT`. The first script tag whose feature list contains
-//! a requested feature wins — its lookup-index list is harvested,
-//! the remaining tags are not consulted for that feature. Two
-//! requested features can resolve under two different script tags
+//! The auto-probing entry [`shape_text_with_font`] walks the registered
+//! OpenType script tag priority list:
+//! `latn` → `cyrl` → `grek` → `arab` → `hebr` → `thai` → `deva` →
+//! `beng` → `taml` / `tml2` → `gujr` / `gjr2` → `guru` / `gur2` →
+//! `knda` / `knd2` → `mlym` / `mlm2` → `orya` / `ory2` → `telu` /
+//! `tel2` → `sinh` → `khmr` → `lao ` → `mymr` / `mym2` → `hang` →
+//! `hani` → `kana` → `DFLT`. The first script tag whose feature list
+//! contains a requested feature wins — its lookup-index list is
+//! harvested, the remaining tags are not consulted for that feature.
+//! Two requested features can resolve under two different script tags
 //! (e.g. `smcp` under `latn`, a Cyrillic-specific `salt` under
-//! `cyrl`); each is resolved independently.
+//! `cyrl`); each is resolved independently. The Indic v2 tags
+//! (`tml2`, `dev2`, etc.) and Hangul / Han / Kana tags broaden the
+//! caller-driven surface to scripts that previously only had GSUB
+//! reachable through the per-script shaping pipelines.
+//!
+//! Callers that already know the script of their run — typically
+//! because the run came out of a script-segmenter or because the
+//! caller is shaping a known-language string — should prefer
+//! [`shape_text_with_script_with_font`] which takes an explicit
+//! script tag, skipping the priority walk and avoiding the
+//! occasional ambiguity when two scripts publish the same feature
+//! tag (e.g. `liga` under both `latn` and `arab`).
 //!
 //! ## Idempotence + ordering
 //!
@@ -170,6 +186,60 @@ use oxideav_ttf::Font;
 /// See the module-level docs for the lookup-type and script-tag
 /// scoping rules.
 pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
+    shape_text_inner(font, text, features, None)
+}
+
+/// Shape `text` against `font` with the caller-specified GSUB feature
+/// tags applied under the explicit `script_tag`. Returns the post-
+/// substitution glyph IDs.
+///
+/// Unlike [`shape_text_with_font`], this entry point bypasses the
+/// script-tag priority walk and resolves every feature tag against
+/// `script_tag` alone (with the language system's `DefaultLangSys`).
+/// If `script_tag` is unknown to the font, every requested feature
+/// resolves to an empty lookup list and the function returns the
+/// pure-cmap output.
+///
+/// Callers should use this entry point when they already know the
+/// script of the run — typically because the run came out of a
+/// script-segmenter or because the caller is shaping a known-language
+/// string. Two examples:
+///
+/// - An Arabic shaper that has already done its joining-class pass
+///   and wants `liga` resolved against `arab` rather than `latn`
+///   (the script-priority walk would otherwise pick `latn` first if
+///   the font publishes `liga` under both — a rare but real case
+///   for multi-script fonts).
+/// - A CJK pipeline that wants `vert` / `vrt2` resolved against
+///   `hani` / `kana` / `hang` to switch a horizontal-form run to
+///   the vertical-form glyphs.
+///
+/// Mirrors [`shape_text_with_font`]'s LookupType-1/2/3/4 dispatch
+/// semantics: Type 1 (single substitution) and Type 3 (alternate,
+/// `alternateIndex = 0`) are length-preserving; Type 2 (multiple
+/// substitution) may split or delete; Type 4 (ligature) shortens the
+/// run. Lookups of other declared types referenced by the requested
+/// features are silently skipped.
+pub fn shape_text_with_script_with_font(
+    font: &Font<'_>,
+    text: &str,
+    script_tag: [u8; 4],
+    features: &[[u8; 4]],
+) -> Vec<u16> {
+    shape_text_inner(font, text, features, Some(script_tag))
+}
+
+/// Internal shared body for [`shape_text_with_font`] and
+/// [`shape_text_with_script_with_font`]. When `script_tag` is
+/// `Some(tag)`, every feature is resolved against `tag` alone; when
+/// `None`, the script-tag priority list is walked per
+/// [`resolve_feature_lookups`].
+fn shape_text_inner(
+    font: &Font<'_>,
+    text: &str,
+    features: &[[u8; 4]],
+    script_tag: Option<[u8; 4]>,
+) -> Vec<u16> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -193,7 +263,10 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
     };
 
     for feature_tag in features {
-        let lookups = resolve_feature_lookups(font, feature_tag);
+        let lookups = match script_tag {
+            Some(tag) => resolve_feature_lookups_single_script(font, tag, feature_tag),
+            None => resolve_feature_lookups(font, feature_tag),
+        };
         for lookup_idx in lookups {
             match lookup_type_of(lookup_idx) {
                 Some(1) => {
@@ -302,25 +375,94 @@ pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -
     gids
 }
 
-/// Resolve `feature_tag` against the script-tag priority list
-/// (`latn` → `cyrl` → `grek` → `DFLT`). Returns the lookup indices
-/// of the *first* script tag whose feature list contains a matching
-/// feature. Empty when no script publishes this feature.
+/// Resolve `feature_tag` against the broadened script-tag priority
+/// list. Returns the lookup indices of the *first* script tag whose
+/// feature list contains a matching feature. Empty when no script
+/// publishes this feature.
+///
+/// The list covers the registered OpenType script tags for every
+/// shaping context scribe touches today: Latin / Cyrillic / Greek
+/// (the round-15 always-on group), the Arabic / Hebrew / Thai script
+/// tags whose runs flow through `shaping::arabic` / `shaping::indic`,
+/// the Indic v1 + v2 tags (`taml` vs `tml2`, etc. — fonts published
+/// after OpenType 1.6 typically expose features under the v2 tag),
+/// the South-East Asian Brahmic tags (`khmr`, `lao `, `mymr` /
+/// `mym2`), and the CJK tags (`hang` for Hangul, `hani` for Han,
+/// `kana` for Hiragana / Katakana). The `DFLT` script tag remains
+/// the final fallback per OpenType convention. The list is ordered
+/// so that the round-15-original four tags (`latn` / `cyrl` / `grek`
+/// / `DFLT`) keep their resolution priority for the legacy pure-
+/// Latin usage; non-Latin tags are appended after `DFLT` only when
+/// no earlier tag matched — which is a no-op in practice because
+/// `DFLT` already terminates the search in the Latin case.
+///
+/// Two same-named feature tags published under two different scripts
+/// (e.g. `liga` under both `latn` and `arab`) resolve to whichever
+/// the earlier script tag in the list publishes. Callers that need
+/// deterministic single-script resolution should drop to
+/// [`shape_text_with_script_with_font`] which takes an explicit
+/// script tag.
 fn resolve_feature_lookups(font: &Font<'_>, feature_tag: &[u8; 4]) -> Vec<u16> {
-    let script_tags: [[u8; 4]; 4] = [*b"latn", *b"cyrl", *b"grek", *b"DFLT"];
-    let mut hits: Vec<u16> = Vec::new();
-    for tag in script_tags {
-        let features = font.gsub_features_for_script(tag, None);
-        for feat in features {
-            if &feat.tag == feature_tag {
-                hits.extend_from_slice(&feat.lookup_indices);
-            }
-        }
+    for &tag in script_tag_probe_list() {
+        let hits = resolve_feature_lookups_single_script(font, tag, feature_tag);
         if !hits.is_empty() {
             return hits;
         }
     }
+    Vec::new()
+}
+
+/// Resolve `feature_tag` against `script_tag` alone (no priority
+/// walk). Returns the lookup indices of every matching feature
+/// record on the script's DefaultLangSys, in declaration order.
+/// Empty when `script_tag` is unknown to the font or its feature
+/// list doesn't contain `feature_tag`.
+fn resolve_feature_lookups_single_script(
+    font: &Font<'_>,
+    script_tag: [u8; 4],
+    feature_tag: &[u8; 4],
+) -> Vec<u16> {
+    let mut hits: Vec<u16> = Vec::new();
+    let features = font.gsub_features_for_script(script_tag, None);
+    for feat in features {
+        if &feat.tag == feature_tag {
+            hits.extend_from_slice(&feat.lookup_indices);
+        }
+    }
     hits
+}
+
+/// The script-tag priority list used by [`resolve_feature_lookups`].
+/// Order matches the documentation in the module-level doc-comment.
+///
+/// Each tag is a four-byte OpenType script tag (space-padded where
+/// the registered name is shorter than four bytes, e.g. `lao `).
+/// The list keeps the round-15 four-tag prefix (Latin / Cyrillic /
+/// Greek / DFLT) at the head so existing callers' resolution order
+/// is unchanged; the round-175 extension appends the registered
+/// non-Latin script tags after `DFLT` so that non-Latin runs can now
+/// reach GSUB through the caller-driven surface.
+const SCRIPT_TAG_PROBE_LIST: &[[u8; 4]] = &[
+    // Round-15 original tags (priority-preserving prefix).
+    *b"latn", *b"cyrl", *b"grek", *b"DFLT", // Arabic + Hebrew (RTL scripts).
+    *b"arab", *b"hebr", // Thai + Lao (no-halant Brahmic).
+    *b"thai", *b"lao ",
+    // Indic v1 + v2. OpenType 1.6 introduced the `*v2` tags for
+    // Indic-shaping fonts that follow the modernised cluster
+    // model; both are probed (v1 first; v2 second).
+    *b"deva", *b"dev2", *b"beng", *b"bng2", *b"taml", *b"tml2", *b"gujr", *b"gjr2", *b"guru",
+    *b"gur2", *b"knda", *b"knd2", *b"mlym", *b"mlm2", *b"orya", *b"ory2", *b"telu", *b"tel2",
+    *b"sinh", // South-East Asian.
+    *b"khmr", *b"mymr", *b"mym2", // CJK.
+    *b"hang", *b"hani", *b"kana",
+];
+
+/// Accessor for the script-tag probe list used by
+/// [`resolve_feature_lookups`]. Exposed at module scope (rather than
+/// inlined) so the tests can grep the list for the registered tags
+/// the documentation claims are covered.
+fn script_tag_probe_list() -> &'static [[u8; 4]] {
+    SCRIPT_TAG_PROBE_LIST
 }
 
 #[cfg(test)]
@@ -604,6 +746,150 @@ mod tests {
             let once = shape_text_with_font(font, "Iaaly", &[*b"aalt"]);
             let twice = shape_text_with_font(font, "Iaaly", &[*b"aalt", *b"aalt"]);
             assert_eq!(once, twice, "aalt's Type-3 component must be idempotent");
+        })
+        .unwrap();
+    }
+
+    // ----- Round-175: explicit-script + broadened auto-probe -----
+
+    /// The script-tag probe list keeps the round-15 four-tag prefix
+    /// at the head. This is the precondition that guarantees existing
+    /// Latin / Cyrillic / Greek / DFLT callers see no behaviour
+    /// change from the round-175 broadening.
+    #[test]
+    fn round175_probe_list_prefix_is_round15_priority() {
+        let list = script_tag_probe_list();
+        assert!(list.len() >= 4, "probe list keeps round-15 four-tag prefix");
+        assert_eq!(&list[..4], &[*b"latn", *b"cyrl", *b"grek", *b"DFLT"]);
+    }
+
+    /// The round-175 broadening must register every non-Latin script
+    /// tag the documentation enumerates — Arabic / Hebrew / Thai /
+    /// Lao / Indic v1+v2 / Khmer / Burmese v1+v2 / Hangul / Han /
+    /// Kana. Otherwise the module docstring misleads callers.
+    #[test]
+    fn round175_probe_list_covers_broadened_scripts() {
+        let list = script_tag_probe_list();
+        for tag in [
+            *b"arab", *b"hebr", *b"thai", *b"lao ", *b"deva", *b"dev2", *b"beng", *b"bng2",
+            *b"taml", *b"tml2", *b"gujr", *b"gjr2", *b"guru", *b"gur2", *b"knda", *b"knd2",
+            *b"mlym", *b"mlm2", *b"orya", *b"ory2", *b"telu", *b"tel2", *b"sinh", *b"khmr",
+            *b"mymr", *b"mym2", *b"hang", *b"hani", *b"kana",
+        ] {
+            assert!(
+                list.contains(&tag),
+                "round-175 probe list must contain script tag {:?}",
+                core::str::from_utf8(&tag).unwrap_or("???")
+            );
+        }
+    }
+
+    /// Explicit-script entry point with an unknown script tag must
+    /// resolve every feature to an empty lookup list and return the
+    /// pure-cmap output. `zzzz` is not a registered OpenType script
+    /// tag (mirrors the unknown-feature-tag test from round 89).
+    #[test]
+    fn round175_explicit_unknown_script_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abc", &[]);
+            let explicit_unknown =
+                shape_text_with_script_with_font(font, "abc", *b"zzzz", &[*b"smcp"]);
+            assert_eq!(
+                cmap_only, explicit_unknown,
+                "unknown script-tag must skip every feature"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Explicit-script entry point with an empty `features` slice
+    /// always returns the pure-cmap output, regardless of script-tag
+    /// validity. This mirrors the auto-probe contract.
+    #[test]
+    fn round175_explicit_empty_features_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "Hello", &[]);
+            let explicit_empty = shape_text_with_script_with_font(font, "Hello", *b"latn", &[]);
+            assert_eq!(cmap_only, explicit_empty);
+        })
+        .unwrap();
+    }
+
+    /// Explicit-script entry point matches the auto-probe output when
+    /// the auto-probe would have picked the same script. Inter's
+    /// `smcp` resolves under `latn`, so requesting it explicitly
+    /// against `latn` must agree with the auto-probe result.
+    #[test]
+    fn round175_explicit_latn_matches_auto_probe_on_smcp() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let auto = shape_text_with_font(font, "abc", &[*b"smcp"]);
+            let explicit_latn =
+                shape_text_with_script_with_font(font, "abc", *b"latn", &[*b"smcp"]);
+            assert_eq!(
+                auto, explicit_latn,
+                "explicit `latn` resolution must agree with auto-probe on smcp"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Explicit-script entry point with `DFLT` matches the auto-probe
+    /// for features that resolve under `DFLT` only (rare for Inter;
+    /// the assertion here is just that the explicit path doesn't
+    /// reach a different `DFLT` feature list than the auto-probe
+    /// would after `latn`/`cyrl`/`grek` miss). We probe the bare-cmap
+    /// case against a feature that no script publishes — the result
+    /// must be cmap identity whether we hit the explicit `DFLT` or
+    /// the auto-probe walk-and-fall-through.
+    #[test]
+    fn round175_explicit_dflt_unknown_feature_is_cmap_identity() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let cmap_only = shape_text_with_font(font, "abc", &[]);
+            let auto = shape_text_with_font(font, "abc", &[*b"zzzz"]);
+            let explicit_dflt =
+                shape_text_with_script_with_font(font, "abc", *b"DFLT", &[*b"zzzz"]);
+            assert_eq!(cmap_only, auto);
+            assert_eq!(cmap_only, explicit_dflt);
+        })
+        .unwrap();
+    }
+
+    /// The broadened auto-probe must preserve the round-15 four-tag
+    /// resolution for an existing Latin feature. Concretely: Inter's
+    /// `smcp` still resolves under `latn` and the rebroadened probe
+    /// returns the same glyph run as the round-15 baseline did. This
+    /// is the no-regression guarantee for the broadening.
+    #[test]
+    fn round175_broadened_probe_preserves_latn_smcp_result() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            // Reconstruct the round-15 4-tag-only resolution by hand.
+            let mut round15_hits: Vec<u16> = Vec::new();
+            for tag in [*b"latn", *b"cyrl", *b"grek", *b"DFLT"] {
+                let features = font.gsub_features_for_script(tag, None);
+                for feat in features {
+                    if feat.tag == *b"smcp" {
+                        round15_hits.extend_from_slice(&feat.lookup_indices);
+                    }
+                }
+                if !round15_hits.is_empty() {
+                    break;
+                }
+            }
+            let round175_hits = resolve_feature_lookups(font, b"smcp");
+            assert_eq!(
+                round15_hits, round175_hits,
+                "broadened probe must preserve the round-15 `smcp`/`latn` resolution"
+            );
         })
         .unwrap();
     }

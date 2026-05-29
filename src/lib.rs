@@ -104,12 +104,12 @@ pub use shaping::{
     kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category, lao_feature_tags,
     malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
     presentation_form, reorder_cluster, reorder_cluster_with, script_indic_tags,
-    shape_text_with_font, sinhala_category, sinhala_feature_tags, tamil_category,
-    tamil_feature_tags, telugu_category, telugu_feature_tags, thai_category, thai_feature_tags,
-    ClusterFlags, IndicCategory, JoiningClass, JoiningForm, ReorderRules, RephKind, Script,
-    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
-    KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES,
-    THAI_RULES,
+    shape_text_with_font, shape_text_with_script_with_font, sinhala_category, sinhala_feature_tags,
+    tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags, thai_category,
+    thai_feature_tags, ClusterFlags, IndicCategory, JoiningClass, JoiningForm, ReorderRules,
+    RephKind, Script, BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES,
+    GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES,
+    SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
 };
 pub use style::{
     synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,
