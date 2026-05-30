@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.7...v0.1.8) - 2026-05-30
+
+### Other
+
+- UAX #9 weak-type resolution rules W1..W7 (round 191)
+- UAX #9 BiDi foundation — character classes + P1/P2/P3 paragraph level (round 186)
+- caller-driven Type-3 alternate-index selection (round 183)
+- round175 tests: use scribe-local DejaVu fixture (CI fix)
+- explicit-script-tag entry point + broadened auto-probe (round 175)
+- GSUB LookupType 3 (Alternate Substitution) wired into shape_text (round 156)
+- GSUB LookupType 4 (Ligature Substitution) wired into shape_text (round 128)
+- GSUB LookupType 2 (Multiple Substitution) wired into shape_text (round 125)
+- GSUB LookupType 1 caller-driven feature application (round 89)
+- GSUB feature-tag introspection on Face (round 88)
+- general-script ccmp + calt GSUB pass (round 15)
+- hygiene round 75 (Error::source, lib.rs doc refresh, no_run doctests)
+- drop committed Cargo.lock + relax oxideav-core to "0.1"
+- backfill Unreleased entry for round 14 + round 13
+- variable fonts (CFF2/MVAR/HVAR/VVAR/STAT/name_id) + Brahmic round 13 (Burmese + Lao)
+
 ### Added — UAX #9 §3.3.4 weak-type resolution rules W1..W7 on the BiDi foundation (round 191)
 
 Second concrete UAX #9 surface on scribe lands on top of the round
