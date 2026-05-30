@@ -73,18 +73,23 @@
 //! - **Face chain** — multi-face fallback (primary → fallback chain),
 //!   per-codepoint resolution.
 //! - **Layout** — line measurement + word-wrap (no bidi).
-//! - **BiDi (round 186)** — `bidi::bidi_class(c)` returns the UAX #9
-//!   §3.2 normative bidirectional class for every code point scribe
-//!   needs today (the 12 explicit-format controls, ASCII / Latin-1,
-//!   Hebrew, four core Arabic blocks + Syriac + Thaana + N'Ko + the
-//!   two Arabic Presentation Forms blocks, combining-mark NSMs);
-//!   `bidi::paragraph_level(text)` implements UAX #9 rules P1 / P2 /
-//!   P3, returning the paragraph embedding level (0 = LTR, 1 = RTL).
-//!   `bidi::split_paragraphs(text)` is P1's split (every type-`B`
-//!   character is kept with the previous paragraph). The W / N / I /
-//!   X / L rules are deferred to follow-up rounds — this round
-//!   establishes the foundation surface every subsequent rule
-//!   dispatches against.
+//! - **BiDi (rounds 186 + 191)** — `bidi::bidi_class(c)` returns the
+//!   UAX #9 §3.2 normative bidirectional class for every code point
+//!   scribe needs today (the 12 explicit-format controls, ASCII /
+//!   Latin-1, Hebrew, four core Arabic blocks plus Syriac, Thaana,
+//!   N'Ko, the two Arabic Presentation Forms blocks, and combining-
+//!   mark NSMs); `bidi::paragraph_level(text)` implements UAX #9
+//!   rules P1 / P2 / P3, returning the paragraph embedding level
+//!   (0 = LTR, 1 = RTL). `bidi::split_paragraphs(text)` is P1's
+//!   split (every type-`B` character is kept with the previous
+//!   paragraph). Round 191 lands `bidi::resolve_weak_types(classes,
+//!   sos, eos)`, the §3.3.4 weak-type resolution pass (rules
+//!   W1..W7) operating on one isolating run sequence in place: NSM
+//!   inheritance (W1), EN-after-AL → AN (W2), AL → R (W3),
+//!   single-separator-between-two-numbers collapse (W4),
+//!   ET-adjacent-to-EN collapse (W5), leftover-separator
+//!   neutralisation (W6), and EN-after-L → L (W7). The N / I / X /
+//!   L rules are deferred to follow-up rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -102,7 +107,7 @@ pub mod shaping;
 pub mod style;
 pub mod variations;
 
-pub use bidi::{bidi_class, paragraph_level, split_paragraphs, BidiClass};
+pub use bidi::{bidi_class, paragraph_level, resolve_weak_types, split_paragraphs, BidiClass};
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};

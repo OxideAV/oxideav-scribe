@@ -1,14 +1,15 @@
-//! Unicode Bidirectional Algorithm — UAX #9 character classes +
-//! paragraph-level resolution (rules P1 / P2 / P3).
+//! Unicode Bidirectional Algorithm — UAX #9 character classes,
+//! paragraph-level resolution (rules P1 / P2 / P3), and weak-type
+//! resolution (rules W1..W7).
 //!
 //! ## Scope
 //!
-//! This module implements the **first phase** of the Unicode
-//! Bidirectional Algorithm (UBA) as specified in Unicode Standard
-//! Annex #9, *Unicode Bidirectional Algorithm*, Revision 50 / Unicode
-//! 16.0 (the dated snapshot pinned at
-//! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`). The
-//! foundation surface is:
+//! This module implements the **paragraph + weak-type phases** of the
+//! Unicode Bidirectional Algorithm (UBA) as specified in Unicode
+//! Standard Annex #9, *Unicode Bidirectional Algorithm*, Revision 50
+//! / Unicode 16.0 (the dated snapshot pinned at
+//! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`). The surface
+//! is:
 //!
 //! - [`BidiClass`] — the 23 normative bidirectional character types
 //!   from UAX #9 §3.2 Table 4 (3 Strong, 7 Weak, 4 Neutral, 9
@@ -34,10 +35,19 @@
 //!   region, find the first strong character (L / R / AL); P3 sets
 //!   level 1 if it is R or AL, level 0 otherwise (which is also the
 //!   default when no strong character is found).
+//! - [`resolve_weak_types`] — the **W1..W7** rules from §3.3.4
+//!   applied to one isolating run sequence in place: NSM type
+//!   inheritance (W1), `EN` after `AL` strong → `AN` (W2), `AL` →
+//!   `R` (W3), single-separator-between-two-numbers collapse (W4),
+//!   `ET`-adjacent-to-`EN` collapse (W5), leftover-separator
+//!   neutralisation (W6), and `EN` after `L` → `L` (W7). The phase
+//!   leaves the slice with no `AL` (collapsed to `R`) and no
+//!   leftover `ES` / `ET` / `CS` (collapsed to `ON`), so the
+//!   N-rules can resolve neutrals against a clean weak-type
+//!   vocabulary.
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
-//! - W1..W7 (weak type resolution).
 //! - N0..N2 (neutral type resolution, including the §3.1.3 bracket
 //!   pairs algorithm).
 //! - I1..I2 (implicit embedding level resolution).
@@ -168,6 +178,23 @@ impl BidiClass {
     #[must_use]
     pub const fn is_isolate_initiator(self) -> bool {
         matches!(self, Self::LRI | Self::RLI | Self::FSI)
+    }
+
+    /// `true` if this class counts as a **Neutral or Isolate (NI)**
+    /// in UAX #9 §3.3.5 / §3.3.6 terminology.
+    ///
+    /// The NI alias names the union `B | S | WS | ON | FSI | LRI | RLI
+    /// | PDI` — every neutral type plus the four isolate-formatting
+    /// characters, which are *treated as if neutral* once W1..W7 have
+    /// resolved their surroundings. W7 uses the NI alias in its
+    /// "search backward through NIs" wording; the N-rules (N0..N2)
+    /// resolve NIs en masse in the next phase.
+    #[must_use]
+    pub const fn is_neutral_or_isolate(self) -> bool {
+        matches!(
+            self,
+            Self::B | Self::S | Self::WS | Self::ON | Self::FSI | Self::LRI | Self::RLI | Self::PDI
+        )
     }
 }
 
@@ -412,6 +439,244 @@ pub fn paragraph_level(text: &str) -> u8 {
     }
     // P3: default to 0 (LTR) when no strong character was found.
     0
+}
+
+/// Resolve **weak types** for one isolating run sequence per UAX #9
+/// **W1, W2, W3, W4, W5, W6, W7** (§3.3.4).
+///
+/// The input `classes` are the per-character [`BidiClass`] values for
+/// **one isolating run sequence** in logical order. `sos` is the
+/// **start-of-sequence** strong type (`L` or `R`) — for callers that
+/// have not yet wired X1..X10 / X10's run partition, passing
+/// `L` (paragraph level 0) or `R` (paragraph level 1) is correct for
+/// a single-paragraph, no-isolate input. `eos` is the **end-of-
+/// sequence** strong type, also `L` or `R`. Only W2 + W7 read `sos`
+/// (W7 needs only `L` / `R` / `sos`); none of the rules read `eos`
+/// directly in this single-pass implementation (W4 reads the
+/// *following* character, but only when that character is *inside*
+/// the sequence — at the trailing edge the "single-separator-between-
+/// two-EN" pattern cannot apply because there is no following EN).
+///
+/// The function mutates `classes` in place. After return every
+/// element is one of `L`, `R`, `EN`, `AN`, `NSM`, `ES`, `ET`, `CS`,
+/// `BN`, or one of the neutral / isolate-formatting types
+/// (`B` / `S` / `WS` / `ON` / `LRI` / `RLI` / `FSI` / `PDI`) — `AL`
+/// is gone (W3 collapses every remaining AL to R) and every
+/// separator / terminator that survived W4 / W5 is collapsed by W6
+/// to `ON`. The N-rules pick up from there.
+///
+/// The implementation is the literal four-pass shape from the spec:
+///
+/// 1. **W1** — NSMs take the type of the previous character (or
+///    `ON` if the previous is `LRI` / `RLI` / `FSI` / `PDI`, per the
+///    spec note about "isolate initiator or PDI"). An NSM at the
+///    start of the sequence takes the `sos` type.
+/// 2. **W2** — EN immediately after the most-recent strong of type
+///    `AL` becomes `AN`. The "most-recent strong" walk includes
+///    `sos` as the implicit start-of-sequence strong type.
+/// 3. **W3** — every `AL` becomes `R`.
+/// 4. **W4** — single `ES` between two `EN`s becomes `EN`; single
+///    `CS` between two `EN`s becomes `EN`; single `CS` between two
+///    `AN`s becomes `AN`.
+/// 5. **W5** — runs of `ET` adjacent (on either side) to `EN` become
+///    `EN`.
+/// 6. **W6** — every remaining `ES` / `ET` / `CS` becomes `ON`.
+/// 7. **W7** — `EN` whose most-recent strong (among `L` / `R` /
+///    `sos`, **not** `AL` because W3 already turned every `AL` into
+///    `R`) is `L` becomes `L`.
+///
+/// Provenance: rules transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.4 (UAX
+/// #9 Revision 50, Unicode 16.0). No external library source was
+/// consulted.
+///
+/// # Panics
+///
+/// Does not panic. Empty input is a no-op.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{resolve_weak_types, BidiClass};
+///
+/// // "AL EN" with sos=L: W2 sees the AL as the most-recent strong,
+/// // so EN → AN; then W3 turns the AL into R. Final: [R, AN].
+/// let mut cls = vec![BidiClass::AL, BidiClass::EN];
+/// resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+/// assert_eq!(cls, vec![BidiClass::R, BidiClass::AN]);
+///
+/// // "L NI EN" → W7 sees L as the most-recent strong, so EN → L.
+/// let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::EN];
+/// resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+/// assert_eq!(cls, vec![BidiClass::L, BidiClass::ON, BidiClass::L]);
+/// ```
+pub fn resolve_weak_types(classes: &mut [BidiClass], sos: BidiClass, eos: BidiClass) {
+    let _ = eos; // eos is not consumed by W1..W7 (kept in the signature
+                 // for symmetry with the N-rules + because the spec
+                 // narration references it for boundary cases).
+    if classes.is_empty() {
+        return;
+    }
+
+    // --- W1: NSM takes the type of the previous character ---------
+    //
+    // Per spec: "Examine each nonspacing mark (NSM) in the isolating
+    // run sequence, and change the type of the NSM to Other Neutral
+    // if the previous character is an isolate initiator or PDI, and
+    // to the type of the previous character otherwise. If the NSM is
+    // at the start of the isolating run sequence, it will get the
+    // type of sos." The examples in the spec confirm: AL NSM NSM →
+    // AL AL AL (consecutive NSMs all flip to the same type because
+    // the second NSM, after W1's first iteration, sees a previously-
+    // rewritten AL).
+    for i in 0..classes.len() {
+        if classes[i] != BidiClass::NSM {
+            continue;
+        }
+        let prev = if i == 0 { sos } else { classes[i - 1] };
+        classes[i] = match prev {
+            BidiClass::LRI | BidiClass::RLI | BidiClass::FSI | BidiClass::PDI => BidiClass::ON,
+            other => other,
+        };
+    }
+
+    // --- W2: EN preceded (going backward) by AL becomes AN --------
+    //
+    // Per spec: "Search backward from each instance of a European
+    // number until the first strong type (R, L, AL, or sos) is
+    // found. If an AL is found, change the type of the European
+    // number to Arabic number." Implementation: a forward sweep that
+    // tracks the most recent strong (including sos) and rewrites EN
+    // → AN when that strong is AL.
+    {
+        let mut last_strong = if sos.is_strong() { sos } else { BidiClass::L };
+        // The spec's "sos" is treated as a strong start regardless of
+        // L/R — but for W2 we only care whether the most recent
+        // strong is AL. sos is never AL (paragraph_level returns 0 or
+        // 1, mapped to L or R by the X1 stack frame). So the initial
+        // value being L or R is fine.
+        for cls in classes.iter_mut() {
+            match *cls {
+                BidiClass::L | BidiClass::R | BidiClass::AL => last_strong = *cls,
+                BidiClass::EN if last_strong == BidiClass::AL => {
+                    *cls = BidiClass::AN;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // --- W3: every remaining AL becomes R -------------------------
+    //
+    // Trivial collapse; must run *after* W2 because W2 reads AL.
+    for cls in classes.iter_mut() {
+        if *cls == BidiClass::AL {
+            *cls = BidiClass::R;
+        }
+    }
+
+    // --- W4: single ES between two ENs → EN; single CS between -----
+    //         two of the same number type → that type. -------------
+    //
+    // Per spec examples:
+    //   EN ES EN → EN EN EN
+    //   EN CS EN → EN EN EN
+    //   AN CS AN → AN AN AN
+    //
+    // The rule is narrow: the separator must be a *single* character,
+    // with the same number type on both sides. We do this in one
+    // forward pass — for each position i where classes[i] is ES or
+    // CS, look at i-1 and i+1.
+    if classes.len() >= 3 {
+        for i in 1..classes.len() - 1 {
+            let cur = classes[i];
+            let prev = classes[i - 1];
+            let next = classes[i + 1];
+            match cur {
+                BidiClass::ES if prev == BidiClass::EN && next == BidiClass::EN => {
+                    classes[i] = BidiClass::EN;
+                }
+                BidiClass::CS if prev == BidiClass::EN && next == BidiClass::EN => {
+                    classes[i] = BidiClass::EN;
+                }
+                BidiClass::CS if prev == BidiClass::AN && next == BidiClass::AN => {
+                    classes[i] = BidiClass::AN;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // --- W5: ET adjacent to EN (on either side) → EN --------------
+    //
+    // Per spec examples:
+    //   ET ET EN → EN EN EN   (leading ETs adjacent via the trailing EN)
+    //   EN ET ET → EN EN EN   (trailing ETs adjacent via the leading EN)
+    //   AN ET EN → AN EN EN   (only the EN-adjacent side flips; the
+    //                          ET adjacent to AN does NOT flip because
+    //                          the rule says "adjacent to European
+    //                          numbers", and AN is not EN).
+    //
+    // Strategy: find every contiguous run of ETs. The run flips to EN
+    // iff it touches an EN on at least one side.
+    {
+        let n = classes.len();
+        let mut i = 0;
+        while i < n {
+            if classes[i] != BidiClass::ET {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && classes[i] == BidiClass::ET {
+                i += 1;
+            }
+            let end = i; // exclusive
+            let left_en = start > 0 && classes[start - 1] == BidiClass::EN;
+            let right_en = end < n && classes[end] == BidiClass::EN;
+            if left_en || right_en {
+                for cls in &mut classes[start..end] {
+                    *cls = BidiClass::EN;
+                }
+            }
+        }
+    }
+
+    // --- W6: all remaining separators / terminators → ON ----------
+    //
+    // After W4 + W5, anything that is still ES / ET / CS is a
+    // separator that did not get absorbed into a number. Per spec it
+    // becomes Other Neutral.
+    for cls in classes.iter_mut() {
+        if matches!(*cls, BidiClass::ES | BidiClass::ET | BidiClass::CS) {
+            *cls = BidiClass::ON;
+        }
+    }
+
+    // --- W7: EN whose most-recent strong (L / R / sos) is L → L ---
+    //
+    // Note: W3 has already turned every AL into R, so the strong-type
+    // backward walk for W7 only sees L / R / sos. Forward sweep with
+    // the same "last strong" tracker as W2.
+    {
+        let mut last_strong = if matches!(sos, BidiClass::L | BidiClass::R) {
+            sos
+        } else {
+            // sos must be L or R after X1's level-mapping; treat any
+            // unexpected non-strong sos as L (the W7 effect is the
+            // same as "no preceding strong yet").
+            BidiClass::L
+        };
+        for cls in classes.iter_mut() {
+            match *cls {
+                BidiClass::L | BidiClass::R => last_strong = *cls,
+                BidiClass::EN if last_strong == BidiClass::L => {
+                    *cls = BidiClass::L;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Split `text` into paragraphs at every character of class `B`
@@ -711,5 +976,317 @@ mod tests {
         // strong character decides. Here the first strong is Latin.
         let s = "\u{2069}Hello";
         assert_eq!(paragraph_level(s), 0);
+    }
+
+    // --- Section 6: NI predicate -------------------------------
+
+    #[test]
+    fn neutral_or_isolate_predicate_covers_uax9_ni_alias() {
+        // NI alias = neutrals (B/S/WS/ON) ∪ isolate-formatting
+        // (FSI/LRI/RLI/PDI). Every member tests true.
+        for c in [
+            BidiClass::B,
+            BidiClass::S,
+            BidiClass::WS,
+            BidiClass::ON,
+            BidiClass::FSI,
+            BidiClass::LRI,
+            BidiClass::RLI,
+            BidiClass::PDI,
+        ] {
+            assert!(c.is_neutral_or_isolate(), "{c:?} should be NI");
+        }
+        // Strong / weak / embedding-formatting / PDF are NOT NI.
+        for c in [
+            BidiClass::L,
+            BidiClass::R,
+            BidiClass::AL,
+            BidiClass::EN,
+            BidiClass::ES,
+            BidiClass::ET,
+            BidiClass::AN,
+            BidiClass::CS,
+            BidiClass::NSM,
+            BidiClass::BN,
+            BidiClass::LRE,
+            BidiClass::LRO,
+            BidiClass::RLE,
+            BidiClass::RLO,
+            BidiClass::PDF,
+        ] {
+            assert!(!c.is_neutral_or_isolate(), "{c:?} should not be NI");
+        }
+    }
+
+    // --- Section 7: W rules (W1..W7) ---------------------------
+
+    #[test]
+    fn w_rules_empty_input_is_noop() {
+        let mut cls: Vec<BidiClass> = vec![];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert!(cls.is_empty());
+    }
+
+    #[test]
+    fn w1_consecutive_nsm_inherit_first_strongs_type() {
+        // Spec example: AL NSM NSM → AL AL AL (forward pass; second NSM
+        // sees the first NSM after rewrite).
+        let mut cls = vec![BidiClass::AL, BidiClass::NSM, BidiClass::NSM];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        // After W1: AL AL AL. After W3: R R R.
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::R]);
+    }
+
+    #[test]
+    fn w1_nsm_at_sequence_start_takes_sos_type() {
+        // Spec example: <sos=R> NSM → <sos> R. Then W3 has no AL to
+        // collapse, so the NSM stays R.
+        let mut cls = vec![BidiClass::NSM, BidiClass::L];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::L]);
+    }
+
+    #[test]
+    fn w1_nsm_after_isolate_initiator_or_pdi_becomes_on() {
+        // Spec example: LRI NSM → LRI ON; PDI NSM → PDI ON.
+        let mut cls = vec![BidiClass::LRI, BidiClass::NSM];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::LRI, BidiClass::ON]);
+
+        let mut cls = vec![BidiClass::PDI, BidiClass::NSM];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::PDI, BidiClass::ON]);
+
+        let mut cls = vec![BidiClass::RLI, BidiClass::NSM];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::RLI, BidiClass::ON]);
+
+        let mut cls = vec![BidiClass::FSI, BidiClass::NSM];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::FSI, BidiClass::ON]);
+    }
+
+    #[test]
+    fn w2_en_after_al_strong_becomes_an() {
+        // Spec example: AL EN → AL AN. After W3 the AL collapses to R.
+        let mut cls = vec![BidiClass::AL, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::AN]);
+        // AL NI EN → AL NI AN (the NI is ON which doesn't touch the
+        // last-strong tracker).
+        let mut cls = vec![BidiClass::AL, BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::ON, BidiClass::AN]);
+    }
+
+    #[test]
+    fn w2_en_with_no_al_predecessor_stays_en() {
+        // sos=L, no AL → EN stays EN. (W7 may yet flip it to L; see
+        // dedicated test.)
+        let mut cls = vec![BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        // sos=L → W7 fires: last_strong is L, EN → L.
+        assert_eq!(cls, vec![BidiClass::ON, BidiClass::L]);
+        // L NI EN → L NI EN (W2: last strong is L, not AL); after W7
+        // the EN becomes L.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::ON, BidiClass::L]);
+        // R NI EN → R NI EN: W7 sees R as last strong, leaves EN alone.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::ON, BidiClass::EN]);
+    }
+
+    #[test]
+    fn w2_sos_alone_does_not_flip_en() {
+        // sos NI EN → sos NI EN (W2: sos is not AL).
+        // With sos=L, W7 then fires → EN becomes L.
+        let mut cls = vec![BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::ON, BidiClass::L]);
+        // With sos=R, W7 does not fire → EN stays.
+        let mut cls = vec![BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::ON, BidiClass::EN]);
+    }
+
+    #[test]
+    fn w3_all_remaining_al_become_r() {
+        // Pure AL run → R run.
+        let mut cls = vec![BidiClass::AL, BidiClass::AL, BidiClass::AL];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::R]);
+    }
+
+    #[test]
+    fn w4_single_es_or_cs_between_two_ens_collapses_to_en() {
+        // Spec: EN ES EN → EN EN EN.
+        let mut cls = vec![BidiClass::EN, BidiClass::ES, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::EN, BidiClass::EN]);
+        // Spec: EN CS EN → EN EN EN.
+        let mut cls = vec![BidiClass::EN, BidiClass::CS, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::EN, BidiClass::EN]);
+        // Spec: AN CS AN → AN AN AN (CS between same-type AN both
+        // sides flips).
+        let mut cls = vec![BidiClass::AN, BidiClass::CS, BidiClass::AN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::AN, BidiClass::AN]);
+    }
+
+    #[test]
+    fn w4_does_not_collapse_mixed_or_multiple_separators() {
+        // Mixed-type CS (EN CS AN) does NOT collapse (W4 demands same
+        // type both sides).
+        let mut cls = vec![BidiClass::EN, BidiClass::CS, BidiClass::AN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        // CS doesn't match W4, W6 turns it into ON.
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::ON, BidiClass::AN]);
+        // Two consecutive ES are NOT a "single ES" — neither flips.
+        let mut cls = vec![BidiClass::EN, BidiClass::ES, BidiClass::ES, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(
+            cls,
+            vec![BidiClass::EN, BidiClass::ON, BidiClass::ON, BidiClass::EN]
+        );
+        // AN ES AN does NOT collapse — W4 covers CS only for AN, not ES.
+        let mut cls = vec![BidiClass::AN, BidiClass::ES, BidiClass::AN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::ON, BidiClass::AN]);
+    }
+
+    #[test]
+    fn w5_ets_adjacent_to_en_collapse() {
+        // Spec: ET ET EN → EN EN EN.
+        let mut cls = vec![BidiClass::ET, BidiClass::ET, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::EN, BidiClass::EN]);
+        // Spec: EN ET ET → EN EN EN.
+        let mut cls = vec![BidiClass::EN, BidiClass::ET, BidiClass::ET];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::EN, BidiClass::EN]);
+        // Spec: AN ET EN → AN EN EN (the ET is adjacent to EN on the
+        // right side, so it flips; the AN on the left does not push
+        // anything because AN is not EN).
+        let mut cls = vec![BidiClass::AN, BidiClass::ET, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::EN, BidiClass::EN]);
+    }
+
+    #[test]
+    fn w5_isolated_ets_do_not_collapse() {
+        // A solitary ET with no EN neighbour stays ET → W6 → ON.
+        let mut cls = vec![BidiClass::R, BidiClass::ET, BidiClass::R];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::ON, BidiClass::R]);
+        // ET-only run far from any EN → ON ON.
+        let mut cls = vec![BidiClass::ET, BidiClass::ET];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::ON, BidiClass::ON]);
+    }
+
+    #[test]
+    fn w6_remaining_separators_terminators_become_on() {
+        // Spec: AN ET → AN ON. (ET adjacent to AN does NOT flip; W5
+        // is EN-only.)
+        let mut cls = vec![BidiClass::AN, BidiClass::ET];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::ON]);
+        // Spec: L ES EN → L ON EN. ES has no EN on the left, so W4
+        // doesn't fire; W6 turns it into ON. Then W7 sees L as last
+        // strong → EN becomes L. Final: L ON L.
+        let mut cls = vec![BidiClass::L, BidiClass::ES, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::ON, BidiClass::L]);
+        // Spec: EN CS AN → EN ON AN.
+        let mut cls = vec![BidiClass::EN, BidiClass::CS, BidiClass::AN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::ON, BidiClass::AN]);
+        // Spec: ET AN → ON AN.
+        let mut cls = vec![BidiClass::ET, BidiClass::AN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::ON, BidiClass::AN]);
+    }
+
+    #[test]
+    fn w7_en_after_l_becomes_l() {
+        // Spec: L NI EN → L NI L.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::ON, BidiClass::L]);
+        // Spec: R NI EN → R NI EN (R as last strong leaves EN alone).
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::ON, BidiClass::EN]);
+    }
+
+    #[test]
+    fn w7_with_sos_l_flips_lone_en() {
+        // sos=L, no L in the sequence, EN at end → W7 sees sos as L
+        // and flips EN → L.
+        let mut cls = vec![BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L]);
+        // sos=R, no L in the sequence → EN stays EN.
+        let mut cls = vec![BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN]);
+    }
+
+    #[test]
+    fn w_rules_compose_w2_before_w3_before_w7() {
+        // Critical ordering check: AL EN → after W2 → AL AN → after W3
+        // → R AN. W7 sees R as last strong (not L), so the AN is NOT
+        // re-flipped (and W7 only inspects EN anyway). Confirms W2
+        // fires *before* W3 (otherwise we would lose the AL marker
+        // and EN would never flip to AN).
+        let mut cls = vec![BidiClass::AL, BidiClass::EN, BidiClass::EN];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::AN, BidiClass::AN]);
+    }
+
+    #[test]
+    fn w_rules_full_pipeline_realistic_run() {
+        // A mock isolating run sequence drawn from a hypothetical
+        // mixed Arabic + number paragraph: AL NSM EN ET EN CS AN.
+        // Walk through:
+        //   W1: NSM after AL → AL.   → [AL AL EN ET EN CS AN]
+        //   W2: EN after AL strong → AN. The second EN also sees AL
+        //        as the most recent strong (the AN we just wrote
+        //        doesn't change last_strong because AN is not strong).
+        //                              → [AL AL AN ET AN CS AN]
+        //   W3: ALs → R.              → [R  R  AN ET AN CS AN]
+        //   W4: CS between two ANs flips → AN. ET is not eligible
+        //       under W4. (After W2 the prev/next of CS are AN.)
+        //                              → [R  R  AN ET AN AN AN]
+        //   W5: ET is NOT adjacent to an EN on either side (the AN
+        //       on both sides is AN, not EN), so it doesn't flip.
+        //                              → [R  R  AN ET AN AN AN]
+        //   W6: lingering ET → ON.    → [R  R  AN ON AN AN AN]
+        //   W7: only inspects EN; no EN survives.
+        let mut cls = vec![
+            BidiClass::AL,
+            BidiClass::NSM,
+            BidiClass::EN,
+            BidiClass::ET,
+            BidiClass::EN,
+            BidiClass::CS,
+            BidiClass::AN,
+        ];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        assert_eq!(
+            cls,
+            vec![
+                BidiClass::R,
+                BidiClass::R,
+                BidiClass::AN,
+                BidiClass::ON,
+                BidiClass::AN,
+                BidiClass::AN,
+                BidiClass::AN,
+            ]
+        );
     }
 }

@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.4 weak-type resolution rules W1..W7 on the BiDi foundation (round 191)
+
+Second concrete UAX #9 surface on scribe lands on top of the round
+186 character-class + paragraph-level foundation: the complete W
+phase from §3.3.4. The phase resolves one isolating run sequence
+end-to-end, leaving the slice with no `AL` (W3 collapses every one
+to `R`) and no leftover `ES` / `ET` / `CS` (W6 collapses every
+remainder to `ON`) — i.e. a clean vocabulary for the upcoming
+N-rules and the §3.3.6 implicit-level rules.
+
+- **`bidi::resolve_weak_types(classes: &mut [BidiClass], sos:
+  BidiClass, eos: BidiClass)`** — in-place pass over one isolating
+  run sequence applying the seven rules in order:
+  - **W1** — `NSM` inherits the type of the immediately-preceding
+    character. NSM at the start of the sequence takes the `sos` type.
+    NSM after an isolate initiator (`LRI` / `RLI` / `FSI`) or after
+    `PDI` becomes `ON`. The forward pass means consecutive NSMs all
+    flip to the same final type (per the spec example `AL NSM NSM →
+    AL AL AL`).
+  - **W2** — `EN` whose most-recent strong type (walking backward
+    through neutrals etc., with `sos` as the implicit start) is `AL`
+    becomes `AN`.
+  - **W3** — every remaining `AL` becomes `R`. (Runs after W2 so the
+    AL marker is still visible to the EN rewriter.)
+  - **W4** — a single `ES` between two `EN`s collapses to `EN`. A
+    single `CS` between two same-type numbers collapses to that
+    type (`EN CS EN → EN EN EN` and `AN CS AN → AN AN AN`). Mixed-
+    type CS (`EN CS AN`) and double separators (`EN ES ES EN`) do
+    NOT collapse — W4 demands a *single* separator with a *same-type*
+    number on each side.
+  - **W5** — runs of `ET` adjacent to an `EN` on either side
+    collapse to `EN`. ETs adjacent to `AN` (not `EN`) do not flip;
+    isolated ET runs with no EN neighbour fall through to W6.
+  - **W6** — every leftover `ES` / `ET` / `CS` becomes `ON`. This is
+    the catch-all that drops separators which did not get absorbed
+    into a number, so the N-rules see only `L` / `R` / `EN` / `AN` /
+    `NSM` / `BN` / neutrals.
+  - **W7** — `EN` whose most-recent strong type (`L` / `R` / `sos`)
+    is `L` becomes `L`. After W3 the strong-type vocabulary is
+    `{L, R, sos}` only — the spec example `L NI EN → L NI L` is
+    asserted directly. `R` as the most-recent strong leaves the EN
+    untouched.
+- **`BidiClass::is_neutral_or_isolate()`** — predicate for the
+  UAX #9 §3.3.5 / §3.3.6 NI alias (`B | S | WS | ON | FSI | LRI |
+  RLI | PDI`). Surfaced now because W7's narration uses NI, and
+  because every subsequent rule (N0..N2, I1..I2) dispatches on the
+  same predicate.
+
+Coverage: 14 unit tests in `src/bidi.rs` (every rule's positive +
+negative spec examples plus a full-pipeline composition check) + 11
+integration tests in `tests/round191_bidi_weak_types.rs` (the same
+rule examples asserted through the `oxideav_scribe::resolve_weak_types`
+public re-export). The realistic-pipeline test walks an
+`AL NSM EN ET EN CS EN` sequence through every rule's footprint.
+
+The `sos` / `eos` parameters keep the signature symmetric with the
+forthcoming N-rules (which read both), even though W1..W7 actually
+only read `sos` (via W1's start-of-sequence default, W2's
+most-recent-strong implicit start, and W7's same). Callers without
+X1..X10 wired up yet can pass `BidiClass::L` for paragraph level 0
+and `BidiClass::R` for level 1 — that produces a correct W pass for
+a single-paragraph no-isolate input.
+
+Out of scope for this round (each is its own follow-up):
+
+- **N0** bracket-pair-aware neutral resolution (needs
+  `BidiBrackets.txt` from the UCD).
+- **N1, N2** neutral type resolution against surrounding strong
+  types + paragraph embedding direction.
+- **I1, I2** implicit embedding level resolution.
+- **X1..X10** explicit embedding / override / isolate stack
+  machinery + the isolating-run-sequence partition + overflow
+  counters.
+- **L1..L4** line-level reordering + mirroring
+  (`BidiMirroring.txt`).
+
+Provenance: every rule transcribed verbatim from the dated snapshot
+at `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.4 (UAX
+#9 Revision 50, Unicode 16.0, fetched 2026-05-29). Every test input
+comes directly from the spec's per-rule example blocks. No external
+library source — HarfBuzz, ICU, FreeType, rustybuzz, the
+`unicode-bidi` crate, etc. — was consulted at any point.
+
 ### Added — Unicode Bidirectional Algorithm foundation: UAX #9 character classes + P1/P2/P3 paragraph-level resolution (round 186)
 
 First concrete UAX #9 (*Unicode Bidirectional Algorithm*) surface

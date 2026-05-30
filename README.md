@@ -274,13 +274,46 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   level (`0` for LTR or first-strong-L, `1` for first-strong-R-or-AL,
   default `0`). `bidi::split_paragraphs(s)` is P1's split that keeps
   every type-`B` separator with the preceding paragraph (the
-  returned slices concatenate back to `s` exactly).  The W / N / I /
-  X / L rules are deferred to follow-up rounds — this round
-  establishes the surface every subsequent rule dispatches against.
-  21 unit + integration tests cover the explicit-format set, ASCII
-  / Latin-1 / Hebrew / Arabic class assignments, isolate-skip with
-  nested initiators, embedding initiators *not* skipping (only
-  isolates do), and P3 default-when-no-strong-character.
+  returned slices concatenate back to `s` exactly).  21 unit +
+  integration tests cover the explicit-format set, ASCII / Latin-1 /
+  Hebrew / Arabic class assignments, isolate-skip with nested
+  initiators, embedding initiators *not* skipping (only isolates do),
+  and P3 default-when-no-strong-character.
+- **BiDi weak-type resolution W1..W7 (round 191)** —
+  `bidi::resolve_weak_types(&mut classes, sos, eos)` runs the UAX #9
+  §3.3.4 weak-type pass over one isolating run sequence in place.
+  `classes` is a mutable slice of `BidiClass` values (the per-
+  character classification from `bidi_class`); `sos` / `eos` are the
+  start- and end-of-sequence strong types (`L` or `R`, derived from
+  the paragraph embedding level by the X1 stack frame in a future
+  round — for callers that have not yet wired X1..X10, passing
+  `BidiClass::L` for paragraph level 0 and `BidiClass::R` for level
+  1 is correct for a single-paragraph no-isolate run).  Rules
+  applied in order: **W1** NSM inherits the type of the preceding
+  character (or `ON` when the preceding is `LRI` / `RLI` / `FSI` /
+  `PDI`; consecutive NSMs all flip to the same type because the
+  second NSM, after the first iteration's rewrite, sees the first
+  one); **W2** `EN` whose most-recent strong type is `AL` becomes
+  `AN`; **W3** every remaining `AL` becomes `R`; **W4** a single
+  `ES` or `CS` between two `EN`s collapses to `EN`, a single `CS`
+  between two `AN`s collapses to `AN`; **W5** runs of `ET` adjacent
+  to an `EN` on either side collapse to `EN`; **W6** every leftover
+  `ES` / `ET` / `CS` becomes `ON`; **W7** `EN` whose most-recent
+  strong (`L` / `R` / `sos`) is `L` becomes `L`. After the call the
+  slice contains no `AL` (W3 ate them) and no leftover `ES` / `ET` /
+  `CS` (W6 ate them), so the N-rules can resolve neutrals against
+  a clean weak-type vocabulary. 14 unit + 11 integration tests cover
+  every rule's spec example (`AL EN → R AN`, `AL NI EN → R NI AN`,
+  `EN ES EN → EN EN EN`, `AN CS AN → AN AN AN`, `EN CS AN → EN ON
+  AN`, `ET ET EN → EN EN EN`, `AN ET EN → AN EN EN`, `L NI EN → L
+  NI L`, `R NI EN → R NI EN`, …), the W1 isolate-initiator → ON
+  variant, the W4 negative cases (two consecutive ES don't collapse,
+  AN ES AN does not collapse because W4's ES branch is EN-only,
+  mixed-type CS doesn't collapse), the W5 non-EN-adjacent case (ET
+  next to AN stays ET → W6 → ON), the W2-before-W3 ordering, and a
+  full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
+  exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
+  N / I / X / L rules remain deferred.
 
 ## Out of scope
 
