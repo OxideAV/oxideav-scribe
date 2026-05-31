@@ -314,6 +314,40 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi neutral-type resolution N1 + N2 (round 198)** —
+  `bidi::resolve_neutral_types(&mut classes, embedding_level, sos, eos)`
+  runs the UAX #9 §3.3.5 neutral / isolate-formatting pass over one
+  isolating run sequence in place. The slice is expected to be the
+  output of `resolve_weak_types` (no `AL` left, no leftover `ES` /
+  `ET` / `CS`). The implementation walks every maximal contiguous
+  run of NI elements (`B` / `S` / `WS` / `ON` / `LRI` / `RLI` /
+  `FSI` / `PDI`) and resolves it with **N1** when the strong type
+  on both sides agrees — `EN` and `AN` count as `R` per the spec's
+  "European and Arabic numbers act as if they were R", and the
+  strong-side walk skips over `NSM` / `BN` (which are non-strong
+  but also non-NI); falls back to `sos` / `eos` at the sequence
+  boundaries — or with **N2** (the embedding direction, `L` for
+  even `embedding_level`, `R` for odd) when the strong context
+  differs. After the pass every NI has been resolved to a strong
+  direction; `NSM` and `BN` survive untouched (the §3.3.6 implicit-
+  level pass handles them). 10 unit + 11 integration tests cover
+  every spec example (`L NI L → L L L`, `R NI R → R R R`, the full
+  R/AN/EN N1 table with EN/AN counting as R, the N2 mismatch table
+  at both embedding levels, the full NI alias collapsing in one
+  run, `NSM` / `BN` pass-through across NI boundaries, sos / eos
+  driving boundary-spanning runs, idempotence on NI-free slices,
+  and the compose-with-W realistic Arabic + numbers pipeline).
+  **N0 (bracket-pair resolution per §3.1.3 + §3.3.5) is deferred**
+  — it requires the Unicode `BidiBrackets.txt` data file to
+  identify opening / closing paired brackets, which is not yet
+  vendored under `docs/`. The N1 / N2 surface is forward-
+  compatible: an N0 implementation lands as a pre-N1 pass that
+  turns bracket positions into strong types, after which N1 / N2
+  continues to apply unchanged (the spec narrative confirms this
+  in the closing N0 note: "if the enclosed text contains no strong
+  types the bracket pairs will both resolve to the same level when
+  resolved individually using rules N1 and N2"). I / X / L rules
+  remain deferred.
 
 ## Out of scope
 

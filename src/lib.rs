@@ -88,8 +88,14 @@
 //!   inheritance (W1), EN-after-AL → AN (W2), AL → R (W3),
 //!   single-separator-between-two-numbers collapse (W4),
 //!   ET-adjacent-to-EN collapse (W5), leftover-separator
-//!   neutralisation (W6), and EN-after-L → L (W7). The N / I / X /
-//!   L rules are deferred to follow-up rounds.
+//!   neutralisation (W6), and EN-after-L → L (W7). Round 198 lands
+//!   `bidi::resolve_neutral_types(classes, embedding_level, sos,
+//!   eos)`, the §3.3.5 neutral / isolate-formatting resolution
+//!   pass (rules N1 + N2): every maximal NI run (B / S / WS / ON /
+//!   LRI / RLI / FSI / PDI) collapses to a strong direction —
+//!   matching neighbours via N1 (with `EN` / `AN` counting as `R`)
+//!   or the embedding direction via N2. The bracket-pair rule N0
+//!   and the I / X / L rules are deferred to follow-up rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -107,7 +113,10 @@ pub mod shaping;
 pub mod style;
 pub mod variations;
 
-pub use bidi::{bidi_class, paragraph_level, resolve_weak_types, split_paragraphs, BidiClass};
+pub use bidi::{
+    bidi_class, paragraph_level, resolve_neutral_types, resolve_weak_types, split_paragraphs,
+    BidiClass,
+};
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};

@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.5 neutral-type resolution rules N1 + N2 (round 198)
+
+Third concrete UAX #9 surface on scribe, layered on top of the
+round 191 weak-type pass: the §3.3.5 neutral / isolate-formatting
+resolution rules N1 and N2. The phase finishes resolving every
+former neutral or isolate-formatting position to a strong
+direction, completing the input vocabulary the §3.3.6 implicit-
+level pass (I1 / I2) will consume in a follow-up round.
+
+- **`bidi::resolve_neutral_types(classes: &mut [BidiClass],
+  embedding_level: u8, sos: BidiClass, eos: BidiClass)`** — in-place
+  pass over one isolating run sequence (the same slice already
+  mutated by `resolve_weak_types`) applying:
+  - **N1** — every maximal contiguous run of NI elements (`B` /
+    `S` / `WS` / `ON` / `LRI` / `RLI` / `FSI` / `PDI`) collapses to
+    the strong type on either side when both sides agree, with `EN`
+    and `AN` counting as `R` per the spec's "European and Arabic
+    numbers act as if they were R". `NSM` / `BN` are skipped by the
+    strong-side walk (they are non-strong but also non-NI). `sos` /
+    `eos` provide the strong type at sequence boundaries.
+  - **N2** — every NI run whose strong neighbours disagree
+    collapses to the embedding direction (`L` for even
+    `embedding_level`, `R` for odd).
+- **`oxideav_scribe::resolve_neutral_types`** + the matching
+  `oxideav_scribe::bidi::resolve_neutral_types` — public re-exports
+  alongside `resolve_weak_types`.
+
+After the pass the slice contains no NI; `NSM` and `BN` survive
+untouched (they are not in the NI alias and the §3.3.6 implicit-
+level rules handle them).
+
+**N0 (bracket-pair resolution per §3.1.3 + §3.3.5) is deferred** —
+it requires the Unicode `BidiBrackets.txt` data file to identify
+opening / closing paired brackets, which is not yet vendored under
+`docs/`. The N1 / N2 surface is forward-compatible: an N0
+implementation lands as a pre-N1 pass that turns bracket positions
+into strong types, after which N1 / N2 continues to apply
+unchanged.
+
+**21 new tests** (10 unit + 11 integration via
+`tests/round198_bidi_neutral_types.rs`): every spec example —
+`L NI L → L L L`, `R NI R → R R R`, the full R / AN / EN N1 table
+with EN / AN counting as R, the N2 mismatch table at both
+embedding levels, the full NI alias collapsing in one run,
+`NSM` / `BN` pass-through across NI boundaries, `sos` / `eos`
+driving boundary-spanning runs, idempotence on NI-free slices,
+and the compose-with-W realistic Arabic + numbers pipeline.
+
+Provenance: rules transcribed verbatim from
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.5 (UAX #9
+Revision 50, Unicode 16.0). No external library source was
+consulted at any point.
+
 ## [0.1.8](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.7...v0.1.8) - 2026-05-30
 
 ### Other

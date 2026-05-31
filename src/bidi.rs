@@ -1,6 +1,7 @@
 //! Unicode Bidirectional Algorithm — UAX #9 character classes,
-//! paragraph-level resolution (rules P1 / P2 / P3), and weak-type
-//! resolution (rules W1..W7).
+//! paragraph-level resolution (rules P1 / P2 / P3), weak-type
+//! resolution (rules W1..W7), and neutral-type resolution (rules N1
+//! and N2 — bracket-pair rule N0 deferred to a follow-up round).
 //!
 //! ## Scope
 //!
@@ -45,11 +46,26 @@
 //!   leftover `ES` / `ET` / `CS` (collapsed to `ON`), so the
 //!   N-rules can resolve neutrals against a clean weak-type
 //!   vocabulary.
+//! - [`resolve_neutral_types`] — the **N1 + N2** rules from §3.3.5
+//!   applied to one isolating run sequence already passed through
+//!   `resolve_weak_types`. N1 walks every maximal run of Neutral-or-
+//!   Isolate-formatting (NI) elements (`B` / `S` / `WS` / `ON` /
+//!   `LRI` / `RLI` / `FSI` / `PDI`) and, when the strong type on
+//!   both sides (counting `EN` / `AN` as `R`, and `sos` / `eos` at
+//!   the sequence boundaries) is the same, flips every NI in the
+//!   run to that strong type (`L` or `R`). N2 fills the remaining
+//!   NIs with the **embedding direction** derived from the caller-
+//!   provided embedding level (even → `L`, odd → `R`). After the
+//!   call the slice contains no NI: every former neutral or isolate
+//!   formatting character has been resolved to a strong direction,
+//!   ready for the §3.3.6 implicit-level pass (I1 / I2).
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
-//! - N0..N2 (neutral type resolution, including the §3.1.3 bracket
-//!   pairs algorithm).
+//! - N0 (bracket-pair resolution per §3.1.3 + §3.3.5); requires the
+//!   Unicode `BidiBrackets.txt` data file to identify opening /
+//!   closing paired brackets, which is not yet vendored under
+//!   `docs/`.
 //! - I1..I2 (implicit embedding level resolution).
 //! - X1..X10 (explicit embedding / override / isolate stack
 //!   machinery + the isolating-run-sequence partition).
@@ -679,6 +695,175 @@ pub fn resolve_weak_types(classes: &mut [BidiClass], sos: BidiClass, eos: BidiCl
     }
 }
 
+/// Resolve **neutral and isolate-formatting types** for one
+/// isolating run sequence per UAX #9 **N1, N2** (§3.3.5).
+///
+/// N0 (bracket-pair resolution) is **not** applied by this routine
+/// — it requires the Unicode `BidiBrackets.txt` data file to
+/// identify opening / closing paired brackets, which is a follow-up
+/// dependency. Callers that need N0 should run it *before* calling
+/// this function so that any bracket-resolved positions are already
+/// strong types by the time N1 walks them.
+///
+/// The input `classes` are the per-character [`BidiClass`] values
+/// for **one isolating run sequence** in logical order — the same
+/// slice already mutated by [`resolve_weak_types`]. The slice must
+/// already be free of `AL` (collapsed to `R` by W3) and of leftover
+/// `ES` / `ET` / `CS` (collapsed to `ON` by W6) — feeding the W
+/// pass's output guarantees that. `embedding_level` is the
+/// embedding level of the run as a whole (`0` for an LTR
+/// paragraph's outer run, `1` for an RTL paragraph's outer run; the
+/// X-stack drives this for nested runs). `sos` / `eos` are the
+/// **start- and end-of-sequence strong types** (`L` or `R`,
+/// derived from the X-stack frame for the run).
+///
+/// The function mutates `classes` in place. After return every
+/// element is one of `L`, `R`, `EN`, `AN`, `NSM`, or `BN` — every
+/// NI (`B` / `S` / `WS` / `ON` / `LRI` / `RLI` / `FSI` / `PDI`) has
+/// been resolved to a strong direction by either N1 (matching
+/// strong neighbours, with `EN` / `AN` counting as `R`) or N2
+/// (embedding direction fallback when strong neighbours differ or
+/// the sequence boundary is on the other side of an `NI`-only
+/// run). `NSM` and `BN` are intentionally left alone — they are
+/// not in the NI alias and the §3.3.6 implicit-level rules handle
+/// them.
+///
+/// The implementation is a single forward sweep:
+///
+/// 1. Find every maximal contiguous run `[start, end)` of
+///    `classes[i].is_neutral_or_isolate()` elements.
+/// 2. Determine the **left strong** type: the previous
+///    non-NI / non-NSM / non-BN element's "directional contribution"
+///    (`L` stays `L`; `R` / `EN` / `AN` all count as `R` per the
+///    spec's "European and Arabic numbers act as if they were R");
+///    falls back to `sos`'s direction at the head of the sequence.
+/// 3. Determine the **right strong** type symmetrically; falls back
+///    to `eos`'s direction at the tail.
+/// 4. If `left == right`, apply **N1** — rewrite every element of
+///    the run to that strong type.
+/// 5. Otherwise apply **N2** — rewrite every element of the run to
+///    the embedding direction (`L` for even `embedding_level`, `R`
+///    for odd).
+///
+/// Provenance: rules transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.5 (UAX
+/// #9 Revision 50, Unicode 16.0). No external library source was
+/// consulted.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{resolve_neutral_types, BidiClass};
+///
+/// // Spec example "L NI L → L L L".
+/// let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::L];
+/// resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+/// assert_eq!(cls, vec![BidiClass::L, BidiClass::L, BidiClass::L]);
+///
+/// // Spec example "R NI AN → R R AN" (AN counts as R for N1).
+/// let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::AN];
+/// resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+/// assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::AN]);
+///
+/// // N2 fallback: differing-strong-context NIs take the embedding
+/// // direction. With embedding_level 0 (L), the unresolved NI
+/// // between L and R becomes L.
+/// let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::R];
+/// resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::R);
+/// assert_eq!(cls, vec![BidiClass::L, BidiClass::L, BidiClass::R]);
+/// ```
+pub fn resolve_neutral_types(
+    classes: &mut [BidiClass],
+    embedding_level: u8,
+    sos: BidiClass,
+    eos: BidiClass,
+) {
+    if classes.is_empty() {
+        return;
+    }
+
+    // N0..N2 narration: "European and Arabic numbers act as if they
+    // were R in terms of their influence on NIs." So the strong-type
+    // search treats EN / AN as R. Helper to project a Bidi class onto
+    // its strong-direction contribution.
+    fn strong_dir(c: BidiClass) -> Option<BidiClass> {
+        match c {
+            BidiClass::L => Some(BidiClass::L),
+            BidiClass::R | BidiClass::EN | BidiClass::AN => Some(BidiClass::R),
+            _ => None,
+        }
+    }
+
+    // sos / eos are strong types (L or R after X-stack mapping); the
+    // function tolerates any input but maps non-strong sos/eos to L
+    // for safety (consistent with W2 / W7).
+    let sos_dir = strong_dir(sos).unwrap_or(BidiClass::L);
+    let eos_dir = strong_dir(eos).unwrap_or(BidiClass::L);
+
+    let embedding_dir = if embedding_level % 2 == 0 {
+        BidiClass::L
+    } else {
+        BidiClass::R
+    };
+
+    let n = classes.len();
+    let mut i = 0;
+    while i < n {
+        if !classes[i].is_neutral_or_isolate() {
+            i += 1;
+            continue;
+        }
+        // Found the start of an NI run.
+        let start = i;
+        while i < n && classes[i].is_neutral_or_isolate() {
+            i += 1;
+        }
+        let end = i; // exclusive
+
+        // Left strong: walk backward from `start - 1` until we find a
+        // strong-direction contributor (L / R / EN / AN). Skip NSM /
+        // BN, which are non-strong but not NI either. If we hit the
+        // sequence head, fall back to sos_dir.
+        let mut left = sos_dir;
+        if start > 0 {
+            let mut k = start;
+            while k > 0 {
+                k -= 1;
+                if let Some(d) = strong_dir(classes[k]) {
+                    left = d;
+                    break;
+                }
+                if k == 0 {
+                    // walked off the head without finding a strong
+                    // contributor — fall back to sos_dir (already in
+                    // `left`).
+                    break;
+                }
+            }
+        }
+
+        // Right strong: walk forward from `end` until we find a
+        // strong-direction contributor. If we hit the sequence tail,
+        // fall back to eos_dir.
+        let mut right = eos_dir;
+        {
+            let mut k = end;
+            while k < n {
+                if let Some(d) = strong_dir(classes[k]) {
+                    right = d;
+                    break;
+                }
+                k += 1;
+            }
+        }
+
+        let target = if left == right { left } else { embedding_dir };
+        for cls in &mut classes[start..end] {
+            *cls = target;
+        }
+    }
+}
+
 /// Split `text` into paragraphs at every character of class `B`
 /// per UAX #9 **P1**.
 ///
@@ -1245,6 +1430,271 @@ mod tests {
         let mut cls = vec![BidiClass::AL, BidiClass::EN, BidiClass::EN];
         resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
         assert_eq!(cls, vec![BidiClass::R, BidiClass::AN, BidiClass::AN]);
+    }
+
+    // --- Section 8: N rules (N1 + N2) -------------------------
+
+    #[test]
+    fn n_rules_empty_input_is_noop() {
+        let mut cls: Vec<BidiClass> = vec![];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert!(cls.is_empty());
+    }
+
+    #[test]
+    fn n1_l_ni_l_collapses_to_l() {
+        // Spec example: L NI L → L L L.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::L];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::L, BidiClass::L]);
+    }
+
+    #[test]
+    fn n1_r_ni_r_collapses_to_r() {
+        // Spec example: R NI R → R R R.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::R];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::R]);
+    }
+
+    #[test]
+    fn n1_numbers_count_as_r_for_surrounding_check() {
+        // Spec table — exhaustive R/AN/EN cross-product.
+        // R NI AN → R R AN.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::AN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::AN]);
+        // R NI EN → R R EN.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::EN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::EN]);
+        // AN NI R → AN R R.
+        let mut cls = vec![BidiClass::AN, BidiClass::ON, BidiClass::R];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::R, BidiClass::R]);
+        // AN NI AN → AN R AN.
+        let mut cls = vec![BidiClass::AN, BidiClass::ON, BidiClass::AN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::R, BidiClass::AN]);
+        // AN NI EN → AN R EN.
+        let mut cls = vec![BidiClass::AN, BidiClass::ON, BidiClass::EN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::AN, BidiClass::R, BidiClass::EN]);
+        // EN NI R → EN R R.
+        let mut cls = vec![BidiClass::EN, BidiClass::ON, BidiClass::R];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::R, BidiClass::R]);
+        // EN NI AN → EN R AN.
+        let mut cls = vec![BidiClass::EN, BidiClass::ON, BidiClass::AN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::R, BidiClass::AN]);
+        // EN NI EN → EN R EN.
+        let mut cls = vec![BidiClass::EN, BidiClass::ON, BidiClass::EN];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::EN, BidiClass::R, BidiClass::EN]);
+    }
+
+    #[test]
+    fn n2_differing_strong_context_takes_embedding_direction() {
+        // Spec example footnote: with eos=L sos=R the run "R NI eos"
+        // resolves NI → e (the embedding direction). Here we shape
+        // the same with explicit slices.
+        //
+        // L NI R, embedding_level 0 → L stays, NI takes embedding
+        // direction L, R stays. Final: L L R.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::R];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::L, BidiClass::R]);
+        // Same input with embedding_level 1 → NI takes R.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::R];
+        resolve_neutral_types(&mut cls, 1, BidiClass::L, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::R, BidiClass::R]);
+        // R NI L mirror, embedding_level 1 → NI takes R.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::L];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::L]);
+    }
+
+    #[test]
+    fn n_rules_sos_eos_drive_boundary_runs() {
+        // Spec example footnote: <sos=R> NI L → <sos> R L
+        // (N1 sees R on left via sos, L on right; mismatch → N2 takes
+        // embedding direction; here embedding 1 (R) → NI becomes R).
+        let mut cls = vec![BidiClass::ON, BidiClass::L];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::L);
+        // Mismatch — embedding (1 = R) wins.
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::L]);
+        // Same with embedding 0 (L): NI becomes L.
+        let mut cls = vec![BidiClass::ON, BidiClass::L];
+        resolve_neutral_types(&mut cls, 0, BidiClass::R, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::L]);
+        // <sos=L> NI <eos=L>: both sides agree → N1 folds to L.
+        let mut cls = vec![BidiClass::ON, BidiClass::WS];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::L]);
+        // <sos=R> NI <eos=R>: both sides agree → N1 folds to R.
+        let mut cls = vec![BidiClass::ON, BidiClass::WS];
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R]);
+    }
+
+    #[test]
+    fn n_rules_long_ni_run_collapses_uniformly() {
+        // A run of many NIs of mixed types (B / S / WS / ON / LRI /
+        // RLI / FSI / PDI) all flip to the resolved direction in one
+        // pass.
+        let mut cls = vec![
+            BidiClass::L,
+            BidiClass::WS,
+            BidiClass::ON,
+            BidiClass::LRI,
+            BidiClass::PDI,
+            BidiClass::S,
+            BidiClass::B,
+            BidiClass::L,
+        ];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(
+            cls,
+            vec![
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+            ]
+        );
+    }
+
+    #[test]
+    fn n_rules_leave_nsm_and_bn_alone() {
+        // NSM and BN are NOT in the NI alias (only the four neutrals
+        // + four isolate-formatting types are). They must pass
+        // through unchanged.
+        let mut cls = vec![BidiClass::L, BidiClass::NSM, BidiClass::BN, BidiClass::L];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(
+            cls,
+            vec![BidiClass::L, BidiClass::NSM, BidiClass::BN, BidiClass::L,]
+        );
+    }
+
+    #[test]
+    fn n_rules_nsm_does_not_terminate_ni_run() {
+        // An NSM embedded in an NI run participates as a "skip" for
+        // the strong-search — it is non-strong and non-NI, so the
+        // strong-search walks past it. With L on both sides (one of
+        // them past an NSM) the whole NI run still resolves to L via
+        // N1.
+        //
+        // Layout: [L, NSM, ON, ON, L] — the NI run is positions 2..4.
+        // Left strong: walk back from position 2 → see ON? no
+        // (position 1 is NSM, position 0 is L). Wait — N1's "strong
+        // type on either side" only considers strong-direction
+        // contributors (L / R / EN / AN). NSM is neither. The walk
+        // skips over it: left strong is L. Right strong is L. → run
+        // becomes L.
+        let mut cls = vec![
+            BidiClass::L,
+            BidiClass::NSM,
+            BidiClass::ON,
+            BidiClass::ON,
+            BidiClass::L,
+        ];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(
+            cls,
+            vec![
+                BidiClass::L,
+                BidiClass::NSM,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+            ]
+        );
+    }
+
+    #[test]
+    fn n_rules_multiple_independent_ni_runs() {
+        // Two NI runs separated by an L. Each run resolves
+        // independently against its own neighbours.
+        // Layout: [R, ON, R, ON, ON, L]:
+        //   Run 1 = [1..2], left=R right=R → R.
+        //   Run 2 = [3..5], left=R right=L → mismatch → embedding (0
+        //   = L).
+        let mut cls = vec![
+            BidiClass::R,
+            BidiClass::ON,
+            BidiClass::R,
+            BidiClass::ON,
+            BidiClass::ON,
+            BidiClass::L,
+        ];
+        resolve_neutral_types(&mut cls, 0, BidiClass::R, BidiClass::L);
+        assert_eq!(
+            cls,
+            vec![
+                BidiClass::R,
+                BidiClass::R,
+                BidiClass::R,
+                BidiClass::L,
+                BidiClass::L,
+                BidiClass::L,
+            ]
+        );
+    }
+
+    #[test]
+    fn n_rules_ni_only_sequence_uses_sos_eos() {
+        // No strong elements anywhere — both endpoints fall back to
+        // sos / eos. With sos=L eos=L → both agree on L → run → L.
+        let mut cls = vec![BidiClass::ON, BidiClass::WS, BidiClass::ON];
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        assert_eq!(cls, vec![BidiClass::L, BidiClass::L, BidiClass::L]);
+        // sos=L eos=R → mismatch → embedding (1 = R) → run → R.
+        let mut cls = vec![BidiClass::ON, BidiClass::WS, BidiClass::ON];
+        resolve_neutral_types(&mut cls, 1, BidiClass::L, BidiClass::R);
+        assert_eq!(cls, vec![BidiClass::R, BidiClass::R, BidiClass::R]);
+    }
+
+    #[test]
+    fn n_rules_compose_with_w_rules_realistic_run() {
+        // Realistic full pipeline: start from a paragraph "AL NSM EN
+        // ET EN CS AN" already used in the W7 composition test, push
+        // it through both W and N. After W rules: [R R AN ON AN AN
+        // AN]. Then N: position 3 is ON (the only NI), surrounded by
+        // AN on both sides (which count as R) → N1 fires → AN
+        // becomes R. Wait — AN is *not* an NI, and N1 *rewrites* the
+        // NI itself. Position 3 is the ON; its neighbours are AN-3
+        // (left: position 2) and AN-4 (right: position 4). AN counts
+        // as R for the N1 search. left=R, right=R → ON → R.
+        // Final: [R R AN R AN AN AN].
+        let mut cls = vec![
+            BidiClass::AL,
+            BidiClass::NSM,
+            BidiClass::EN,
+            BidiClass::ET,
+            BidiClass::EN,
+            BidiClass::CS,
+            BidiClass::AN,
+        ];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        assert_eq!(
+            cls,
+            vec![
+                BidiClass::R,
+                BidiClass::R,
+                BidiClass::AN,
+                BidiClass::R,
+                BidiClass::AN,
+                BidiClass::AN,
+                BidiClass::AN,
+            ]
+        );
     }
 
     #[test]
