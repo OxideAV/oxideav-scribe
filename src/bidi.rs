@@ -1,7 +1,8 @@
 //! Unicode Bidirectional Algorithm — UAX #9 character classes,
 //! paragraph-level resolution (rules P1 / P2 / P3), weak-type
-//! resolution (rules W1..W7), and neutral-type resolution (rules N1
-//! and N2 — bracket-pair rule N0 deferred to a follow-up round).
+//! resolution (rules W1..W7), neutral-type resolution (rules N1
+//! and N2 — bracket-pair rule N0 deferred to a follow-up round),
+//! and implicit-level resolution (rules I1 / I2).
 //!
 //! ## Scope
 //!
@@ -59,6 +60,16 @@
 //!   call the slice contains no NI: every former neutral or isolate
 //!   formatting character has been resolved to a strong direction,
 //!   ready for the §3.3.6 implicit-level pass (I1 / I2).
+//! - [`resolve_implicit_levels`] — the **I1 + I2** rules from §3.3.6
+//!   applied to one isolating run sequence already passed through
+//!   `resolve_neutral_types`. I1 bumps `R` by +1 and `EN` / `AN` by
+//!   +2 above an even embedding level; I2 bumps `L` / `EN` / `AN`
+//!   by +1 above an odd embedding level. The two together implement
+//!   UAX #9 Table 5 verbatim. `BN` is ignored per §5.2 ("In rules
+//!   I1 and I2, ignore BN.") — its level stays at the embedding
+//!   level so a follow-up L-rule pass can fold it. The function
+//!   returns a `Vec<u8>` of per-character resolved levels, ready
+//!   for the L-rule reordering pass.
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
@@ -66,7 +77,6 @@
 //!   Unicode `BidiBrackets.txt` data file to identify opening /
 //!   closing paired brackets, which is not yet vendored under
 //!   `docs/`.
-//! - I1..I2 (implicit embedding level resolution).
 //! - X1..X10 (explicit embedding / override / isolate stack
 //!   machinery + the isolating-run-sequence partition).
 //! - L1..L4 (line-level reordering + mirroring).
@@ -87,8 +97,7 @@
 //!
 //! All material in this module is sourced exclusively from
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` (UAX #9
-//! Revision 50, Unicode 16.0, fetched 2026-05-29). No external
-//! library source was consulted.
+//! Revision 50, Unicode 16.0, fetched 2026-05-29).
 
 #![allow(clippy::module_name_repetitions)]
 
@@ -503,8 +512,7 @@ pub fn paragraph_level(text: &str) -> u8 {
 ///
 /// Provenance: rules transcribed verbatim from
 /// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.4 (UAX
-/// #9 Revision 50, Unicode 16.0). No external library source was
-/// consulted.
+/// #9 Revision 50, Unicode 16.0).
 ///
 /// # Panics
 ///
@@ -747,8 +755,7 @@ pub fn resolve_weak_types(classes: &mut [BidiClass], sos: BidiClass, eos: BidiCl
 ///
 /// Provenance: rules transcribed verbatim from
 /// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.5 (UAX
-/// #9 Revision 50, Unicode 16.0). No external library source was
-/// consulted.
+/// #9 Revision 50, Unicode 16.0).
 ///
 /// # Examples
 ///
@@ -862,6 +869,87 @@ pub fn resolve_neutral_types(
             *cls = target;
         }
     }
+}
+
+/// Resolve **implicit embedding levels** for one isolating run sequence
+/// per UAX #9 **I1, I2** (§3.3.6).
+///
+/// `classes` is the per-character [`BidiClass`] vector left by the N
+/// pass — every former neutral or isolate-formatting position has
+/// already been collapsed to a strong type, and the only weak types
+/// that survive are `EN`, `AN`, `NSM`, and `BN` (per UAX #9 §3.3.4 +
+/// §3.3.5). `embedding_level` is the embedding level of the run as a
+/// whole (`0` for an LTR paragraph's outer run, `1` for an RTL
+/// paragraph's outer run; the X-stack drives this for nested runs).
+///
+/// Returns a `Vec<u8>` of the same length as `classes`, holding the
+/// per-character **resolved** embedding level. Per UAX #9 §3.3.6
+/// Table 5:
+///
+/// | Type | Even EL | Odd EL |
+/// | ---- | ------- | ------ |
+/// | L    | EL      | EL+1   |
+/// | R    | EL+1    | EL     |
+/// | AN   | EL+2    | EL+1   |
+/// | EN   | EL+2    | EL+1   |
+///
+/// `BN` is ignored per UAX #9 §5.2 ("In rules I1 and I2, ignore BN.")
+/// — its level stays at `embedding_level`, so a later L1 / L4 pass
+/// (which resets BN levels in a separate phase) sees a stable base.
+/// `NSM` was rewritten to its preceding character's type by W1; if
+/// it survived the N pass unchanged (only the explicit
+/// `BidiClass::NSM` slot does, after the N-rules pass), it is also
+/// treated as `BN`-like here — its level stays at `embedding_level`
+/// because it is not a strong / numeric type and the spec's I1 / I2
+/// rules enumerate only L / R / AN / EN.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{resolve_implicit_levels, BidiClass};
+///
+/// // Even (LTR) paragraph: L stays, R goes +1, EN / AN go +2.
+/// let cls = vec![BidiClass::L, BidiClass::R, BidiClass::EN, BidiClass::AN];
+/// assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1, 2, 2]);
+///
+/// // Odd (RTL) paragraph: R stays, L / EN / AN all go +1.
+/// let cls = vec![BidiClass::L, BidiClass::R, BidiClass::EN, BidiClass::AN];
+/// assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 2, 2]);
+/// ```
+#[must_use]
+pub fn resolve_implicit_levels(classes: &[BidiClass], embedding_level: u8) -> Vec<u8> {
+    let even = embedding_level % 2 == 0;
+    classes
+        .iter()
+        .map(|c| match c {
+            BidiClass::L => {
+                if even {
+                    embedding_level
+                } else {
+                    embedding_level + 1
+                }
+            }
+            BidiClass::R => {
+                if even {
+                    embedding_level + 1
+                } else {
+                    embedding_level
+                }
+            }
+            BidiClass::EN | BidiClass::AN => {
+                if even {
+                    embedding_level + 2
+                } else {
+                    embedding_level + 1
+                }
+            }
+            // §5.2: "In rules I1 and I2, ignore BN." A surviving NSM
+            // is similarly outside the I1 / I2 enumeration (the spec
+            // only names L / R / AN / EN); leave it at the embedding
+            // level so a follow-up L-rule pass can fold it.
+            _ => embedding_level,
+        })
+        .collect()
 }
 
 /// Split `text` into paragraphs at every character of class `B`
@@ -1695,6 +1783,111 @@ mod tests {
                 BidiClass::AN,
             ]
         );
+    }
+
+    // --- Section 6: I1 / I2 implicit-level resolution -----------
+
+    #[test]
+    fn i1_even_level_l_stays_r_goes_up_one() {
+        // Table 5 row 1 + 2 at even EL: L → EL, R → EL+1.
+        let cls = vec![BidiClass::L, BidiClass::R, BidiClass::L, BidiClass::R];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1, 0, 1]);
+        // Same shape at EL = 2.
+        assert_eq!(resolve_implicit_levels(&cls, 2), vec![2, 3, 2, 3]);
+    }
+
+    #[test]
+    fn i1_even_level_an_en_go_up_two() {
+        // Table 5 row 3 + 4 at even EL: AN / EN → EL+2.
+        let cls = vec![BidiClass::AN, BidiClass::EN, BidiClass::L, BidiClass::R];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![2, 2, 0, 1]);
+        assert_eq!(resolve_implicit_levels(&cls, 2), vec![4, 4, 2, 3]);
+    }
+
+    #[test]
+    fn i2_odd_level_l_en_an_go_up_one_r_stays() {
+        // Table 5 odd column: L / EN / AN → EL+1; R → EL.
+        let cls = vec![BidiClass::L, BidiClass::R, BidiClass::EN, BidiClass::AN];
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 2, 2]);
+        // Same shape at EL = 3.
+        assert_eq!(resolve_implicit_levels(&cls, 3), vec![4, 3, 4, 4]);
+    }
+
+    #[test]
+    fn implicit_levels_ignore_bn() {
+        // §5.2 "In rules I1 and I2, ignore BN." A BN inserted between
+        // L and R should sit at the embedding level, not bump.
+        let cls = vec![BidiClass::L, BidiClass::BN, BidiClass::R];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 0, 1]);
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn implicit_levels_nsm_stays_at_embedding_level() {
+        // NSM that survived the N pass (the rare case where W1 itself
+        // left it as NSM — e.g. an NSM at the very start of a sequence
+        // whose sos is also NSM-like / non-strong, the spec maps that
+        // to ON via the §3.3.4 boundary rules and the N pass folds it,
+        // but defensive behaviour matters here): keep it at the
+        // embedding level, like BN.
+        let cls = vec![BidiClass::L, BidiClass::NSM, BidiClass::R];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn implicit_levels_empty_input_yields_empty_output() {
+        assert_eq!(resolve_implicit_levels(&[], 0), Vec::<u8>::new());
+        assert_eq!(resolve_implicit_levels(&[], 1), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn implicit_levels_compose_after_n_rules() {
+        // End-to-end: feed a slice through W → N → I and check the
+        // final level vector. Logical: "L NI L" at EL 0. After N1
+        // (matching L on both sides), all three are L → all sit at 0.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::L];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        let levels = resolve_implicit_levels(&cls, 0);
+        assert_eq!(levels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn implicit_levels_arabic_with_numbers_realistic() {
+        // Mixed Arabic + EN at paragraph level 1 (RTL paragraph):
+        // start with [AL NSM EN ET EN CS AN] (same shape as the
+        // w_rules_full_pipeline_realistic_run case), push it through
+        // W + N + I, check that AN / EN positions all end at level 2
+        // (one above the EL-1 base), while the R positions stay at 1.
+        let mut cls = vec![
+            BidiClass::AL,
+            BidiClass::NSM,
+            BidiClass::EN,
+            BidiClass::ET,
+            BidiClass::EN,
+            BidiClass::CS,
+            BidiClass::AN,
+        ];
+        resolve_weak_types(&mut cls, BidiClass::R, BidiClass::R);
+        resolve_neutral_types(&mut cls, 1, BidiClass::R, BidiClass::R);
+        // After W + N: [R R AN R AN AN AN] (per the realistic-run
+        // test above). At EL 1: R → 1, AN → 2.
+        let levels = resolve_implicit_levels(&cls, 1);
+        assert_eq!(levels, vec![1, 1, 2, 1, 2, 2, 2]);
+    }
+
+    #[test]
+    fn implicit_levels_max_depth_overflow_is_explicit() {
+        // The spec note "it is possible for text to end up at level
+        // max_depth+1 as a result of this process." We don't clamp;
+        // a caller passing EL near 125 (max_depth) can see levels
+        // 126 or 127. Test that the arithmetic is straightforward
+        // (no panic, no clamp). At EL 124 (even): L → 124, R → 125,
+        // EN → 126.
+        let cls = vec![BidiClass::L, BidiClass::R, BidiClass::EN];
+        assert_eq!(resolve_implicit_levels(&cls, 124), vec![124, 125, 126]);
+        // At EL 125 (odd): L → 126, R → 125, EN → 126.
+        assert_eq!(resolve_implicit_levels(&cls, 125), vec![126, 125, 126]);
     }
 
     #[test]

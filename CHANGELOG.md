@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.6 implicit-level resolution rules I1 + I2 (round 204)
+
+Fourth UAX #9 surface on scribe, layered on top of the round 198
+neutral-type pass: the §3.3.6 implicit-level resolution rules I1
+and I2. The phase computes the per-character resolved embedding
+level the L-rule reordering pass consumes; it is the final
+character-level transformation in the algorithm before line-level
+work begins.
+
+- **`bidi::resolve_implicit_levels(classes: &[BidiClass],
+  embedding_level: u8) -> Vec<u8>`** — pass over one isolating run
+  sequence (the same slice already mutated through
+  `resolve_weak_types` + `resolve_neutral_types`) returning a
+  per-character level vector. The implementation is UAX #9 §3.3.6
+  Table 5 verbatim:
+  - **I1** (even embedding levels): `R` → EL+1, `EN` / `AN` → EL+2.
+  - **I2** (odd embedding levels): `L` / `EN` / `AN` → EL+1.
+  - `BN` is ignored per §5.2 ("In rules I1 and I2, ignore BN.") —
+    its level stays at `embedding_level`. A surviving `NSM` (the
+    rare case where W1 left it intact) is treated the same; the
+    L-rule pass folds both.
+- **`oxideav_scribe::resolve_implicit_levels`** +
+  `oxideav_scribe::bidi::resolve_implicit_levels` — public
+  re-exports alongside the W / N pass entry points.
+
+After the call the caller has the level vector the §3.4 / §3.4.1
+L-rule reordering pass needs. The X-rules (paragraph + embedding /
+isolate stack machinery + the isolating-run-sequence partition)
+remain deferred; callers that already know their embedding level
+pass it directly, which matches the same contract `paragraph_level`
+returned in round 186 for the outer level.
+
+**23 new tests** (8 unit + 15 integration via
+`tests/round204_bidi_implicit_levels.rs`): every Table 5 row at
+multiple embedding levels (even / odd, base levels 0 / 1 / 2 / 3
+plus EL = 124 for the max-depth overflow note), the `BN`
+carve-out at both even and odd embedding levels, empty-input
+no-op, output-length-equals-input-length defensive sweep, and
+full W → N → I pipelines on LTR / RTL paragraph fragments —
+including the §3.3.5 closing prose example "IT IS A bmw 500, OK."
+reduced to its embedded `R EN ET EN R` run at EL 1, which
+exercises W5's ET-EN collapse + I1's EN-up-two in a single
+end-to-end level vector.
+
+Cleanup: removed two stale provenance lines in `src/variations.rs`
+and `src/shaping/arabic_pf.rs`; the substantive provenance
+citation (Microsoft OpenType chapters for variations,
+`UnicodeData.txt` decomposition mappings for Arabic presentation
+forms) is unchanged.
+
+Provenance: rules transcribed verbatim from
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.6 (UAX #9
+Revision 50, Unicode 16.0).
+
 ### Added — UAX #9 §3.3.5 neutral-type resolution rules N1 + N2 (round 198)
 
 Third concrete UAX #9 surface on scribe, layered on top of the

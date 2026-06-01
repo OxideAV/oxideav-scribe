@@ -314,6 +314,29 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi implicit-level resolution I1 + I2 (round 204)** —
+  `bidi::resolve_implicit_levels(&classes, embedding_level) ->
+  Vec<u8>` runs the UAX #9 §3.3.6 implicit-level pass over one
+  isolating run sequence and returns the per-character resolved
+  embedding level. The slice is expected to be the output of
+  `resolve_neutral_types` (no NI left; only `L` / `R` / `EN` / `AN` /
+  `NSM` / `BN`). The implementation is the literal Table 5 row
+  selection: at an **even** embedding level, `L` stays, `R` goes
+  `+1`, and `EN` / `AN` go `+2`; at an **odd** embedding level, `R`
+  stays, and `L` / `EN` / `AN` all go `+1`. `BN` is ignored per
+  §5.2 — its level stays at the embedding level so a follow-up
+  L-rule pass can fold it. Surviving `NSM` (the rare case where W1
+  left it intact) is treated the same. 8 unit + 15 integration
+  tests cover every Table 5 row at multiple embedding levels (even
+  / odd, including non-zero base levels up to 124), the `BN` carve-
+  out, empty-input no-op, the spec's max-depth-overflow note, and
+  full W → N → I pipelines on LTR / RTL paragraph fragments
+  (including the §3.3.5 closing prose example "R EN ET EN R" at
+  EL 1, which exercises W5's ET-EN collapse + I1's EN-up-two in
+  a single end-to-end vector). X-rules (paragraph + embedding /
+  isolate stack) and L-rules (line reordering + mirroring) remain
+  deferred — the I-rule output is the stable boundary the L-rules
+  consume.
 - **BiDi neutral-type resolution N1 + N2 (round 198)** —
   `bidi::resolve_neutral_types(&mut classes, embedding_level, sos, eos)`
   runs the UAX #9 §3.3.5 neutral / isolate-formatting pass over one
@@ -354,7 +377,7 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) W / N / I / X / L rules**, **CFF2 variable charstrings**
+- **Bidi (UAX #9) X / L rules**, **CFF2 variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD

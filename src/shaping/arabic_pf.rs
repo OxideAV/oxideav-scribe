@@ -29,7 +29,7 @@
 //! (`UnicodeData.txt` decomposition mappings for FE70..FEFF — every
 //! presentation-form has a `<initial>` / `<medial>` / `<final>` /
 //! `<isolated>` decomposition tag pointing back to the base
-//! codepoint). No HarfBuzz / FreeType / ICU source consulted.
+//! codepoint).
 
 use super::arabic::JoiningForm;
 

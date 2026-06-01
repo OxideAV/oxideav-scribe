@@ -44,8 +44,6 @@
 //! - Microsoft OpenType §"Item Variation Store Header and Item
 //!   Variation Subtables".
 //! - Microsoft OpenType §"Delta Set Index Map Table".
-//!
-//! No HarfBuzz / FreeType / fontTools source consulted.
 
 use core::fmt::{self, Debug};
 
