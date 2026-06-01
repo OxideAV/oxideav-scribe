@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.8...v0.1.9) - 2026-06-01
+
+### Other
+
+- UAX #9 implicit-level resolution rules I1 + I2 (round 204)
+
 ### Added — UAX #9 §3.3.6 implicit-level resolution rules I1 + I2 (round 204)
 
 Fourth concrete UAX #9 surface on scribe, layered directly on top
