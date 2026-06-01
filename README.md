@@ -314,6 +314,29 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi implicit-level resolution I1 + I2 (round 204)** —
+  `bidi::resolve_implicit_levels(&[BidiClass], embedding_level: u8) ->
+  Vec<u8>` runs the UAX #9 §3.3.6 implicit-level pass over a slice
+  of resolved bidirectional types (the post-W, post-N output) and
+  emits one embedding level per character per Table 5: at an even
+  (LTR) base level, `R` climbs `+1` and `AN` / `EN` climb `+2`; at
+  an odd (RTL) base level, `L` / `EN` / `AN` climb `+1`. The
+  spec's §5.3 HL3 conformance clause ("In rules I1 and I2, ignore
+  BN.") is honoured — `BN` keeps the embedding level rather than
+  being promoted; W1-leftover `NSM`s from the boundary case are
+  treated the same. After the pass RTL text always sits at an odd
+  level, LTR + numeric text at an even level, and numeric text is
+  strictly higher than the paragraph level — exactly the
+  precondition the §3.4 L-rules consume. 11 unit + 16 integration
+  tests cover every Table-5 row at both even and odd base levels,
+  higher nested override levels, BN ignore at both parities,
+  W1-leftover NSM treatment, the §3.3.6 narrative guarantees (RTL
+  always odd, LTR/numeric always even, numbers strictly above the
+  paragraph level), and two compose-with-W-and-N realistic
+  pipelines (an LTR `[L, EN, ON, R]` and the round-191 RTL Arabic-
+  phone `[AL, NSM, EN, ET, EN, CS, AN]` sequence). X / L rules
+  remain deferred; N0 (bracket-pair resolution) is still blocked
+  on `BidiBrackets.txt` vendoring.
 - **BiDi neutral-type resolution N1 + N2 (round 198)** —
   `bidi::resolve_neutral_types(&mut classes, embedding_level, sos, eos)`
   runs the UAX #9 §3.3.5 neutral / isolate-formatting pass over one
@@ -354,7 +377,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) W / N / I / X / L rules**, **CFF2 variable charstrings**
+- **Bidi (UAX #9) X / L rules** (the implicit-level pass I1 + I2 landed
+  in round 204; W1..W7 in round 191; N1 + N2 in round 198), **CFF2 variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD

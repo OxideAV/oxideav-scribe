@@ -1,7 +1,8 @@
 //! Unicode Bidirectional Algorithm — UAX #9 character classes,
 //! paragraph-level resolution (rules P1 / P2 / P3), weak-type
-//! resolution (rules W1..W7), and neutral-type resolution (rules N1
-//! and N2 — bracket-pair rule N0 deferred to a follow-up round).
+//! resolution (rules W1..W7), neutral-type resolution (rules N1
+//! and N2 — bracket-pair rule N0 deferred to a follow-up round),
+//! and implicit-level resolution (rules I1 + I2 from §3.3.6).
 //!
 //! ## Scope
 //!
@@ -59,6 +60,18 @@
 //!   call the slice contains no NI: every former neutral or isolate
 //!   formatting character has been resolved to a strong direction,
 //!   ready for the §3.3.6 implicit-level pass (I1 / I2).
+//! - [`resolve_implicit_levels`] — the **I1 + I2** rules from
+//!   §3.3.6 applied to a slice of resolved types together with a
+//!   base embedding level. Produces a `Vec<u8>` of per-character
+//!   embedding levels per Table 5: at an even (LTR) base level,
+//!   `R` climbs by 1 and `AN`/`EN` climb by 2; at an odd (RTL) base
+//!   level, `L`/`EN`/`AN` climb by 1. `BN` is ignored per §5.3
+//!   HL3 ("In rules I1 and I2, ignore BN.") — it stays at the
+//!   embedding level; any W1-leftover `NSM` from the boundary case
+//!   is treated the same. After this phase RTL text always sits at
+//!   an odd level, LTR + numeric text at an even level, and
+//!   numeric text is strictly higher than the paragraph level —
+//!   exactly the precondition the L-rules consume.
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
@@ -66,7 +79,6 @@
 //!   Unicode `BidiBrackets.txt` data file to identify opening /
 //!   closing paired brackets, which is not yet vendored under
 //!   `docs/`.
-//! - I1..I2 (implicit embedding level resolution).
 //! - X1..X10 (explicit embedding / override / isolate stack
 //!   machinery + the isolating-run-sequence partition).
 //! - L1..L4 (line-level reordering + mirroring).
@@ -862,6 +874,145 @@ pub fn resolve_neutral_types(
             *cls = target;
         }
     }
+}
+
+/// Resolve **implicit embedding levels** per UAX #9 §3.3.6 (rules
+/// **I1** + **I2**).
+///
+/// This is the last per-character phase of the BiDi algorithm before
+/// line-level reordering (`L1`..`L4`): it adjusts the embedding level
+/// of every character based on its resolved bidirectional type so
+/// that right-to-left text always ends up at an odd level, left-to-
+/// right and numeric text always ends up at an even level, and
+/// numeric text always ends up at a level higher than the paragraph
+/// level. The spec rules verbatim:
+///
+/// > **I1.** For all characters with an even (left-to-right)
+/// > embedding level, those of type R go up one level and those of
+/// > type AN or EN go up two levels.
+/// >
+/// > **I2.** For all characters with an odd (right-to-left)
+/// > embedding level, those of type L, EN or AN go up one level.
+///
+/// The spec's Table 5 summarises the result:
+///
+/// | Type | Even EL | Odd EL |
+/// |------|---------|--------|
+/// | L    | EL      | EL + 1 |
+/// | R    | EL + 1  | EL     |
+/// | AN   | EL + 2  | EL + 1 |
+/// | EN   | EL + 2  | EL + 1 |
+///
+/// `BN` (Boundary Neutral) is **ignored** by I1 / I2 per UAX #9
+/// §5.3 HL3 ("In rules I1 and I2, ignore BN."). Operationally we
+/// keep `BN`s at the embedding level (they will be removed from the
+/// reorder when L-rules run); we do not promote them.
+///
+/// `NSM` (Nonspacing Mark) inherits the resolved type of the
+/// character it follows under W1 *before* this phase runs, so by
+/// the time `resolve_implicit_levels` is called the input slice
+/// (the same slice produced by [`resolve_weak_types`] then
+/// [`resolve_neutral_types`]) contains no `NSM` left to resolve via
+/// I1 / I2 except in the boundary case where a sequence opens with
+/// `NSM`s; W1 leaves those untouched (taking on `sos`). For the
+/// purposes of I1 / I2 those leftover `NSM`s are treated as `BN` —
+/// ignored.
+///
+/// # Inputs
+///
+/// - `classes`: the resolved bidirectional types for one isolating
+///   run sequence after [`resolve_weak_types`] + [`resolve_neutral_types`]
+///   have run. The slice must therefore contain only `L`, `R`, `EN`,
+///   `AN`, `NSM`, and `BN` — every `AL` has been collapsed to `R` by
+///   W3, every leftover `ES` / `ET` / `CS` has been collapsed to `ON`
+///   by W6 then collapsed to a strong direction by N1 / N2, and
+///   every NI (B / S / WS / ON / FSI / LRI / RLI / PDI) has been
+///   collapsed to a strong direction by N1 / N2.
+/// - `embedding_level`: the run's base embedding level — derived
+///   from the X-stack frame (or, for callers without X1..X10, the
+///   paragraph embedding level from [`paragraph_level`]).
+///
+/// # Output
+///
+/// A `Vec<u8>` of per-character embedding levels parallel to
+/// `classes`. Each entry is `embedding_level + 0..=2` per Table 5.
+/// The maximum value Unicode currently produces is
+/// `embedding_level + 2`, which can be `max_depth + 1` per the
+/// §3.3.6 note ("it is possible for text to end up at level
+/// `max_depth + 1` as a result of this process").
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{resolve_implicit_levels, BidiClass};
+///
+/// // Even (LTR) embedding level. L stays, R goes up 1, EN/AN go up 2.
+/// let cls = [
+///     BidiClass::L,
+///     BidiClass::R,
+///     BidiClass::EN,
+///     BidiClass::AN,
+/// ];
+/// assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1, 2, 2]);
+///
+/// // Odd (RTL) embedding level. L, EN, AN all go up 1; R stays.
+/// let cls = [
+///     BidiClass::L,
+///     BidiClass::R,
+///     BidiClass::EN,
+///     BidiClass::AN,
+/// ];
+/// assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 2, 2]);
+///
+/// // BN is ignored by I1 / I2 (stays at the embedding level).
+/// let cls = [BidiClass::BN, BidiClass::R];
+/// assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1]);
+/// ```
+///
+/// Provenance: rules transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.6 (UAX
+/// #9 Revision 50, Unicode 16.0) plus the §5.3 HL3 conformance
+/// clause ("In rules I1 and I2, ignore BN."). No external library
+/// source was consulted.
+#[must_use]
+pub fn resolve_implicit_levels(classes: &[BidiClass], embedding_level: u8) -> Vec<u8> {
+    let even = embedding_level % 2 == 0;
+    classes
+        .iter()
+        .map(|c| match c {
+            // BN is ignored per §5.3 HL3 — keep at embedding level.
+            // NSM left over from W1's sos boundary case is likewise
+            // ignored (treated as BN for this phase).
+            BidiClass::BN | BidiClass::NSM => embedding_level,
+            BidiClass::L => {
+                if even {
+                    embedding_level
+                } else {
+                    embedding_level + 1
+                }
+            }
+            BidiClass::R => {
+                if even {
+                    embedding_level + 1
+                } else {
+                    embedding_level
+                }
+            }
+            BidiClass::EN | BidiClass::AN => {
+                if even {
+                    embedding_level + 2
+                } else {
+                    embedding_level + 1
+                }
+            }
+            // Anything else is a caller contract violation (the input
+            // is expected to be the post-W + post-N output, which
+            // contains only L/R/EN/AN/NSM/BN). Defensive default:
+            // treat as the embedding direction so the per-character
+            // level is at least sensible.
+            _ => embedding_level,
+        })
+        .collect()
 }
 
 /// Split `text` into paragraphs at every character of class `B`
@@ -1738,5 +1889,125 @@ mod tests {
                 BidiClass::AN,
             ]
         );
+    }
+
+    // --- Section 6: I-rules (resolve_implicit_levels) -----------
+
+    #[test]
+    fn i_rules_empty_slice() {
+        let cls: Vec<BidiClass> = vec![];
+        assert_eq!(resolve_implicit_levels(&cls, 0), Vec::<u8>::new());
+        assert_eq!(resolve_implicit_levels(&cls, 1), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn i_rules_table5_even_level() {
+        // Table 5 row-for-row at embedding_level=0 (LTR).
+        let cls = [BidiClass::L, BidiClass::R, BidiClass::AN, BidiClass::EN];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1, 2, 2]);
+    }
+
+    #[test]
+    fn i_rules_table5_odd_level() {
+        // Table 5 row-for-row at embedding_level=1 (RTL).
+        let cls = [BidiClass::L, BidiClass::R, BidiClass::AN, BidiClass::EN];
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 2, 2]);
+    }
+
+    #[test]
+    fn i_rules_higher_even_level() {
+        // Higher even embedding level (e.g. inside a nested LTR
+        // override). I1 still applies the same +1 / +2 deltas.
+        let cls = [BidiClass::L, BidiClass::R, BidiClass::EN];
+        assert_eq!(resolve_implicit_levels(&cls, 2), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn i_rules_higher_odd_level() {
+        // Higher odd embedding level (e.g. inside a nested RTL
+        // override). I2 still applies the same +1 deltas.
+        let cls = [BidiClass::L, BidiClass::R, BidiClass::EN, BidiClass::AN];
+        assert_eq!(resolve_implicit_levels(&cls, 3), vec![4, 3, 4, 4]);
+    }
+
+    #[test]
+    fn i_rules_bn_ignored_per_hl3() {
+        // §5.3 HL3: "In rules I1 and I2, ignore BN." We model that
+        // by keeping BN at the embedding level — neither I1 nor I2
+        // touches it. Sandwich a BN inside a typical sequence:
+        let cls = [BidiClass::L, BidiClass::BN, BidiClass::R];
+        // Even level: L stays at 0, BN stays at 0, R goes to 1.
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 0, 1]);
+        // Odd level: L goes to 2, BN stays at 1, R stays at 1.
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn i_rules_nsm_leftover_treated_as_bn() {
+        // W1's sos boundary case leaves NSMs at the head of a
+        // sequence untouched ("the second NSM... sees the first").
+        // For I1 / I2 those leftover NSMs are treated as BN — kept
+        // at the embedding level.
+        let cls = [BidiClass::NSM, BidiClass::R];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0, 1]);
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![1, 1]);
+    }
+
+    #[test]
+    fn i_rules_pure_ltr_run_stays_flat() {
+        // An all-L run at even level produces no level change.
+        let cls = [BidiClass::L; 5];
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![0; 5]);
+        // At odd level every L is promoted by one.
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![2; 5]);
+    }
+
+    #[test]
+    fn i_rules_pure_rtl_run_stays_flat() {
+        // An all-R run at odd level produces no level change.
+        let cls = [BidiClass::R; 5];
+        assert_eq!(resolve_implicit_levels(&cls, 1), vec![1; 5]);
+        // At even level every R is promoted by one.
+        assert_eq!(resolve_implicit_levels(&cls, 0), vec![1; 5]);
+    }
+
+    #[test]
+    fn i_rules_numbers_always_higher_than_paragraph_level() {
+        // §3.3.6 narrative guarantee: "numeric text will always end
+        // up with a higher level than the paragraph level". Test
+        // both EN and AN at even and odd levels.
+        let cls = [BidiClass::EN, BidiClass::AN];
+        for el in 0u8..4 {
+            let levels = resolve_implicit_levels(&cls, el);
+            assert!(
+                levels.iter().all(|&l| l > el),
+                "EN/AN > paragraph level at el={el}"
+            );
+        }
+    }
+
+    #[test]
+    fn i_rules_compose_with_w_and_n_pipeline() {
+        // Realistic mini-pipeline: start with the W6 example
+        // `L EN ON R` (numbers in LTR text followed by an Arabic
+        // word). After W7 EN becomes L; N1 then makes the ON
+        // between L and R take the embedding direction (N2 fallback
+        // at embedding_level=0 → L). Then I rules promote R.
+        let mut cls = vec![BidiClass::L, BidiClass::EN, BidiClass::ON, BidiClass::R];
+        resolve_weak_types(&mut cls, BidiClass::L, BidiClass::L);
+        // W7 turns EN→L because the most-recent strong is L.
+        assert_eq!(
+            cls,
+            vec![BidiClass::L, BidiClass::L, BidiClass::ON, BidiClass::R]
+        );
+        resolve_neutral_types(&mut cls, 0, BidiClass::L, BidiClass::L);
+        // N2 fallback (L on left, R on right, mismatch → embedding
+        // direction = L at embedding_level 0).
+        assert_eq!(
+            cls,
+            vec![BidiClass::L, BidiClass::L, BidiClass::L, BidiClass::R]
+        );
+        let levels = resolve_implicit_levels(&cls, 0);
+        assert_eq!(levels, vec![0, 0, 0, 1]);
     }
 }

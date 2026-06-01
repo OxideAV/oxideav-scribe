@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.6 implicit-level resolution rules I1 + I2 (round 204)
+
+Fourth concrete UAX #9 surface on scribe, layered directly on top
+of the round 198 neutral-type pass: the §3.3.6 implicit-level
+resolution rules I1 and I2. The phase consumes the resolved
+bidirectional types (the post-W, post-N output containing only
+`L` / `R` / `EN` / `AN` / `NSM` / `BN`) plus the run's base
+embedding level and emits one **embedding level per character**,
+which is the precondition the future §3.4 L-rules (line-level
+reordering) consume.
+
+- **`bidi::resolve_implicit_levels(classes: &[BidiClass],
+  embedding_level: u8) -> Vec<u8>`** — applies Table 5 row-by-row:
+  - At an **even (LTR)** base level: `L` stays, `R` climbs by 1,
+    `AN` / `EN` climb by 2 (I1).
+  - At an **odd (RTL)** base level: `R` stays, `L` / `EN` / `AN`
+    climb by 1 (I2).
+  - `BN` is ignored per the §5.3 HL3 conformance clause ("In rules
+    I1 and I2, ignore BN.") — it keeps the embedding level rather
+    than being promoted. Any W1-leftover `NSM` from the boundary
+    case where the sequence opens with an `NSM` is treated the
+    same.
+- **`oxideav_scribe::resolve_implicit_levels`** + the matching
+  `oxideav_scribe::bidi::resolve_implicit_levels` — public re-
+  exports alongside `resolve_weak_types` and `resolve_neutral_types`.
+
+After the pass the per-character levels satisfy the §3.3.6
+narrative guarantees:
+
+1. RTL text always ends up at an **odd** level.
+2. LTR + numeric text always ends up at an **even** level.
+3. Numeric text always ends up at a level **strictly higher** than
+   the paragraph level.
+
+**27 new tests** (11 unit + 16 integration via
+`tests/round204_bidi_implicit_levels.rs`): every Table-5 row at
+both even and odd base levels, higher nested override levels (e.g.
+`embedding_level=2` and `=3`), the BN-ignored case at both
+parities, W1-leftover NSM treatment at the head of a sequence, the
+three narrative guarantees enforced across a range of paragraph
+levels, and two realistic compose-with-W-and-N pipelines: an LTR
+paragraph `[L, EN, ON, R]` walking through W7's EN-after-L → L,
+N2's L/R-mismatch ON → L embedding-direction fallback, and I1's
+R → 1 promotion; and the round-191 RTL Arabic-phone-style
+`[AL, NSM, EN, ET, EN, CS, AN]` sequence walking through all of
+W1..W7, then N1's AN/AN-as-R collapse of the lone ON, then I2's
+AN → +1 promotion.
+
+**X / L rules remain deferred**; N0 (bracket-pair resolution) is
+still blocked on the Unicode `BidiBrackets.txt` data file not
+being vendored under `docs/`.
+
+Provenance: rules transcribed verbatim from
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.6
+(UAX #9 Revision 50, Unicode 16.0) plus the §5.3 HL3
+conformance clause. No external library source consulted — no
+ICU / HarfBuzz / FriBidi / minikin / `unicode-bidi` crate /
+upstream reference engine reached at any point.
+
 ### Added — UAX #9 §3.3.5 neutral-type resolution rules N1 + N2 (round 198)
 
 Third concrete UAX #9 surface on scribe, layered on top of the

@@ -94,8 +94,17 @@
 //!   pass (rules N1 + N2): every maximal NI run (B / S / WS / ON /
 //!   LRI / RLI / FSI / PDI) collapses to a strong direction —
 //!   matching neighbours via N1 (with `EN` / `AN` counting as `R`)
-//!   or the embedding direction via N2. The bracket-pair rule N0
-//!   and the I / X / L rules are deferred to follow-up rounds.
+//!   or the embedding direction via N2. Round 204 lands
+//!   `bidi::resolve_implicit_levels(classes, embedding_level) ->
+//!   Vec<u8>`, the §3.3.6 implicit-level resolution (rules I1 + I2):
+//!   per Table 5, even-level R climbs +1 and AN/EN climb +2;
+//!   odd-level L / EN / AN climb +1; `BN` (and any W1-leftover
+//!   `NSM`) is ignored per HL3. After this phase RTL text always
+//!   sits at an odd level, LTR + numeric text at even, and numeric
+//!   text strictly above the paragraph level — exactly the
+//!   precondition the L-rules (line reordering) consume. The
+//!   bracket-pair rule N0 and the X / L rules are deferred to
+//!   follow-up rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -114,8 +123,8 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, paragraph_level, resolve_neutral_types, resolve_weak_types, split_paragraphs,
-    BidiClass,
+    bidi_class, paragraph_level, resolve_implicit_levels, resolve_neutral_types,
+    resolve_weak_types, split_paragraphs, BidiClass,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
