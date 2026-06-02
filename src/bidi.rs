@@ -2,7 +2,8 @@
 //! paragraph-level resolution (rules P1 / P2 / P3), weak-type
 //! resolution (rules W1..W7), neutral-type resolution (rules N1
 //! and N2 — bracket-pair rule N0 deferred to a follow-up round),
-//! and implicit-level resolution (rules I1 / I2).
+//! implicit-level resolution (rules I1 / I2), and line-level
+//! reordering (rules L1 / L2).
 //!
 //! ## Scope
 //!
@@ -70,6 +71,23 @@
 //!   level so a follow-up L-rule pass can fold it. The function
 //!   returns a `Vec<u8>` of per-character resolved levels, ready
 //!   for the L-rule reordering pass.
+//! - [`reset_trailing_levels`] — the **L1** rule from §3.4. Walks
+//!   the line and, in place, resets the embedding level of every
+//!   segment separator (`S`), every paragraph separator (`B`), and
+//!   every maximal trailing run of whitespace (`WS`) + isolate
+//!   formatting (`LRI` / `RLI` / `FSI` / `PDI`) immediately
+//!   preceding such a separator or at the end of the line, back to
+//!   the paragraph embedding level. Per UAX #9 the lookup uses the
+//!   **original** bidi classes of the line — the caller passes the
+//!   input class slice alongside the post-I-rules level vector.
+//! - [`reorder_line`] — the **L2** rule from §3.4. Returns a
+//!   permutation of `0..n` mapping visual position to logical
+//!   index, computed by the progressive-reversal algorithm: from
+//!   the maximum level down to the smallest odd level, reverse
+//!   every maximal contiguous run of characters whose level is at
+//!   least the iteration level. The output drives the
+//!   logical-to-visual remap a renderer applies before rasterising
+//!   the glyph sequence.
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
@@ -79,7 +97,20 @@
 //!   `docs/`.
 //! - X1..X10 (explicit embedding / override / isolate stack
 //!   machinery + the isolating-run-sequence partition).
-//! - L1..L4 (line-level reordering + mirroring).
+//! - L3 (combining-mark reordering for RTL bases). The rule is
+//!   conditional on the rendering engine's mark-attachment policy
+//!   per UAX #9 §3.4: "If the rendering engine expects them to
+//!   follow the base characters in the final display process, then
+//!   the ordering of the marks and the base character must be
+//!   reversed." Scribe's GPOS mark-to-base + mark-to-mark stacker
+//!   keeps the logical (post-base) order in both directions, so
+//!   the conditional does not fire today; revisit when a CTL
+//!   pipeline using glyph-spacing overhangs lands.
+//! - L4 (mirroring of bidi-mirrored characters at R-resolved
+//!   levels per UAX #9 §3.4 / §4.7); requires the Unicode
+//!   `BidiMirroring.txt` / `Bidi_Mirrored` data file to identify
+//!   the mirrored set + their mirror pair, which is not yet
+//!   vendored under `docs/` alongside the UAX HTML.
 //!
 //! The UCD-derived per-code-point class table is also intentionally
 //! a **partial** table. Filling it out fully (every code point in
@@ -950,6 +981,199 @@ pub fn resolve_implicit_levels(classes: &[BidiClass], embedding_level: u8) -> Ve
             _ => embedding_level,
         })
         .collect()
+}
+
+/// Apply UAX #9 §3.4 rule **L1** to one line in place.
+///
+/// L1 resets the embedding level of certain trailing / separator
+/// characters back to the paragraph embedding level so that
+/// whitespace and tabulation end up on the visual edge that
+/// matches the paragraph direction. The four sub-cases enumerated
+/// in §3.4 are:
+///
+/// 1. Segment separators (class `S`).
+/// 2. Paragraph separators (class `B`).
+/// 3. Any sequence of whitespace (`WS`) and/or isolate-formatting
+///    characters (`LRI` / `RLI` / `FSI` / `PDI`) **preceding** a
+///    segment separator or paragraph separator.
+/// 4. Any sequence of whitespace and/or isolate-formatting
+///    characters **at the end of the line**.
+///
+/// UAX #9 §3.4 carries a normative note: "The types of characters
+/// used here are the *original* types, not those modified by the
+/// previous phase." `orig_classes` is therefore the same class
+/// slice the caller fed into `resolve_weak_types` / the N-rule /
+/// I-rule passes — not the post-W/N output.
+///
+/// `levels` is the per-character level vector produced by
+/// [`resolve_implicit_levels`] (the §3.3.6 output) for the
+/// characters that make up this one line. The function rewrites
+/// the affected positions of `levels` in place to
+/// `paragraph_level`; positions that L1 does not name (strong
+/// characters, weak numerics, leftover neutrals that are not on a
+/// trailing-whitespace run) are left untouched.
+///
+/// # Panics
+///
+/// Panics if `orig_classes.len() != levels.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{reset_trailing_levels, BidiClass};
+///
+/// // Trailing space in an LTR paragraph stays at level 0.
+/// // (Resolved levels from a prior I pass might be 0 for the `L`
+/// // text and the trailing `WS`; L1 explicitly anchors the WS to
+/// // the paragraph level either way.)
+/// let cls = vec![BidiClass::L, BidiClass::L, BidiClass::WS];
+/// let mut lvl = vec![0, 0, 0];
+/// reset_trailing_levels(&cls, &mut lvl, 0);
+/// assert_eq!(lvl, vec![0, 0, 0]);
+///
+/// // RTL paragraph: trailing whitespace is dragged to level 1.
+/// let cls = vec![BidiClass::R, BidiClass::R, BidiClass::WS, BidiClass::WS];
+/// let mut lvl = vec![1, 1, 2, 2];
+/// reset_trailing_levels(&cls, &mut lvl, 1);
+/// assert_eq!(lvl, vec![1, 1, 1, 1]);
+/// ```
+pub fn reset_trailing_levels(orig_classes: &[BidiClass], levels: &mut [u8], paragraph_level: u8) {
+    assert_eq!(
+        orig_classes.len(),
+        levels.len(),
+        "reset_trailing_levels: class slice and level slice must be the same length",
+    );
+    let n = orig_classes.len();
+    if n == 0 {
+        return;
+    }
+    // Cases (1) + (2): every S / B position is reset directly.
+    // Case (3): for each such separator, walk leftward across any
+    // contiguous WS / isolate-formatting run and reset those too.
+    // Case (4): a single trailing WS / isolate-formatting run at
+    // the end of the line is reset.
+    for (i, &cls) in orig_classes.iter().enumerate() {
+        if matches!(cls, BidiClass::S | BidiClass::B) {
+            levels[i] = paragraph_level;
+            // Walk backward over WS + isolate-formatting characters
+            // immediately preceding this separator.
+            let mut j = i;
+            while j > 0 && is_l1_trailing_filler(orig_classes[j - 1]) {
+                j -= 1;
+                levels[j] = paragraph_level;
+            }
+        }
+    }
+    // Case (4): trailing WS + isolate-formatting at end of line.
+    let mut k = n;
+    while k > 0 && is_l1_trailing_filler(orig_classes[k - 1]) {
+        k -= 1;
+        levels[k] = paragraph_level;
+    }
+}
+
+/// Predicate for the §3.4 L1 case-(3) / case-(4) "whitespace +
+/// isolate-formatting" set: `WS`, `LRI`, `RLI`, `FSI`, `PDI`.
+fn is_l1_trailing_filler(c: BidiClass) -> bool {
+    matches!(
+        c,
+        BidiClass::WS | BidiClass::LRI | BidiClass::RLI | BidiClass::FSI | BidiClass::PDI
+    )
+}
+
+/// Apply UAX #9 §3.4 rule **L2** to one line and return a logical-
+/// to-visual permutation.
+///
+/// The returned `Vec<usize>` has `levels.len()` entries; entry `v`
+/// is the logical index that should be displayed at visual
+/// position `v`. The caller (a renderer / line builder) walks the
+/// permutation in order and emits the glyphs of the corresponding
+/// logical characters left-to-right.
+///
+/// The algorithm is the spec's progressive-reversal procedure:
+///
+/// 1. Start with the identity permutation `[0, 1, ..., n - 1]`.
+/// 2. Find `max_level` (the largest entry of `levels`).
+/// 3. Find `lowest_odd_level` (the smallest odd entry of `levels`;
+///    if no odd level exists the line is wholly LTR and no
+///    reversal is needed).
+/// 4. For each iteration level `L = max_level, max_level - 1, ...,
+///    lowest_odd_level`, find every maximal contiguous run of
+///    positions whose original (pre-L1, but the §3.4 algorithm
+///    operates on the post-L1 vector here) level is `>= L`, and
+///    reverse the permutation entries in that range.
+///
+/// The progressive scan from the top down builds up the nested
+/// reversals shown in UAX #9 §3.4 Examples 1..4: a level-1 run
+/// inside a level-0 paragraph reverses once; a level-2 number
+/// embedded in a level-1 RTL run reverses once at level 2 (the
+/// digits go LTR within the embedding) and then again at level 1
+/// (the whole embedding goes RTL within the paragraph).
+///
+/// Returns the identity permutation when `levels` is empty.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::reorder_line;
+///
+/// // All-LTR line: identity.
+/// assert_eq!(reorder_line(&[0, 0, 0]), vec![0, 1, 2]);
+///
+/// // All-RTL line: full reverse.
+/// assert_eq!(reorder_line(&[1, 1, 1]), vec![2, 1, 0]);
+///
+/// // §3.4 Example 1: "car means CAR.", resolved levels
+/// // 00000000001110 — only the level-1 run "CAR" reverses.
+/// let lv = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0];
+/// let visual = reorder_line(&lv);
+/// // Positions 10..13 reverse to 12, 11, 10; trailing '.' stays.
+/// assert_eq!(visual, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 11, 10, 13]);
+/// ```
+#[must_use]
+pub fn reorder_line(levels: &[u8]) -> Vec<usize> {
+    let n = levels.len();
+    let mut visual: Vec<usize> = (0..n).collect();
+    if n == 0 {
+        return visual;
+    }
+    let max_level = *levels.iter().max().unwrap_or(&0);
+    let lowest_odd_level = levels
+        .iter()
+        .copied()
+        .filter(|l| l % 2 == 1)
+        .min()
+        .unwrap_or(u8::MAX);
+    if lowest_odd_level == u8::MAX {
+        // No odd levels: the whole line is LTR. L2's lower bound is
+        // the lowest odd level, so no iteration runs.
+        return visual;
+    }
+    // For each level from max down to lowest_odd_level, reverse
+    // every maximal contiguous run of positions whose level is
+    // `>= level`.
+    let mut level = max_level;
+    loop {
+        let mut i = 0;
+        while i < n {
+            if levels[i] >= level {
+                let mut j = i + 1;
+                while j < n && levels[j] >= level {
+                    j += 1;
+                }
+                visual[i..j].reverse();
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        if level == lowest_odd_level {
+            break;
+        }
+        // level >= lowest_odd_level >= 1, so the decrement is safe.
+        level -= 1;
+    }
+    visual
 }
 
 /// Split `text` into paragraphs at every character of class `B`
@@ -1931,5 +2155,269 @@ mod tests {
                 BidiClass::AN,
             ]
         );
+    }
+
+    // --- Section 8: L-rule line-level transformations -----------
+
+    #[test]
+    fn l1_segment_separator_resets_to_paragraph_level() {
+        // §3.4 case (1): an `S` (tab) inside an RTL paragraph
+        // resets to paragraph level 1, not whatever the I-rule
+        // pass left it at.
+        let cls = vec![BidiClass::R, BidiClass::S, BidiClass::R];
+        let mut lvl = vec![1, 2, 1];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn l1_paragraph_separator_resets_to_paragraph_level() {
+        // §3.4 case (2): a `B` at the end of an RTL line resets
+        // to paragraph level 1.
+        let cls = vec![BidiClass::R, BidiClass::R, BidiClass::B];
+        let mut lvl = vec![1, 1, 2];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn l1_whitespace_before_separator_resets() {
+        // §3.4 case (3): a WS run immediately preceding the
+        // separator is folded onto the paragraph level too.
+        let cls = vec![
+            BidiClass::R,
+            BidiClass::R,
+            BidiClass::WS,
+            BidiClass::WS,
+            BidiClass::S,
+        ];
+        let mut lvl = vec![1, 1, 2, 2, 2];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn l1_isolate_formatting_before_separator_resets() {
+        // §3.4 case (3): isolate-formatting characters (LRI / RLI
+        // / FSI / PDI) count alongside WS in the trailing-filler
+        // set.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::WS,
+            BidiClass::PDI,
+            BidiClass::LRI,
+            BidiClass::B,
+        ];
+        let mut lvl = vec![0, 1, 1, 1, 1];
+        reset_trailing_levels(&cls, &mut lvl, 0);
+        assert_eq!(lvl, vec![0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn l1_trailing_whitespace_at_end_of_line_resets() {
+        // §3.4 case (4): no separator, but trailing WS still
+        // resets to paragraph level.
+        let cls = vec![BidiClass::R, BidiClass::R, BidiClass::WS, BidiClass::WS];
+        let mut lvl = vec![1, 1, 2, 2];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn l1_leading_whitespace_is_left_alone() {
+        // §3.4 cases (3) + (4) target trailing fillers only;
+        // leading WS (without a separator behind it) keeps its
+        // I-rule level.
+        let cls = vec![BidiClass::WS, BidiClass::WS, BidiClass::R, BidiClass::R];
+        let mut lvl = vec![2, 2, 1, 1];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn l1_interior_whitespace_is_left_alone() {
+        // Whitespace surrounded by strong characters on both
+        // sides is neither case (3) (no following separator) nor
+        // case (4) (not at end of line). It keeps its I level.
+        let cls = vec![BidiClass::R, BidiClass::WS, BidiClass::R];
+        let mut lvl = vec![1, 2, 1];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn l1_empty_line_is_noop() {
+        let cls: Vec<BidiClass> = Vec::new();
+        let mut lvl: Vec<u8> = Vec::new();
+        reset_trailing_levels(&cls, &mut lvl, 0);
+        assert!(lvl.is_empty());
+    }
+
+    #[test]
+    fn l1_uses_original_classes_not_post_w_rules() {
+        // §3.4 normative note: "The types of characters used here
+        // are the *original* types, not those modified by the
+        // previous phase." Here the original is `B` (a paragraph
+        // separator); a W-rule pass cannot reach `B`, but L1 sees
+        // it directly through `orig_classes`.
+        let cls_orig = vec![BidiClass::R, BidiClass::R, BidiClass::B];
+        let mut lvl = vec![1, 1, 2];
+        reset_trailing_levels(&cls_orig, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn l1_multiple_separators_each_pull_their_preceding_whitespace() {
+        // Two `S`s on one line: each resets its preceding WS
+        // independently.
+        let cls = vec![
+            BidiClass::R,
+            BidiClass::WS,
+            BidiClass::S,
+            BidiClass::R,
+            BidiClass::WS,
+            BidiClass::S,
+        ];
+        let mut lvl = vec![1, 2, 2, 1, 2, 2];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "same length")]
+    fn l1_length_mismatch_panics() {
+        let cls = vec![BidiClass::L, BidiClass::L];
+        let mut lvl = vec![0];
+        reset_trailing_levels(&cls, &mut lvl, 0);
+    }
+
+    #[test]
+    fn l2_all_ltr_is_identity() {
+        assert_eq!(reorder_line(&[0, 0, 0, 0]), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn l2_empty_input_is_empty() {
+        let out = reorder_line(&[]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn l2_all_rtl_is_full_reverse() {
+        // Whole line at level 1: a single reversal flips it.
+        assert_eq!(reorder_line(&[1, 1, 1, 1]), vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn l2_uax9_example_1_car_means_car_dot() {
+        // §3.4 Example 1: "car means CAR." with resolved levels
+        // 00000000001110. Only the level-1 run reverses; the
+        // trailing '.' stays put.
+        let lv = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0];
+        let visual = reorder_line(&lv);
+        assert_eq!(visual, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 11, 10, 13]);
+    }
+
+    #[test]
+    fn l2_uax9_example_2_nested_level_1_and_2() {
+        // §3.4 Example 2: "<car MEANS CAR.=" resolved levels
+        // 0222111111111110 (16 chars). Pass at level 2 reverses
+        // the "rac" run (positions 1..4). Pass at level 1 reverses
+        // positions 1..15.
+        let lv = [0, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
+        let visual = reorder_line(&lv);
+        // After level-2 pass: identity except [1, 2, 3] -> [3, 2, 1].
+        // After level-1 pass: positions 1..15 reverse, so the
+        // final visual order is:
+        //   0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 1, 2, 3, 15
+        assert_eq!(
+            visual,
+            vec![0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 1, 2, 3, 15]
+        );
+    }
+
+    #[test]
+    fn l2_uax9_example_4_rtl_paragraph_deep_nesting() {
+        // §3.4 Example 4 (embedding level = 1) resolved levels
+        // 111111111111114222222222444333333333322111 — 42 chars.
+        let lv = [
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 0..13
+            2, 2, 2, 2, 2, 2, 2, 2, 2, 2, // 14..23
+            4, 4, 4, // 24..26
+            3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 27..36
+            2, 2, // 37..38
+            1, 1, 1, // 39..41
+        ];
+        // Reproduce the spec's display by stepping the algorithm
+        // by hand:
+        //   - level 4 pass: reverse [24..27]   ("rac" -> "car")
+        //   - level 3 pass: reverse [24..37]   (the bracketed RTL fragment)
+        //   - level 2 pass: reverse [14..39]   (the LTR-inside-RTL embedding)
+        //   - level 1 pass: reverse [0..42]    (the whole line)
+        let visual = reorder_line(&lv);
+        // After all four reversals, position 0 in visual order is
+        // logical index 41 (the final paragraph-level-1 char), and
+        // the algorithm should produce a strictly decreasing
+        // prefix [41, 40, 39] followed by the inner-embedding
+        // remap. Spot-check the head + tail:
+        assert_eq!(visual[0], 41);
+        assert_eq!(visual[1], 40);
+        assert_eq!(visual[2], 39);
+        assert_eq!(visual.last().copied(), Some(0));
+        // And the permutation must be a valid permutation of 0..42.
+        let mut sorted = visual.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..42).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn l2_output_is_always_a_permutation() {
+        // For any level vector the output must hit every index in
+        // 0..n exactly once. Sweep a small set of mixed shapes.
+        for lv in [
+            vec![0u8, 1, 0, 1],
+            vec![1, 0, 1, 0],
+            vec![0, 2, 1, 2, 0],
+            vec![3, 3, 1, 1, 3, 3],
+            vec![5, 4, 3, 2, 1, 0],
+            vec![0],
+            vec![1],
+            vec![0, 0, 0, 0, 0, 0, 0, 0],
+        ] {
+            let n = lv.len();
+            let visual = reorder_line(&lv);
+            assert_eq!(visual.len(), n);
+            let mut sorted = visual.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..n).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn l2_reverse_is_idempotent_when_applied_to_uniform_levels() {
+        // Reordering an already-uniform-level line a second time
+        // (by re-feeding the same level vector) would flip again —
+        // the permutation is not its own inverse for n > 2. Sanity
+        // check that the single application produces the expected
+        // shape rather than a stable identity by accident.
+        let lv = [1u8, 1, 1, 1, 1];
+        let visual = reorder_line(&lv);
+        assert_eq!(visual, vec![4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn l1_then_l2_pipeline_trailing_space_in_rtl_paragraph() {
+        // End-to-end mini-pipeline: L1 anchors trailing WS to the
+        // paragraph level, then L2 reorders. With RTL text "AB " in
+        // an RTL paragraph the displayed order should still have
+        // the space on the visual left edge (paragraph-direction
+        // tail) of the run.
+        let cls = vec![BidiClass::R, BidiClass::R, BidiClass::WS];
+        let mut lvl = vec![1, 1, 2];
+        reset_trailing_levels(&cls, &mut lvl, 1);
+        assert_eq!(lvl, vec![1, 1, 1]);
+        let visual = reorder_line(&lvl);
+        // All level 1 → full reverse. Visual order: WS, B, A.
+        assert_eq!(visual, vec![2, 1, 0]);
     }
 }

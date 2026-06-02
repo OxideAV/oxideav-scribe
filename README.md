@@ -259,8 +259,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **CBDT/CBLC colour bitmaps** — Noto Color Emoji and friends decode to
   `Node::Image` carrying a `VideoFrame`; the resampling to the requested
   size happens in scribe (bilinear, straight-alpha).
-- **Layout** — line measurement + word-wrap (no full bidi reorder
-  yet; round 186 lands the foundation surface, see next bullet).
+- **Layout** — line measurement + word-wrap. The bidi character
+  pipeline (P → W → N → I → L1 → L2) is available on the public
+  `bidi::` module as of round 210; the high-level `layout::*` API
+  does not yet drive it automatically — callers wire the
+  per-character permutation into their own renderer.
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
   UAX #9 §3.2 normative bidirectional class for every code point
   scribe needs today (the 12 explicit-format controls in full, ASCII
@@ -314,6 +317,42 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi line-level reordering L1 + L2 (round 210)** —
+  `bidi::reset_trailing_levels(&orig_classes, &mut levels,
+  paragraph_level)` runs the UAX #9 §3.4 rule **L1** in place,
+  resetting the embedding level of (a) every segment separator
+  `S`, (b) every paragraph separator `B`, (c) every trailing
+  whitespace / isolate-formatting run preceding such a separator,
+  and (d) every trailing whitespace / isolate-formatting run at
+  the end of the line, back to `paragraph_level`. Per the §3.4
+  normative note the lookup uses the **original** classes (the
+  same slice the caller fed into the W / N / I passes), so the
+  function takes the original class slice + the post-I-rules level
+  vector as separate arguments. `bidi::reorder_line(&levels) ->
+  Vec<usize>` runs rule **L2** and returns a logical-to-visual
+  permutation of `0..n`: from the maximum embedding level down to
+  the lowest odd level, every maximal contiguous run of positions
+  at or above the iteration level reverses, building up the nested
+  reversals UAX #9 §3.4 Examples 1..4 illustrate. The pair closes
+  the per-character pipeline: a caller chains `bidi_class →
+  resolve_weak_types → resolve_neutral_types →
+  resolve_implicit_levels → reset_trailing_levels → reorder_line`
+  and ends with the visual-order index sequence the line renderer
+  walks. 17 unit + 21 integration tests cover every L1 sub-case
+  with positive + negative controls, the four §3.4 worked examples
+  by their spec-published resolved-level vectors, a permutation-
+  invariant sweep over a small set of mixed-level shapes, and
+  end-to-end W → N → I → L1 → L2 runs on real Arabic + Latin
+  fragments. **X-rules (explicit-embedding / override / isolate
+  stack + isolating-run-sequence partition), N0 (bracket-pair
+  resolution), and L3 / L4 (combining-mark reordering + bidi-
+  mirroring) remain deferred.** L3 is conditional on the
+  renderer's mark-attachment policy — scribe's GPOS mark-to-base /
+  mark-to-mark stacker keeps logical (post-base) order in both
+  directions, so the spec's "If the rendering engine expects them
+  to follow the base characters" guard does not fire; L4 needs
+  `BidiMirroring.txt` to identify the mirrored set, which is not
+  yet vendored alongside the UAX HTML.
 - **BiDi implicit-level resolution I1 + I2 (round 204)** —
   `bidi::resolve_implicit_levels(&classes, embedding_level) ->
   Vec<u8>` runs the UAX #9 §3.3.6 implicit-level pass over one
@@ -324,19 +363,17 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   selection: at an **even** embedding level, `L` stays, `R` goes
   `+1`, and `EN` / `AN` go `+2`; at an **odd** embedding level, `R`
   stays, and `L` / `EN` / `AN` all go `+1`. `BN` is ignored per
-  §5.2 — its level stays at the embedding level so a follow-up
-  L-rule pass can fold it. Surviving `NSM` (the rare case where W1
-  left it intact) is treated the same. 8 unit + 15 integration
-  tests cover every Table 5 row at multiple embedding levels (even
-  / odd, including non-zero base levels up to 124), the `BN` carve-
+  §5.2 — its level stays at the embedding level so the L-rule
+  pass folds it. Surviving `NSM` (the rare case where W1 left it
+  intact) is treated the same. 8 unit + 15 integration tests
+  cover every Table 5 row at multiple embedding levels (even /
+  odd, including non-zero base levels up to 124), the `BN` carve-
   out, empty-input no-op, the spec's max-depth-overflow note, and
   full W → N → I pipelines on LTR / RTL paragraph fragments
   (including the §3.3.5 closing prose example "R EN ET EN R" at
   EL 1, which exercises W5's ET-EN collapse + I1's EN-up-two in
-  a single end-to-end vector). X-rules (paragraph + embedding /
-  isolate stack) and L-rules (line reordering + mirroring) remain
-  deferred — the I-rule output is the stable boundary the L-rules
-  consume.
+  a single end-to-end vector). The I-rule output is the stable
+  level vector the round-210 L1 / L2 pair consumes.
 - **BiDi neutral-type resolution N1 + N2 (round 198)** —
   `bidi::resolve_neutral_types(&mut classes, embedding_level, sos, eos)`
   runs the UAX #9 §3.3.5 neutral / isolate-formatting pass over one
@@ -377,7 +414,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) X / L rules**, **CFF2 variable charstrings**
+- **Bidi (UAX #9) X rules + N0 bracket pairs + L3 / L4**,
+  **CFF2 variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD

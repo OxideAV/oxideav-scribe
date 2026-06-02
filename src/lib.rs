@@ -99,8 +99,18 @@
 //!   §3.3.6 implicit-level pass (rules I1 + I2): every character's
 //!   resolved type drives a per-character level adjustment per
 //!   UAX #9 Table 5 (L stays at even, R goes +1; AN / EN go +2;
-//!   under odd, L / EN / AN all go +1). The bracket-pair rule N0
-//!   and the X / L rules are deferred to follow-up rounds.
+//!   under odd, L / EN / AN all go +1). Round 210 lands the §3.4
+//!   line-level pair: `bidi::reset_trailing_levels(orig_classes,
+//!   levels, paragraph_level)` is rule **L1** (separator + trailing
+//!   whitespace + isolate-formatting characters reset back to the
+//!   paragraph embedding level using the *original* class slice
+//!   per §3.4) and `bidi::reorder_line(levels) -> Vec<usize>` is
+//!   rule **L2** (the progressive top-down reversal that produces
+//!   a logical-to-visual permutation a renderer walks to emit
+//!   glyphs in display order). The bracket-pair rule N0, the X
+//!   rules (explicit embedding / override / isolate stack
+//!   machinery + isolating-run-sequence partition), and the L3 /
+//!   L4 mirroring rules are deferred to follow-up rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -119,8 +129,8 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, paragraph_level, resolve_implicit_levels, resolve_neutral_types,
-    resolve_weak_types, split_paragraphs, BidiClass,
+    bidi_class, paragraph_level, reorder_line, reset_trailing_levels, resolve_implicit_levels,
+    resolve_neutral_types, resolve_weak_types, split_paragraphs, BidiClass,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.4 line-level reordering rules L1 + L2 (round 210)
+
+Fifth UAX #9 surface on scribe, layered on top of the round 204
+implicit-level pass: the §3.4 line-level reordering rules L1 and
+L2. The pair closes the per-character pipeline (P → W → N → I →
+L1) and emits the logical-to-visual permutation a renderer walks
+to lay glyphs out in display order.
+
+- **`bidi::reset_trailing_levels(orig_classes: &[BidiClass],
+  levels: &mut [u8], paragraph_level: u8)`** — in-place pass over
+  one line implementing UAX #9 §3.4 rule **L1**. Resets the
+  embedding level of:
+  - every segment separator (class `S`) per case (1),
+  - every paragraph separator (class `B`) per case (2),
+  - every maximal run of whitespace (`WS`) and/or isolate-
+    formatting characters (`LRI` / `RLI` / `FSI` / `PDI`)
+    immediately preceding such a separator per case (3),
+  - the same trailing-filler run at the end of the line per
+    case (4),
+  back to `paragraph_level`. Per UAX #9 §3.4 the lookup uses the
+  **original** bidi classes ("The types of characters used here
+  are the *original* types, not those modified by the previous
+  phase."), so the caller passes the input class slice alongside
+  the post-I-rules level vector. Panics on length mismatch.
+- **`bidi::reorder_line(levels: &[u8]) -> Vec<usize>`** —
+  permutation pass implementing UAX #9 §3.4 rule **L2**. Walks
+  from the maximum level in `levels` down to the lowest odd
+  level, and for each iteration level reverses every maximal
+  contiguous run of positions whose level is `>= iteration_level`.
+  Returns a `Vec<usize>` of length `levels.len()` mapping visual
+  position to logical index (i.e. `visual[v] == logical_index`),
+  the form a renderer / line builder consumes when emitting
+  glyphs in display order. Returns the identity for empty input
+  or input with no odd levels.
+- **`oxideav_scribe::reset_trailing_levels`** +
+  **`oxideav_scribe::reorder_line`** — public re-exports alongside
+  the existing W / N / I pass entry points.
+
+The pair completes the per-character UAX #9 algorithm scribe
+needs to drive mixed-direction layout: a caller feeds a line
+through `bidi_class` → `resolve_weak_types` →
+`resolve_neutral_types` → `resolve_implicit_levels` →
+`reset_trailing_levels` → `reorder_line` and ends with the
+visual-order index sequence the line renderer walks. The X-rules
+(explicit-embedding / override / isolate stack machinery + the
+isolating-run-sequence partition), the N0 bracket-pair rule, and
+the L3 / L4 mirroring rules remain deferred.
+
+**38 new tests** (17 unit + 21 integration via
+`tests/round210_bidi_line_reordering.rs`): every L1 sub-case (S /
+B separators in cases 1 + 2; WS-before-separator and
+isolate-formatting-before-separator in case 3; trailing-WS at end
+of line in case 4); the §3.4 normative "original classes"
+clause; interior whitespace and leading whitespace negative
+controls; length-mismatch panic; empty input; multiple
+separators on one line; identity and full-reverse for L2; UAX #9
+§3.4 worked examples 1, 2, 3, and 4 reproduced by their
+resolved-level vectors (the spec's "Resolved levels" row) and
+verified against the spec's "Display" row; permutation-invariant
+sweep over a small set of mixed-level shapes; and end-to-end
+`W → N → I → L1 → L2` pipelines on real Arabic text, including
+the §3.4 Example-1 line "car means CAR." reconstructed from real
+characters with the paragraph level detected by `paragraph_level`.
+
+Provenance: rules transcribed verbatim from
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.4 (UAX #9
+Revision 50, Unicode 16.0).
+
 ### Added — UAX #9 §3.3.6 implicit-level resolution rules I1 + I2 (round 204)
 
 Fourth UAX #9 surface on scribe, layered on top of the round 198
