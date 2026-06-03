@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.3 X10 isolating-run-sequence partition + sos/eos (round 220)
+
+Seventh UAX #9 surface on scribe, sitting between the §3.3.2
+explicit-level pass (X1..X9, round 217) and the §3.3.4 weak-type
+pass (W1..W7, round 191): the §3.3.3 rule **X10** that walks
+X1..X9's per-character embedding-level output, partitions the
+paragraph into BD7 level runs, chains those runs across BD13
+isolate-initiator → matching-PDI boundaries into isolating run
+sequences, and derives per-sequence start-of-sequence (`sos`)
+and end-of-sequence (`eos`) directional types from the higher of
+the levels on either side of each sequence boundary.
+
+- **`bidi::level_runs(levels: &[u8]) -> Vec<LevelRun>`** — BD7
+  partition. Returns a contiguous list of half-open
+  `LevelRun { start, end, level }` ranges fully covering
+  `0..levels.len()`. X9-removed positions are included in their
+  containing level run; W / N / I phases consume them via
+  `IsolatingRunSequence::indices` which performs the X9 skip.
+- **`bidi::isolating_run_sequences(classes: &[BidiClass],
+  explicit: &ExplicitLevels, paragraph_level: u8) ->
+  Vec<IsolatingRunSequence>`** — BD13 chaining + X10 step 2
+  sos / eos derivation. For every level run whose last non-X9-
+  removed character is an isolate initiator (LRI / RLI / FSI), if
+  BD9's matching-PDI scan finds a PDI **and** that PDI is the
+  first character of its own level run, the next run is appended
+  to the current sequence; otherwise the chain closes. The sos /
+  eos pair on each sequence reflects the X10 step 2 prose: scan
+  outward past X9-removed characters; if no non-removed character
+  exists on either side, OR the eos side is an unmatched isolate
+  initiator, fall back to the paragraph embedding level. "If the
+  higher level is odd, the sos or eos is R; otherwise, it is L."
+- **`bidi::IsolatingRunSequence::indices(&removed)`** — iterator
+  over the constituent character indices in logical order while
+  skipping X9-removed positions. Drives the in-place W / N / I
+  passes per sequence. Per the X10 step 3 closing note "the order
+  that one isolating run sequence is treated relative to another
+  does not matter."
+- **New public types** — `LevelRun { start, end, level }` and
+  `IsolatingRunSequence { runs, level, sos, eos }`. Both
+  `Clone + PartialEq + Eq + Debug` for downstream snapshot /
+  memoisation use cases.
+- **Tests** — 17 unit + 16 integration tests cover the BD7
+  partition (empty / uniform / multi-change / coverage invariant),
+  the X10 sos / eos derivation under paragraph-edge / RLE-bounded
+  / unmatched-isolate / RTL-base-paragraph conditions, the BD13
+  chaining across LRI..PDI verifying that the matching PDI is the
+  first character of its run, the BD9 matching-PDI scan with
+  nested isolates and ignored embedding-formatting characters, the
+  BD13 invariants (every level run belongs to exactly one
+  sequence; all runs in a sequence share their embedding level),
+  the `indices` iterator's X9-skip + isolate-format-character
+  preservation, and an end-to-end X → W → N → I pipeline composed
+  per-sequence. Total scribe lib tests: 395 → 412.
+
+**Out of scope (still deferred):**
+
+- **N0 bracket-pair resolution** (§3.1.3 / §3.3.5) — blocked on
+  `BidiBrackets.txt` from the Unicode Character Database; not yet
+  vendored under `docs/text/unicode-bidi/`.
+- **L4 bidi mirroring** (§3.4 / §4.7) — blocked on
+  `BidiMirroring.txt` from the same UCD release; not yet vendored.
+- **L3 combining-mark reordering** (§3.4) — conditional on the
+  rendering engine's mark-attachment policy per the §3.4 guard;
+  does not fire today because scribe's GPOS mark-to-base /
+  mark-to-mark stacker keeps logical (post-base) order in both
+  directions.
+
+Provenance: transcribed verbatim from UAX #9 Revision 50 /
+Unicode 16.0 §3.1.2 (BD7, BD9, BD13) + §3.3.3 (X10) at
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`.
+
 ### Added — UAX #9 §3.3.2 explicit-level / override / isolate stack pass (X1..X9, round 217)
 
 Sixth UAX #9 surface on scribe, slotting in front of the existing

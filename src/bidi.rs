@@ -106,12 +106,14 @@
 //!   Unicode `BidiBrackets.txt` data file to identify opening /
 //!   closing paired brackets, which is not yet vendored under
 //!   `docs/`.
-//! - X10 (the isolating-run-sequence partition built on top of
-//!   X1..X9's per-character levels per BD13). X1..X9 are now
-//!   implemented in [`resolve_explicit_levels`]; X10 takes the
-//!   resulting level vector and walks BD13's "step through the
-//!   paragraph, gathering level runs into sequences across
-//!   isolate-initiator / matching-PDI boundaries" loop.
+//! - X10 isolating-run-sequence partition + sos/eos derivation are
+//!   now implemented in [`level_runs`] (BD7) and
+//!   [`isolating_run_sequences`] (BD13 + X10 step 2). Callers feed
+//!   the result of [`resolve_explicit_levels`] in; each returned
+//!   [`IsolatingRunSequence`] carries the constituent level-run
+//!   ranges, the per-sequence embedding level, and the sos / eos
+//!   directional types W1..W7 / N0..N2 / I1..I2 consume at the
+//!   sequence boundaries.
 //! - L3 (combining-mark reordering for RTL bases). The rule is
 //!   conditional on the rendering engine's mark-attachment policy
 //!   per UAX #9 §3.4: "If the rendering engine expects them to
@@ -1742,6 +1744,467 @@ pub fn split_paragraphs(text: &str) -> Vec<&str> {
     out
 }
 
+/// A maximal substring of characters that share an embedding level
+/// per UAX #9 **BD7** (§3.1.2).
+///
+/// `start` is the index of the first character in the run; `end` is
+/// one past the last character (half-open, matching `Range<usize>`
+/// idioms). Both indices refer back into the level vector returned
+/// by [`resolve_explicit_levels`] (and therefore the underlying
+/// `classes` slice the caller fed to that function — they are the
+/// same length).
+///
+/// X9-removed positions (RLE / LRE / RLO / LRO / PDF / BN) are
+/// **included** in their containing level run — BD7 partitions on
+/// assigned embedding level, not on removal status. The implicit
+/// phases (W / N / I) walk runs via [`IsolatingRunSequence::indices`]
+/// which skips removed positions per the X9 "behave as though the
+/// characters were not present" clause.
+///
+/// Provenance: BD7 transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.1.2
+/// (UAX #9 Revision 50, Unicode 16.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelRun {
+    /// First character index in the run (inclusive).
+    pub start: usize,
+    /// One past the last character index in the run (exclusive).
+    pub end: usize,
+    /// Embedding level shared by every character in the run.
+    pub level: u8,
+}
+
+impl LevelRun {
+    /// Length of the run in character positions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// `true` iff [`Self::len`] is zero.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.end == self.start
+    }
+}
+
+/// Compute the **BD7 level-run partition** of a paragraph from the
+/// per-character level vector produced by [`resolve_explicit_levels`].
+///
+/// A level run is a maximal substring of characters that have the
+/// same embedding level (BD7). The output is the level-run list in
+/// logical-order; concatenating their `start..end` ranges covers
+/// `0..levels.len()` with no overlap or gap.
+///
+/// `levels.len()` must equal the paragraph's character count (it
+/// always does when obtained from [`resolve_explicit_levels`]).
+/// For the empty input the output is empty.
+///
+/// Provenance: BD7 (§3.1.2). The function is the prerequisite for
+/// X10 / BD13 ([`isolating_run_sequences`]).
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::level_runs;
+///
+/// // Uniform-level paragraph collapses to one run.
+/// let runs = level_runs(&[0, 0, 0, 0]);
+/// assert_eq!(runs.len(), 1);
+/// assert_eq!((runs[0].start, runs[0].end, runs[0].level), (0, 4, 0));
+///
+/// // A level change splits the partition cleanly: levels
+/// // [0, 1, 1, 0, 0] → (0..1, 0), (1..3, 1), (3..5, 0).
+/// let runs = level_runs(&[0, 1, 1, 0, 0]);
+/// assert_eq!(runs.len(), 3);
+/// assert_eq!((runs[0].start, runs[0].end, runs[0].level), (0, 1, 0));
+/// assert_eq!((runs[1].start, runs[1].end, runs[1].level), (1, 3, 1));
+/// assert_eq!((runs[2].start, runs[2].end, runs[2].level), (3, 5, 0));
+/// ```
+#[must_use]
+pub fn level_runs(levels: &[u8]) -> Vec<LevelRun> {
+    let mut out = Vec::new();
+    let n = levels.len();
+    if n == 0 {
+        return out;
+    }
+    let mut start = 0usize;
+    let mut cur = levels[0];
+    for (i, &lvl) in levels.iter().enumerate().skip(1) {
+        if lvl != cur {
+            out.push(LevelRun {
+                start,
+                end: i,
+                level: cur,
+            });
+            start = i;
+            cur = lvl;
+        }
+    }
+    out.push(LevelRun {
+        start,
+        end: n,
+        level: cur,
+    });
+    out
+}
+
+/// One isolating run sequence per UAX #9 **BD13** + **X10** (§3.1.2,
+/// §3.3.3).
+///
+/// An isolating run sequence is a maximal sequence of level runs
+/// chained across matched isolate-initiator → PDI boundaries (BD13).
+/// All level runs in a sequence share the same embedding level (BD13
+/// note: "Thus, all the level runs in an isolating run sequence have
+/// the same embedding level."). The W1..W7 / N0..N2 / I1..I2 implicit
+/// phases run **once per sequence** treating "the last character of
+/// each level run in the isolating run sequence is treated as if it
+/// were immediately followed by the first character in the next
+/// level run in the sequence" per X10 step 3.
+///
+/// Fields:
+///
+/// - `runs` — the constituent level runs in logical order. Always
+///   non-empty: a sequence has at least one run.
+/// - `level` — the shared embedding level.
+/// - `sos`, `eos` — the start-of-sequence and end-of-sequence
+///   directional types (`L` or `R`) per X10 step 2, derived from
+///   the *higher* of the two levels on either side of the sequence
+///   boundary (the paragraph embedding level if the boundary lies
+///   at paragraph edge or at an isolate initiator with no matching
+///   PDI). `R` iff the higher level is odd; `L` otherwise. These
+///   are the `sos` / `eos` arguments the existing
+///   [`resolve_weak_types`] / [`resolve_neutral_types`] surface
+///   expects.
+///
+/// Provenance: BD13 and X10 transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.1.2 +
+/// §3.3.3 (UAX #9 Revision 50, Unicode 16.0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsolatingRunSequence {
+    /// Constituent level runs in logical (paragraph) order. Always
+    /// `len() >= 1`.
+    pub runs: Vec<LevelRun>,
+    /// Shared embedding level across every run in the sequence.
+    pub level: u8,
+    /// Start-of-sequence directional type per X10 step 2. Always
+    /// `BidiClass::L` or `BidiClass::R`.
+    pub sos: BidiClass,
+    /// End-of-sequence directional type per X10 step 2. Always
+    /// `BidiClass::L` or `BidiClass::R`.
+    pub eos: BidiClass,
+}
+
+impl IsolatingRunSequence {
+    /// Iterator over the character indices belonging to this
+    /// sequence, in logical order, **skipping X9-removed positions**.
+    ///
+    /// `removed` is the parallel slice returned by
+    /// [`resolve_explicit_levels`] (`ExplicitLevels::removed`). The
+    /// returned iterator walks every run in `self.runs` and yields
+    /// each index `i` where `removed[i] == false`. The result is
+    /// the in-order character index list the W / N / I phases
+    /// consume per X9's "behave as though the characters were not
+    /// present" clause.
+    ///
+    /// Panics if `removed.len()` is smaller than any run's `end`.
+    pub fn indices<'a>(&'a self, removed: &'a [bool]) -> impl Iterator<Item = usize> + 'a {
+        self.runs
+            .iter()
+            .flat_map(move |r| (r.start..r.end).filter(move |&i| !removed[i]))
+    }
+}
+
+/// Convert a higher-of-two embedding levels into an sos / eos
+/// directional type per UAX #9 X10 step 2: "If the higher level is
+/// odd, the sos or eos is R; otherwise, it is L."
+fn level_to_sos_eos(level: u8) -> BidiClass {
+    if level % 2 == 0 {
+        BidiClass::L
+    } else {
+        BidiClass::R
+    }
+}
+
+/// Find the index of the matching PDI for the isolate initiator at
+/// `start` per UAX #9 **BD9** (§3.1.2).
+///
+/// `classes` is the original (pre-X9, pre-override) class slice (the
+/// same input fed to [`resolve_explicit_levels`]). Returns `Some(j)`
+/// where `j > start` is the index of the matching PDI; returns
+/// `None` if no matching PDI exists (the isolate initiator is
+/// unbalanced).
+///
+/// Note: BD9 only counts isolate initiators (LRI / RLI / FSI) and
+/// PDIs — every other formatting character is ignored. The depth
+/// limit (MAX_DEPTH overflow during X1..X9) is **not** considered
+/// at this layer per BD9's closing note "this algorithm assigns a
+/// matching PDI (or lack of one) to an isolate initiator whether
+/// the isolate initiator raises the embedding level or is prevented
+/// from doing so by the depth limit."
+fn matching_pdi(classes: &[BidiClass], start: usize) -> Option<usize> {
+    let mut counter: i32 = 1;
+    for (offset, cls) in classes.iter().enumerate().skip(start + 1) {
+        match cls {
+            BidiClass::LRI | BidiClass::RLI | BidiClass::FSI => counter += 1,
+            BidiClass::PDI => {
+                counter -= 1;
+                if counter == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Compute the **isolating-run-sequence partition** of a paragraph
+/// per UAX #9 **X10** (§3.3.3), with `sos` and `eos` directional
+/// types attached per X10 step 2.
+///
+/// `classes` is the original per-character [`BidiClass`] slice fed
+/// to [`resolve_explicit_levels`]; `explicit` is its return value;
+/// `paragraph_level` is the paragraph embedding level (the same
+/// value passed to [`resolve_explicit_levels`]).
+///
+/// Output is a vector of [`IsolatingRunSequence`] in deterministic
+/// order (each sequence in the order its first level run begins in
+/// the paragraph). Every level run in the paragraph belongs to
+/// exactly one sequence (BD13 note). The implicit phases run
+/// independently on each sequence (X10 step 3 closing note: "The
+/// order that one isolating run sequence is treated relative to
+/// another does not matter.").
+///
+/// The X10 step 2 sos / eos derivation uses the **higher** of the
+/// levels on either side of the sequence boundary, **skipping
+/// X9-removed characters** when looking outward. At a sequence
+/// boundary lying at paragraph edge, OR at an isolate initiator
+/// with no matching PDI (the eos side), the paragraph embedding
+/// level is used as the other side.
+///
+/// Provenance: X10 + BD13 transcribed verbatim from
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.1.2 +
+/// §3.3.3 (UAX #9 Revision 50, Unicode 16.0).
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{
+///     bidi_class, isolating_run_sequences, level_runs, paragraph_level,
+///     resolve_explicit_levels, BidiClass,
+/// };
+///
+/// // Simple paragraph with no formatting: "abc" — one sequence,
+/// // one level run, sos = eos = L (paragraph level 0).
+/// let s = "abc";
+/// let cls: Vec<_> = s.chars().map(bidi_class).collect();
+/// let pl = paragraph_level(s);
+/// let out = resolve_explicit_levels(&cls, pl);
+/// let seqs = isolating_run_sequences(&cls, &out, pl);
+/// assert_eq!(seqs.len(), 1);
+/// assert_eq!(seqs[0].sos, BidiClass::L);
+/// assert_eq!(seqs[0].eos, BidiClass::L);
+/// assert_eq!(seqs[0].level, 0);
+/// assert_eq!(seqs[0].runs.len(), 1);
+///
+/// // Two RLE-bounded level runs chain into separate sequences:
+/// // L RLE L PDF L — runs [0..1] @ 0, [1..3] @ 1, [3..5] @ 0.
+/// // No isolate initiators, so each run is its own sequence.
+/// let cls = vec![
+///     BidiClass::L,
+///     BidiClass::RLE,
+///     BidiClass::L,
+///     BidiClass::PDF,
+///     BidiClass::L,
+/// ];
+/// let out = resolve_explicit_levels(&cls, 0);
+/// let seqs = isolating_run_sequences(&cls, &out, 0);
+/// assert_eq!(seqs.len(), 3);
+/// // First sequence: level 0, sos L (paragraph), eos L (next run
+/// // is level 1 > 0, so the higher is 1 → R).
+/// assert_eq!(seqs[0].level, 0);
+/// assert_eq!(seqs[0].sos, BidiClass::L);
+/// assert_eq!(seqs[0].eos, BidiClass::R);
+/// // Middle sequence: level 1, sos = eos = R.
+/// assert_eq!(seqs[1].level, 1);
+/// assert_eq!(seqs[1].sos, BidiClass::R);
+/// assert_eq!(seqs[1].eos, BidiClass::R);
+/// // Last sequence: level 0, sos R (higher of 1 vs 0), eos L
+/// // (paragraph edge).
+/// assert_eq!(seqs[2].level, 0);
+/// assert_eq!(seqs[2].sos, BidiClass::R);
+/// assert_eq!(seqs[2].eos, BidiClass::L);
+/// ```
+#[must_use]
+pub fn isolating_run_sequences(
+    classes: &[BidiClass],
+    explicit: &ExplicitLevels,
+    paragraph_level: u8,
+) -> Vec<IsolatingRunSequence> {
+    let runs = level_runs(&explicit.levels);
+    if runs.is_empty() {
+        return Vec::new();
+    }
+
+    // For each level run, record the index of the matching-PDI
+    // level run, if the run ends with an isolate initiator. The
+    // "level run containing the matching PDI" indirection is BD13
+    // step 2: "append the level run containing the matching PDI to
+    // the sequence. (Note that this matching PDI must be the first
+    // character of its level run.)"
+    //
+    // We also record the "first-char is PDI matching some prior
+    // isolate" flag — runs starting with such a PDI may NOT seed a
+    // new sequence (BD13 step "For each level run ... whose first
+    // character is not a PDI, or is a PDI that does not match any
+    // isolate initiator").
+
+    // Map: character index → index of the level run containing it.
+    let mut run_of_index = vec![0usize; explicit.levels.len()];
+    for (ri, r) in runs.iter().enumerate() {
+        for slot in &mut run_of_index[r.start..r.end] {
+            *slot = ri;
+        }
+    }
+
+    let nruns = runs.len();
+    // For each run, the index of the run holding the matching PDI
+    // (if its last char is an isolate initiator with a matching
+    // PDI). None otherwise.
+    let mut next_run: Vec<Option<usize>> = vec![None; nruns];
+    // For each run, true iff its first char is a PDI that DOES
+    // match some isolate initiator earlier in the paragraph (i.e.
+    // the run is chained to from somewhere). Such runs cannot seed
+    // a sequence; they are only appended to one.
+    let mut chained_from_prior: Vec<bool> = vec![false; nruns];
+
+    for (ri, r) in runs.iter().enumerate() {
+        // Walk the run's last character (skipping X9-removed
+        // positions, since BD13 talks about characters and X9
+        // says removed characters "behave as though [they] were
+        // not present"). We need the last *non-removed* index.
+        let mut last_idx: Option<usize> = None;
+        for i in (r.start..r.end).rev() {
+            if !explicit.removed[i] {
+                last_idx = Some(i);
+                break;
+            }
+        }
+        let Some(last) = last_idx else {
+            continue;
+        };
+        // BD13 chains across isolate-initiator → matching-PDI only.
+        if matches!(
+            classes[last],
+            BidiClass::LRI | BidiClass::RLI | BidiClass::FSI
+        ) {
+            if let Some(pdi_idx) = matching_pdi(classes, last) {
+                let pdi_run = run_of_index[pdi_idx];
+                // BD13's parenthetical note: "this matching PDI
+                // must be the first character of its level run".
+                // Confirm — if not, the chain breaks and we skip.
+                if runs[pdi_run].start == pdi_idx {
+                    next_run[ri] = Some(pdi_run);
+                    chained_from_prior[pdi_run] = true;
+                }
+            }
+        }
+    }
+
+    // Build the sequences. For each run that may seed a sequence
+    // (not chained_from_prior), walk next_run links until None.
+    let mut sequences: Vec<IsolatingRunSequence> = Vec::with_capacity(nruns);
+    let mut visited: Vec<bool> = vec![false; nruns];
+    for seed in 0..nruns {
+        if chained_from_prior[seed] || visited[seed] {
+            continue;
+        }
+        let mut chain: Vec<LevelRun> = Vec::new();
+        let mut cur = Some(seed);
+        while let Some(idx) = cur {
+            if visited[idx] {
+                // Defensive: BD13 partitions exactly, so we never
+                // visit a run twice. Break if we hit a cycle.
+                break;
+            }
+            visited[idx] = true;
+            chain.push(runs[idx]);
+            cur = next_run[idx];
+        }
+        debug_assert!(!chain.is_empty(), "BD13 seed produces non-empty chain");
+
+        // X10 step 2: sos uses the *higher* of (level of first
+        // char in sequence, level of preceding non-removed char in
+        // paragraph), where "preceding non-removed char" falls back
+        // to the paragraph embedding level. eos uses the *higher*
+        // of (level of last char in sequence, level of following
+        // non-removed char in paragraph), with two fallbacks to
+        // paragraph level: (a) paragraph edge, (b) last char of
+        // the last run is an isolate initiator with no matching
+        // PDI.
+        let level = chain[0].level;
+        let first_idx = chain[0].start;
+        let last_idx = chain.last().unwrap().end - 1;
+
+        // Walk backwards from first_idx-1 to skip removed chars.
+        let mut sos_other = paragraph_level;
+        for i in (0..first_idx).rev() {
+            if !explicit.removed[i] {
+                sos_other = explicit.levels[i];
+                break;
+            }
+        }
+        let sos_level = sos_other.max(level);
+
+        // Determine eos other-side: forward from last_idx+1.
+        // First, decide whether the eos side is governed by the
+        // paragraph fallback. Spec triggers: (a) no following
+        // non-removed char in paragraph, (b) last char of last run
+        // is an isolate initiator lacking a matching PDI.
+        let mut eos_fallback = false;
+        // Find last non-removed char in the last run.
+        let mut last_run_last_nonremoved: Option<usize> = None;
+        for i in (chain.last().unwrap().start..chain.last().unwrap().end).rev() {
+            if !explicit.removed[i] {
+                last_run_last_nonremoved = Some(i);
+                break;
+            }
+        }
+        if let Some(j) = last_run_last_nonremoved {
+            if matches!(classes[j], BidiClass::LRI | BidiClass::RLI | BidiClass::FSI)
+                && matching_pdi(classes, j).is_none()
+            {
+                eos_fallback = true;
+            }
+        }
+        let mut eos_other = paragraph_level;
+        if !eos_fallback {
+            let mut found = false;
+            for i in (last_idx + 1)..explicit.levels.len() {
+                if !explicit.removed[i] {
+                    eos_other = explicit.levels[i];
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                eos_other = paragraph_level;
+            }
+        }
+        let eos_level = eos_other.max(level);
+
+        sequences.push(IsolatingRunSequence {
+            runs: chain,
+            level,
+            sos: level_to_sos_eos(sos_level),
+            eos: level_to_sos_eos(eos_level),
+        });
+    }
+
+    sequences
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3273,5 +3736,371 @@ mod tests {
     fn x_rules_max_depth_constant_is_125() {
         // BD2: max_depth = 125, guaranteed stable.
         assert_eq!(MAX_DEPTH, 125);
+    }
+
+    // --- Section: BD7 level-run partition ----------------------
+
+    #[test]
+    fn level_runs_empty_input_returns_empty() {
+        assert!(level_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn level_runs_single_level_collapses_to_one_run() {
+        let runs = level_runs(&[0, 0, 0]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!((runs[0].start, runs[0].end, runs[0].level), (0, 3, 0));
+        assert_eq!(runs[0].len(), 3);
+        assert!(!runs[0].is_empty());
+    }
+
+    #[test]
+    fn level_runs_split_on_level_change() {
+        // [0, 0, 1, 1, 1, 0, 2] → (0..2, 0), (2..5, 1), (5..6, 0), (6..7, 2).
+        let runs = level_runs(&[0, 0, 1, 1, 1, 0, 2]);
+        assert_eq!(runs.len(), 4);
+        assert_eq!((runs[0].start, runs[0].end, runs[0].level), (0, 2, 0));
+        assert_eq!((runs[1].start, runs[1].end, runs[1].level), (2, 5, 1));
+        assert_eq!((runs[2].start, runs[2].end, runs[2].level), (5, 6, 0));
+        assert_eq!((runs[3].start, runs[3].end, runs[3].level), (6, 7, 2));
+    }
+
+    #[test]
+    fn level_runs_cover_input_exactly() {
+        // Concatenated ranges fully cover [0, n) without overlap.
+        let levels = [0, 0, 1, 0, 1, 1, 0];
+        let runs = level_runs(&levels);
+        let mut expect_next = 0;
+        for r in &runs {
+            assert_eq!(r.start, expect_next);
+            assert!(r.end > r.start);
+            expect_next = r.end;
+        }
+        assert_eq!(expect_next, levels.len());
+    }
+
+    // --- Section: X10 + BD13 isolating-run-sequence partition ---
+
+    fn build(s: &str) -> (Vec<BidiClass>, ExplicitLevels, u8) {
+        let cls: Vec<BidiClass> = s.chars().map(bidi_class).collect();
+        let pl = paragraph_level(s);
+        let out = resolve_explicit_levels(&cls, pl);
+        (cls, out, pl)
+    }
+
+    #[test]
+    fn x10_empty_paragraph_no_sequences() {
+        let cls: Vec<BidiClass> = Vec::new();
+        let out = resolve_explicit_levels(&cls, 0);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        assert!(seqs.is_empty());
+    }
+
+    #[test]
+    fn x10_pure_l_one_sequence_one_run() {
+        let (cls, out, pl) = build("Hello");
+        let seqs = isolating_run_sequences(&cls, &out, pl);
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0].runs.len(), 1);
+        assert_eq!(seqs[0].level, 0);
+        assert_eq!(seqs[0].sos, BidiClass::L);
+        assert_eq!(seqs[0].eos, BidiClass::L);
+    }
+
+    #[test]
+    fn x10_arabic_paragraph_rtl_sos_eos_r() {
+        // Hebrew letter שלום — paragraph level 1, single sequence at
+        // level 1, sos = eos = R.
+        let (cls, out, pl) = build("\u{05E9}\u{05DC}\u{05D5}\u{05DD}");
+        assert_eq!(pl, 1);
+        let seqs = isolating_run_sequences(&cls, &out, pl);
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0].level, 1);
+        assert_eq!(seqs[0].sos, BidiClass::R);
+        assert_eq!(seqs[0].eos, BidiClass::R);
+    }
+
+    #[test]
+    fn x10_rle_split_emits_three_sequences_with_correct_sos_eos() {
+        // L RLE L PDF L — runs:
+        //   [0..1] level 0 (L)
+        //   [1..3] level 1 (RLE + L; PDF index 3 stays at level 0 →
+        //                 wait: PDF gets the post-pop stack top → 0,
+        //                 so the level vector is [0,1,1,0,0]).
+        // Result: (0..1)@0, (1..3)@1, (3..5)@0 — three sequences.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::RLE,
+            BidiClass::L,
+            BidiClass::PDF,
+            BidiClass::L,
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        assert_eq!(seqs.len(), 3);
+        // First: sos paragraph (0), eos other side is RLE @ level 1
+        // BUT RLE is X9-removed — the spec says boundary lookups
+        // skip removed chars, so eos other side scans forward past
+        // the RLE to the next non-removed char (L at index 2 @
+        // level 1) → higher is 1 → R.
+        assert_eq!(seqs[0].level, 0);
+        assert_eq!(seqs[0].sos, BidiClass::L);
+        assert_eq!(seqs[0].eos, BidiClass::R);
+        // Middle: level 1, sos other side is L @ 0 (the leading L),
+        // higher of 1 vs 0 → 1 → R. eos other side: skip PDF → L
+        // @ level 0, higher 1 vs 0 → R.
+        assert_eq!(seqs[1].level, 1);
+        assert_eq!(seqs[1].sos, BidiClass::R);
+        assert_eq!(seqs[1].eos, BidiClass::R);
+        // Last: level 0, sos other side: skip PDF backward → L @
+        // level 1, higher 0 vs 1 → 1 → R. eos paragraph edge → 0
+        // → L.
+        assert_eq!(seqs[2].level, 0);
+        assert_eq!(seqs[2].sos, BidiClass::R);
+        assert_eq!(seqs[2].eos, BidiClass::L);
+    }
+
+    #[test]
+    fn x10_lri_chains_outer_runs_into_one_sequence() {
+        // "a" LRI "b" PDI "c" — the LRI initiator and matching PDI
+        // both carry the *enclosing* embedding level (0). Levels are
+        // [0, 0, 0, 0, 0] — a single level run, hence a single
+        // sequence (the LRI/PDI happen not to raise the level because
+        // we are already at level 0 and an LRI under paragraph level
+        // 0 pushes level 2 only for the *contents*, which is also
+        // level 2 only if there ARE intervening chars).
+        //
+        // Concretely with "a" LRI "b" PDI "c": LRI pushes level 2
+        // (least even > 0), 'b' lands at 2, PDI pops back, 'c' at 0.
+        // Levels [0, 0, 2, 0, 0] — runs (0..2, 0), (2..3, 2),
+        // (3..5, 0).
+        //
+        // BD13: the first run ends with LRI (an isolate initiator)
+        // whose matching PDI is at index 3 — but index 3 is the
+        // *first character* of the third run, not the second. So
+        // the first run chains to the third, and the second run is
+        // its own sequence.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::LRI,
+            BidiClass::L,
+            BidiClass::PDI,
+            BidiClass::L,
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        assert_eq!(out.levels, vec![0, 0, 2, 0, 0]);
+        let runs = level_runs(&out.levels);
+        assert_eq!(runs.len(), 3);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        // Two sequences: one chaining (0..2)+(3..5), one for (2..3).
+        assert_eq!(seqs.len(), 2);
+        // The chained sequence is the first emitted (its seed run
+        // starts at index 0).
+        assert_eq!(seqs[0].runs.len(), 2);
+        assert_eq!(seqs[0].runs[0].start, 0);
+        assert_eq!(seqs[0].runs[0].end, 2);
+        assert_eq!(seqs[0].runs[1].start, 3);
+        assert_eq!(seqs[0].runs[1].end, 5);
+        assert_eq!(seqs[0].level, 0);
+        // The interior sequence is the body of the isolate.
+        assert_eq!(seqs[1].runs.len(), 1);
+        assert_eq!(seqs[1].runs[0].start, 2);
+        assert_eq!(seqs[1].runs[0].end, 3);
+        assert_eq!(seqs[1].level, 2);
+    }
+
+    #[test]
+    fn x10_unmatched_isolate_initiator_triggers_eos_paragraph_fallback() {
+        // "a" LRI "b" — LRI raises level for 'b' to 2; there is no
+        // matching PDI. The last run ends with an isolate initiator
+        // (the LRI itself sits in the first run, since 'b' is on a
+        // raised level), but the LRI's matching PDI doesn't exist
+        // so the eos of the outer sequence falls back to the
+        // paragraph level.
+        let cls = vec![BidiClass::L, BidiClass::LRI, BidiClass::L];
+        let out = resolve_explicit_levels(&cls, 0);
+        // Levels: 'a' 0, LRI carries enclosing 0, 'b' 2.
+        assert_eq!(out.levels, vec![0, 0, 2]);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        // Two sequences: (0..2)@0 and (2..3)@2. The first ends with
+        // an unmatched LRI; by X10 step 2 its eos uses the paragraph
+        // level (0) as the other side → higher(0, 0) = 0 → L.
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(seqs[0].runs[0].start, 0);
+        assert_eq!(seqs[0].runs[0].end, 2);
+        assert_eq!(seqs[0].sos, BidiClass::L);
+        assert_eq!(seqs[0].eos, BidiClass::L);
+        // Second sequence is at level 2 (even). sos other side is
+        // the LRI at index 1 (not X9-removed) at level 0 — higher
+        // of (0, 2) = 2 → L (even). eos paragraph edge → paragraph
+        // level 0 — higher of (0, 2) = 2 → L.
+        assert_eq!(seqs[1].sos, BidiClass::L);
+        assert_eq!(seqs[1].eos, BidiClass::L);
+    }
+
+    #[test]
+    fn x10_paragraph_level_1_rtl_default_sos_eos() {
+        // Pure-Hebrew paragraph at level 1: paragraph fallback for
+        // sos / eos is paragraph level 1 → R.
+        let cls = vec![BidiClass::R, BidiClass::R, BidiClass::R];
+        let out = resolve_explicit_levels(&cls, 1);
+        assert_eq!(out.levels, vec![1, 1, 1]);
+        let seqs = isolating_run_sequences(&cls, &out, 1);
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0].sos, BidiClass::R);
+        assert_eq!(seqs[0].eos, BidiClass::R);
+    }
+
+    #[test]
+    fn x10_each_level_run_belongs_to_exactly_one_sequence() {
+        // BD13 invariant: every level run appears in exactly one
+        // isolating run sequence. Build a paragraph with multiple
+        // RLE/PDF + LRI/PDI nestings and assert partition coverage.
+        let cls = vec![
+            BidiClass::L,   // 0
+            BidiClass::RLE, // 1
+            BidiClass::L,   // 2
+            BidiClass::LRI, // 3 (under RLE override)
+            BidiClass::L,   // 4
+            BidiClass::PDI, // 5
+            BidiClass::L,   // 6
+            BidiClass::PDF, // 7
+            BidiClass::L,   // 8
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        let runs = level_runs(&out.levels);
+        let total_run_count = runs.len();
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        let mut counted = 0;
+        for s in &seqs {
+            counted += s.runs.len();
+            // All runs in one sequence share embedding level.
+            for r in &s.runs {
+                assert_eq!(r.level, s.level);
+            }
+        }
+        assert_eq!(
+            counted, total_run_count,
+            "every level run belongs to exactly one sequence"
+        );
+    }
+
+    #[test]
+    fn x10_indices_iterator_skips_x9_removed() {
+        // L RLE L PDF L — sequence [0..1, level 0] yields just {0};
+        // sequence [1..3, level 1] skips the RLE at index 1 and
+        // yields {2}; sequence [3..5, level 0] skips the PDF at
+        // index 3 and yields {4}.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::RLE,
+            BidiClass::L,
+            BidiClass::PDF,
+            BidiClass::L,
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        assert_eq!(seqs.len(), 3);
+        let s0: Vec<usize> = seqs[0].indices(&out.removed).collect();
+        assert_eq!(s0, vec![0]);
+        let s1: Vec<usize> = seqs[1].indices(&out.removed).collect();
+        assert_eq!(s1, vec![2]);
+        let s2: Vec<usize> = seqs[2].indices(&out.removed).collect();
+        assert_eq!(s2, vec![4]);
+    }
+
+    #[test]
+    fn x10_indices_for_chained_isolate_sequence_concatenates_runs() {
+        // "a" LRI "b" PDI "c" — chained sequence is (0..2) + (3..5).
+        // Indices walk yields {0, 1, 3, 4} (LRI at 1 and PDI at 3
+        // are isolate-formatting characters, NOT X9-removed, so
+        // they participate in the index walk per the X9 spec note).
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::LRI,
+            BidiClass::L,
+            BidiClass::PDI,
+            BidiClass::L,
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        let s0: Vec<usize> = seqs[0].indices(&out.removed).collect();
+        assert_eq!(s0, vec![0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn x10_sequences_compose_with_existing_w_n_i_pipeline() {
+        // End-to-end sanity: build a paragraph, partition it, and
+        // verify each sequence's sos / eos lets the W rules run
+        // without modification. We don't check W output here (that
+        // is covered by the existing W tests); we only confirm that
+        // the API hands us per-sequence `sos` / `eos` of class L or
+        // R as required.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::RLE,
+            BidiClass::AL,
+            BidiClass::EN,
+            BidiClass::PDF,
+            BidiClass::L,
+        ];
+        let out = resolve_explicit_levels(&cls, 0);
+        let seqs = isolating_run_sequences(&cls, &out, 0);
+        assert!(!seqs.is_empty());
+        for s in &seqs {
+            assert!(matches!(s.sos, BidiClass::L | BidiClass::R));
+            assert!(matches!(s.eos, BidiClass::L | BidiClass::R));
+            // Round-trip through resolve_weak_types per-sequence in
+            // place: we just confirm it does not panic and leaves
+            // the slice strong-typed.
+            let mut indices: Vec<usize> = s.indices(&out.removed).collect();
+            // Pull the effective classes for this sequence into a
+            // working buffer; W rules expect a contiguous mut slice.
+            let mut seq_classes: Vec<BidiClass> =
+                indices.iter().map(|&i| out.effective_classes[i]).collect();
+            resolve_weak_types(&mut seq_classes, s.sos, s.eos);
+            // After W, no AL should remain (W3).
+            assert!(seq_classes.iter().all(|c| !matches!(c, BidiClass::AL)));
+            let _ = indices.drain(..);
+        }
+    }
+
+    #[test]
+    fn x10_matching_pdi_skips_non_isolate_formatting() {
+        // BD9 closing note: "all formatting characters except for
+        // isolate initiators and PDIs are ignored when finding the
+        // matching PDI." LRI ... RLE LRE PDF ... PDI — the matching
+        // PDI is correctly found past the embedding formatting.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::LRI, // 1
+            BidiClass::RLE, // 2 (ignored by BD9)
+            BidiClass::L,   // 3
+            BidiClass::PDF, // 4 (ignored by BD9)
+            BidiClass::PDI, // 5
+            BidiClass::L,
+        ];
+        let pdi = matching_pdi(&cls, 1);
+        assert_eq!(pdi, Some(5));
+    }
+
+    #[test]
+    fn x10_matching_pdi_returns_none_for_unmatched_initiator() {
+        let cls = vec![BidiClass::L, BidiClass::LRI, BidiClass::L];
+        assert_eq!(matching_pdi(&cls, 1), None);
+    }
+
+    #[test]
+    fn x10_matching_pdi_counts_nested_isolates_correctly() {
+        // LRI LRI PDI PDI — the outer LRI at 0 matches the second
+        // PDI at 3, the inner LRI at 1 matches the first PDI at 2.
+        let cls = vec![
+            BidiClass::LRI,
+            BidiClass::LRI,
+            BidiClass::PDI,
+            BidiClass::PDI,
+        ];
+        assert_eq!(matching_pdi(&cls, 0), Some(3));
+        assert_eq!(matching_pdi(&cls, 1), Some(2));
     }
 }

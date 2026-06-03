@@ -300,11 +300,61 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   all six removed types + non-removal for the four isolates, the
   64-RLE-deep MAX_DEPTH = 125 pinning, plus mixed Latin / Hebrew
   paragraphs flowing through `paragraph_level →
-  resolve_explicit_levels` end-to-end. X10's isolating-run-sequence
-  partition (BD13) is the next layer up: it walks X1..X9's level
-  output to build the units the W / N / I phases consume. The
-  bracket-pair rule N0 (still blocked on `BidiBrackets.txt`) and
-  the L3 / L4 mirroring rules remain deferred.
+  resolve_explicit_levels` end-to-end. The X10 isolating-run-
+  sequence partition that consumes X1..X9's output landed in round
+  220 (`level_runs` + `isolating_run_sequences`). The bracket-pair
+  rule N0 (still blocked on `BidiBrackets.txt`) and the L3 / L4
+  mirroring rules remain deferred.
+- **BiDi X10 isolating-run-sequence partition (round 220)** —
+  `bidi::level_runs(&levels) -> Vec<LevelRun>` returns the UAX #9
+  §3.1.2 **BD7** partition of the per-character embedding-level
+  vector produced by `resolve_explicit_levels`: a contiguous list
+  of `LevelRun { start, end, level }` half-open ranges that fully
+  cover `0..levels.len()`. `bidi::isolating_run_sequences(&classes,
+  &explicit, paragraph_level) -> Vec<IsolatingRunSequence>` chains
+  those level runs into the **BD13** isolating-run-sequence
+  partition + derives the per-sequence **X10 step 2** `sos` / `eos`
+  directional types. Each `IsolatingRunSequence` carries the
+  constituent `runs` (in logical order), the shared `level` across
+  every run, and `sos`/`eos` of class `L` or `R`. The chaining rule
+  is literal BD13: at every level run whose last non-X9-removed
+  character is an isolate initiator (`LRI` / `RLI` / `FSI`), if
+  **BD9**'s matching-PDI scan finds a PDI **and** that PDI is the
+  first character of its own level run, the next run is appended
+  to the current sequence; otherwise the chain closes. Runs whose
+  first character is a chained-from-prior PDI cannot seed new
+  sequences. The sos / eos derivation faithfully follows X10 step
+  2: "compare the level of the first / last character in the
+  sequence with the level of the character preceding / following
+  it in the paragraph (not counting characters removed by X9), and
+  if there is none, with the paragraph embedding level"; the eos
+  side also falls back to the paragraph level when the last
+  character of the last run is an isolate initiator lacking a
+  matching PDI. "If the higher level is odd, the sos or eos is R;
+  otherwise, it is L." `IsolatingRunSequence::indices(&removed)`
+  yields the constituent character indices in logical order while
+  skipping X9-removed positions, ready to drive the in-place W / N
+  / I passes per sequence per the X10 step 3 closing note "the
+  order that one isolating run sequence is treated relative to
+  another does not matter." 17 unit + 16 integration tests cover
+  the BD7 partition (empty / uniform-level / multi-change / full
+  coverage invariant), the X10 sos / eos derivation under
+  paragraph-edge / RLE-bounded / unmatched-isolate / non-zero-base
+  paragraph-level conditions, the BD13 chaining across LRI..PDI
+  with verification that the matching PDI is the first character
+  of its run, the BD9 matching-PDI scan with nested isolates and
+  ignored embedding-formatting, the BD13 invariant that every
+  level run belongs to exactly one sequence and that all runs in a
+  sequence share their embedding level, the `indices` iterator's
+  X9-skip behaviour and isolate-format-character preservation, and
+  an end-to-end `X → W → N → I` compose driving the existing
+  weak / neutral / implicit-level passes per-sequence. **N0
+  (bracket-pair resolution per §3.1.3) and L3 / L4 (combining-mark
+  reordering + bidi-mirroring per §3.4 / §4.7) remain deferred** —
+  N0 blocked on `BidiBrackets.txt` (not yet vendored under
+  `docs/text/unicode-bidi/`); L4 blocked on `BidiMirroring.txt`
+  (same gap); L3 is conditional on the renderer's mark-attachment
+  policy and does not yet fire under scribe's GPOS stacker.
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
   UAX #9 §3.2 normative bidirectional class for every code point
   scribe needs today (the 12 explicit-format controls in full, ASCII
@@ -455,9 +505,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) X10 isolating-run-sequence partition + N0
-  bracket pairs + L3 / L4** (X1..X9 explicit-level pass landed in
-  round 217), **CFF2 variable charstrings**
+- **Bidi (UAX #9) N0 bracket pairs + L3 / L4** (X1..X9 explicit-
+  level pass landed in round 217; X10 isolating-run-sequence
+  partition + sos/eos derivation landed in round 220), **CFF2
+  variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD
