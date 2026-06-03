@@ -386,7 +386,7 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   runs §3.4 L1 + L2 over the carrier in place;
   `ParagraphBidi::reorder_line_range(start..end)` is the per-line
   variant a real line-breaker calls after deciding where the
-  paragraph wraps. 14 unit + 22 integration tests cover P2 / P3
+  paragraph wraps. 19 unit + 22 integration tests cover P2 / P3
   fallbacks (first-strong L / R / AL, no-strong, BD8 isolate-span
   skipping for both LRI..PDI and unmatched-LRI variants), the HL1
   base-level override (both directions + low-bit clamp), full

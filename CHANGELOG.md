@@ -65,7 +65,7 @@ ready for §3.4 L1 + L2 to consume per display line.
   paragraph level 1 (the spec only defines two paragraph
   embedding levels). Removes a footgun for callers wiring HL1
   from external integer sources.
-- **Tests** — 14 unit + 22 integration tests cover: P2 first-
+- **Tests** — 19 unit + 22 integration tests cover: P2 first-
   strong L / R / AL recognition, P3 no-strong default, BD8
   isolate-span skipping (matched + unmatched LRI), HL1
   base-level override (both directions + low-bit clamp), mixed
