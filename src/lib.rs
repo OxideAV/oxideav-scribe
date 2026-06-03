@@ -107,10 +107,15 @@
 //!   per §3.4) and `bidi::reorder_line(levels) -> Vec<usize>` is
 //!   rule **L2** (the progressive top-down reversal that produces
 //!   a logical-to-visual permutation a renderer walks to emit
-//!   glyphs in display order). The bracket-pair rule N0, the X
-//!   rules (explicit embedding / override / isolate stack
-//!   machinery + isolating-run-sequence partition), and the L3 /
-//!   L4 mirroring rules are deferred to follow-up rounds.
+//!   glyphs in display order). Round 217 lands
+//!   `bidi::resolve_explicit_levels(classes, paragraph_level)`, the
+//!   §3.3.2 explicit-level / override / isolate stack pass (rules
+//!   X1..X9): produces a per-character embedding level + an
+//!   override-rewritten effective-class slice + the X9-removed-
+//!   character flag set, ready for X10's isolating-run-sequence
+//!   partition to feed the W / N / I phases. The bracket-pair rule
+//!   N0, the X10 partition itself, and the L3 / L4 mirroring rules
+//!   are deferred to follow-up rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -129,8 +134,9 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, paragraph_level, reorder_line, reset_trailing_levels, resolve_implicit_levels,
-    resolve_neutral_types, resolve_weak_types, split_paragraphs, BidiClass,
+    bidi_class, paragraph_level, reorder_line, reset_trailing_levels, resolve_explicit_levels,
+    resolve_implicit_levels, resolve_neutral_types, resolve_weak_types, split_paragraphs,
+    BidiClass, ExplicitLevels, MAX_DEPTH,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

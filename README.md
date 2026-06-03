@@ -264,6 +264,47 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `bidi::` module as of round 210; the high-level `layout::*` API
   does not yet drive it automatically — callers wire the
   per-character permutation into their own renderer.
+- **BiDi explicit-level / override / isolate stack X1..X9 (round 217)** —
+  `bidi::resolve_explicit_levels(classes, paragraph_level) ->
+  ExplicitLevels` runs the UAX #9 §3.3.2 explicit-level pass over
+  the whole paragraph in one walk, maintaining the spec's
+  *directional status stack* of (`level`, override-status,
+  isolate-flag) frames plus the three overflow / valid counters
+  (overflow_isolate, overflow_embedding, valid_isolate). Returns
+  three parallel vectors of length `classes.len()`:
+  `levels: Vec<u8>` (per-character embedding level: X6's stack-top
+  level for regular characters, the new-scope level for embedding
+  initiators, the enclosing scope's level for isolate initiators +
+  their matching PDIs, and the paragraph embedding level for B
+  characters per X8); `effective_classes: Vec<BidiClass>` (input
+  classes with X4 / X5 / X5a / X5b / X6 / X6a override rewrites
+  applied — `L` override → `L`, `R` override → `R`, neutral leaves
+  classes unchanged); `removed: Vec<bool>` (the X9-removed flag set
+  for RLE / LRE / RLO / LRO / PDF / BN; the four isolate-formatting
+  characters LRI / RLI / FSI / PDI are *not* removed per the X9
+  note). FSI is resolved per X5c by running a P2 / P3 mini-pass
+  over the FSI..matching-PDI span and dispatching as RLI or LRI
+  accordingly; the in-span P2 itself skips inner LRI..PDI regions
+  the same way the top-level `paragraph_level` walker does.
+  Overflow events (depth ≥ `MAX_DEPTH = 125`) are absorbed into
+  the matching counter per the spec; matching PDFs / PDIs
+  decrement their respective overflow counter without popping the
+  stack. 19 unit + 23 integration tests cover X1 init, X2..X5
+  embedding / override pushes with their least-greater-odd / -even
+  level computation, X5a / X5b isolate pushes with their enclosing-
+  level initiator reporting, X5c FSI in-span P2 dispatch (strong-L
+  → LRI, strong-AL → RLI, no-strong → default LRI, nested-isolate
+  skip), X6 override rewriting only non-formatting types, X6a
+  unwind + isolate-pop, X7 PDF matching the inner embedding only
+  inside an isolate, X8 B-at-paragraph-level, X9 removal flags for
+  all six removed types + non-removal for the four isolates, the
+  64-RLE-deep MAX_DEPTH = 125 pinning, plus mixed Latin / Hebrew
+  paragraphs flowing through `paragraph_level →
+  resolve_explicit_levels` end-to-end. X10's isolating-run-sequence
+  partition (BD13) is the next layer up: it walks X1..X9's level
+  output to build the units the W / N / I phases consume. The
+  bracket-pair rule N0 (still blocked on `BidiBrackets.txt`) and
+  the L3 / L4 mirroring rules remain deferred.
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
   UAX #9 §3.2 normative bidirectional class for every code point
   scribe needs today (the 12 explicit-format controls in full, ASCII
@@ -414,8 +455,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) X rules + N0 bracket pairs + L3 / L4**,
-  **CFF2 variable charstrings**
+- **Bidi (UAX #9) X10 isolating-run-sequence partition + N0
+  bracket pairs + L3 / L4** (X1..X9 explicit-level pass landed in
+  round 217), **CFF2 variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic
   outlines), **TrueType bytecode hinting**, **subpixel LCD

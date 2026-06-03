@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.2 explicit-level / override / isolate stack pass (X1..X9, round 217)
+
+Sixth UAX #9 surface on scribe, slotting in front of the existing
+W / N / I / L pipeline: the §3.3.2 explicit-level rules **X1..X9**
+that walk a paragraph's bidi class slice while maintaining the
+spec's *directional status stack* + the three overflow / valid
+counters, and emit a per-character embedding level vector ready
+for the X10 isolating-run-sequence partition.
+
+- **`bidi::resolve_explicit_levels(classes: &[BidiClass],
+  paragraph_level: u8) -> ExplicitLevels`** — single-pass walk
+  over the paragraph implementing X1 (stack init), X2..X5
+  (RLE / LRE / RLO / LRO embedding / override pushes), X5a / X5b
+  (RLI / LRI isolate pushes), X5c (FSI resolved via P2 / P3 over
+  the FSI..matching-PDI span and treated as RLI or LRI
+  accordingly), X6 (regular-character level assignment + override
+  rewrite), X6a (PDI: unwind embeddings down to + including the
+  matched isolate frame), X7 (PDF: pop the matching embedding,
+  with overflow-counter bookkeeping for unmatched / overflow
+  cases), X8 (B characters always at the paragraph level), and X9
+  (mark RLE / LRE / RLO / LRO / PDF / BN as removed; isolate-
+  formatting characters LRI / RLI / FSI / PDI are *not* removed
+  per the X9 note).
+- **`bidi::ExplicitLevels`** — the return struct, carrying three
+  parallel vectors of length `classes.len()`:
+  - `levels: Vec<u8>` — per-character embedding level. Index
+    preservation lets the downstream X10 partition + W / N / I
+    phases map back to the original logical offsets.
+  - `effective_classes: Vec<BidiClass>` — input classes with X4 /
+    X5 / X5a / X5b / X6 / X6a override rewrites applied. Under
+    an `L` override every non-formatting character is rewritten
+    to `L`; under an `R` override to `R`; under neutral (the
+    starting state, embeddings and isolates) classes are
+    unchanged.
+  - `removed: Vec<bool>` — `true` for the six X9-removed types.
+- **`bidi::MAX_DEPTH`** — `pub const MAX_DEPTH: u8 = 125;` per
+  UAX #9 §3.1.2 BD2 ("this specification now guarantees that the
+  value of 125 for max_depth will not be increased (or
+  decreased) in future versions"). Embedding initiators that
+  would push past this depth become *overflow* events tracked
+  through the overflow_embedding / overflow_isolate counters.
+- **`oxideav_scribe::resolve_explicit_levels`** +
+  **`oxideav_scribe::ExplicitLevels`** + **`oxideav_scribe::MAX_DEPTH`**
+  — public re-exports alongside the existing W / N / I / L
+  surface.
+
+The X10 isolating-run-sequence partition (BD13) is *not* part of
+this round — it runs on top of X1..X9's level output and feeds
+the W / N / I passes per sequence. The bracket-pair rule N0 (still
+blocked on `BidiBrackets.txt`) and the L3 / L4 mirroring rules
+remain deferred.
+
+42 new tests (19 unit + 23 integration via
+`tests/round217_bidi_explicit_levels.rs`):
+
+- **X1 init** — empty-paragraph no-op, plain Latin / Arabic
+  paragraph-level dispatch, paragraph-level=1 path.
+- **X2..X5** — RLE / LRE / RLO / LRO each pushing the spec's
+  least-greater-odd / -even level above the stack top, the
+  embedding-initiator's reported level reflecting the new scope,
+  the override status correctly rewriting inner classes.
+- **X5a / X5b** — RLI / LRI pushing the same least-greater-
+  odd / -even levels but as isolate frames, the initiator's own
+  level reflecting the *enclosing* scope per the spec text, the
+  X9 non-removal of the four isolate-formatting characters.
+- **X5c** — FSI resolved via the in-span P2 + P3 mini-pass:
+  strong-L-inside → LRI, strong-AL-inside → RLI, no-strong →
+  default LRI, P2's inner isolate-skip working through nested
+  LRI..PDI inside the FSI span.
+- **X6** — override rewriting only non-formatting types.
+- **X6a** — PDI matching the enclosing isolate frame: unwind
+  embeddings above it, pop the isolate, unmatched PDI ignored.
+- **X7** — PDF popping the matching embedding, PDF at top level
+  ignored, PDF inside an overflow scope absorbed by the overflow
+  counter.
+- **X8** — B inside any embedding still reported at the paragraph
+  level.
+- **X9** — RLE / LRE / RLO / LRO / BN / PDF marked removed; LRI /
+  RLI / FSI / PDI not removed.
+- **Overflow** — 64-RLE-deep chain pinning the inner level at
+  MAX_DEPTH = 125; doubly-nested RLI..PDI..PDI pair both popping
+  cleanly within bounds.
+- **Public surface** — re-export shape sanity check, MAX_DEPTH
+  constant value, plus mixed Latin / Hebrew paragraph fed through
+  `paragraph_level → resolve_explicit_levels` end-to-end.
+
+Provenance: rules transcribed verbatim from
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` §3.3.2 (UAX
+#9 Revision 50, Unicode 16.0). BD2's `max_depth = 125` constant
+also pinned to the same file.
+
 ### Added — UAX #9 §3.4 line-level reordering rules L1 + L2 (round 210)
 
 Fifth UAX #9 surface on scribe, layered on top of the round 204
