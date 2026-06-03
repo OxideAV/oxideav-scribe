@@ -355,6 +355,50 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `docs/text/unicode-bidi/`); L4 blocked on `BidiMirroring.txt`
   (same gap); L3 is conditional on the renderer's mark-attachment
   policy and does not yet fire under scribe's GPOS stacker.
+- **BiDi §3 whole-paragraph driver (round 227)** —
+  `bidi::process_paragraph(text, base_level) -> (ParagraphBidi,
+  Vec<usize>)` and the class-driven mirror
+  `bidi::process_paragraph_classes(classes, base_level) ->
+  ParagraphBidi` compose the six existing per-rule passes from
+  rounds 186 / 191 / 198 / 204 / 217 / 220 into one entry point:
+  §3.2 class assignment → §3.3.1 P2 + P3 first-strong walk (or the
+  HL1 caller override when `base_level` is `Some(_)`) → §3.3.2
+  X1..X9 explicit-level / override / isolate stack → §3.3.3 X10
+  BD7 + BD13 isolating-run-sequence partition + sos / eos
+  derivation → per-sequence §3.3.4 W1..W7 → §3.3.5 N1 + N2 →
+  §3.3.6 I1 + I2. The returned [`ParagraphBidi`] carrier publishes
+  four paragraph-wide parallel vectors: `paragraph_level: u8` (the
+  P2 / P3 / HL1 outcome), `classes: Vec<BidiClass>` (input
+  preserved for §3.4 L1's "original types" note), `effective_classes:
+  Vec<BidiClass>` (X4 / X5 / X5a / X5b / X6 / X6a override-rewritten
+  variant), `removed: Vec<bool>` (X9 removed-flag set), and
+  `levels: Vec<u8>` (per-character resolved embedding level after
+  the full X → W → N → I sweep — X9-removed positions keep their
+  X-rule level since W / N / I skipped them per §3.3.2 X9). A
+  `base_level` mask of `& 1` enforces the §3.3.1 paragraph-level
+  convention {0, 1} regardless of caller-supplied value. The
+  text-driving variant returns a parallel `Vec<usize>` of byte
+  offsets so a `text[char_byte_offsets[i]..]` slice locates the
+  character at logical index `i` (essential for UTF-8 multi-byte
+  scripts — Hebrew U+05D0..U+05D2 advance by 2 bytes each, Arabic
+  U+0627..U+06FF by 2 bytes, U+1F600 by 4). `ParagraphBidi::reorder_paragraph()`
+  is the "treat the whole paragraph as one line" convenience that
+  runs §3.4 L1 + L2 over the carrier in place;
+  `ParagraphBidi::reorder_line_range(start..end)` is the per-line
+  variant a real line-breaker calls after deciding where the
+  paragraph wraps. 14 unit + 22 integration tests cover P2 / P3
+  fallbacks (first-strong L / R / AL, no-strong, BD8 isolate-span
+  skipping for both LRI..PDI and unmatched-LRI variants), the HL1
+  base-level override (both directions + low-bit clamp), full
+  end-to-end mixed L / R compositions (LTR-with-RTL-block,
+  RTL-with-LTR-block lifted to level 2, AL EN → R AN pipeline),
+  X9 removed-position level preservation, text-driving char-byte
+  offset advancement on ASCII / Hebrew / Arabic, the §3.4
+  reorder_paragraph identity / RTL-reversal pair, per-line
+  reorder_line_range on a split paragraph, and the §3.4 spec
+  example "car means CAR." resolving to its published visual order.
+  N0 / L3 / L4 remain deferred (same blocking conditions as round
+  220).
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
   UAX #9 §3.2 normative bidirectional class for every code point
   scribe needs today (the 12 explicit-format controls in full, ASCII

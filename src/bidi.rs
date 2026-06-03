@@ -2205,6 +2205,278 @@ pub fn isolating_run_sequences(
     sequences
 }
 
+/// Result of the whole-paragraph UAX #9 §3 pipeline produced by
+/// [`process_paragraph_classes`] and [`process_paragraph`].
+///
+/// The struct carries every artefact a line-breaking + line-reorder
+/// caller needs to drive **L1** ([`reset_trailing_levels`]) and **L2**
+/// ([`reorder_line`]) on a per-line slice after the paragraph has been
+/// broken into display lines.
+///
+/// All vectors are paragraph-wide and parallel — `classes[i]`,
+/// `effective_classes[i]`, `levels[i]`, and `removed[i]` all describe
+/// the same paragraph character at logical index `i`. For [`process_paragraph`]
+/// callers, `char_byte_offsets[i]` is the byte offset of that character
+/// in the input `&str` (so a `text[char_byte_offsets[i]..]` slice
+/// starts at the character a level applies to).
+///
+/// # Composition order
+///
+/// 1. Bidi class assignment (§3.2 / [`bidi_class`]).
+/// 2. Paragraph embedding level (§3.3.1 P2 + P3 / [`paragraph_level`]),
+///    unless the caller provides `base_level`.
+/// 3. Explicit-level / override / isolate stack pass (§3.3.2 X1..X9 /
+///    [`resolve_explicit_levels`]).
+/// 4. Isolating-run-sequence partition + sos / eos derivation (§3.3.3
+///    X10 / [`isolating_run_sequences`]) on top of the BD7 + BD13
+///    output of [`level_runs`].
+/// 5. Per-sequence weak-type pass (§3.3.4 W1..W7 /
+///    [`resolve_weak_types`]).
+/// 6. Per-sequence neutral-type pass (§3.3.5 N1 + N2 /
+///    [`resolve_neutral_types`]). N0 bracket-pair resolution is
+///    deferred — see the module-level out-of-scope list.
+/// 7. Per-sequence implicit-level pass (§3.3.6 I1 + I2 /
+///    [`resolve_implicit_levels`]).
+///
+/// The L1 / L2 line passes are **not** run here because they operate
+/// per display line (after a higher-level line-breaker has decided
+/// where the paragraph splits into lines). The carrier exposes
+/// [`ParagraphBidi::reorder_line_range`] as a convenience for callers
+/// that have not yet wired a line-breaker and want to treat the
+/// whole paragraph as one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParagraphBidi {
+    /// The paragraph embedding level resolved by §3.3.1 P2 / P3 (or
+    /// supplied by the caller).
+    pub paragraph_level: u8,
+    /// Original per-character bidi class. This is the slice
+    /// [`reset_trailing_levels`] consumes per the §3.4 "original
+    /// types" normative note when L1 runs.
+    pub classes: Vec<BidiClass>,
+    /// Per-character bidi class after X4 / X5 / X5a / X5b / X6 / X6a
+    /// override rewriting from X1..X9. Use this if you want to inspect
+    /// the post-override classes; W / N / I have already consumed it
+    /// to produce `levels`.
+    pub effective_classes: Vec<BidiClass>,
+    /// X9-removed flag set. `removed[i] == true` for `RLE` / `LRE` /
+    /// `RLO` / `LRO` / `PDF` / `BN`. Isolate-formatting characters
+    /// `LRI` / `RLI` / `FSI` / `PDI` are **not** flagged per the
+    /// §3.3.2 X9 note.
+    pub removed: Vec<bool>,
+    /// Per-character resolved embedding level after the full
+    /// X → W → N → I sweep. Index `i` carries the I-rule output level
+    /// for the `i`th paragraph character (the same indexing as
+    /// `classes`). X9-removed positions carry their containing level
+    /// run's level (the X-rule output value), since W / N / I skipped
+    /// them per X9's "behave as though the characters were not
+    /// present" clause.
+    pub levels: Vec<u8>,
+}
+
+impl ParagraphBidi {
+    /// Run L1 + L2 across the whole paragraph and return the
+    /// logical-to-visual permutation.
+    ///
+    /// This is the "no line-breaker" convenience path: the caller
+    /// treats the entire paragraph as a single display line. Real
+    /// callers that wrap the paragraph across N visual lines should
+    /// instead call [`reset_trailing_levels`] + [`reorder_line`]
+    /// per-line on the appropriate slice of `classes` + `levels`.
+    ///
+    /// Returns a `Vec<usize>` of the same length as `levels`, where
+    /// the `k`th entry is the logical index of the character that
+    /// belongs at visual position `k`.
+    #[must_use]
+    pub fn reorder_paragraph(&self) -> Vec<usize> {
+        let mut levels = self.levels.clone();
+        reset_trailing_levels(&self.classes, &mut levels, self.paragraph_level);
+        reorder_line(&levels)
+    }
+
+    /// Run L1 + L2 over `line` (a half-open `[start, end)` range into
+    /// the paragraph's `classes` / `levels` vectors) and return the
+    /// per-line logical-to-visual permutation.
+    ///
+    /// The returned permutation is **relative to the line** — entry
+    /// `k` is the index *within the line slice* that belongs at
+    /// visual position `k`. Add `line.start` to map back into the
+    /// paragraph.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `line.start > line.end` or `line.end > self.levels.len()`.
+    #[must_use]
+    pub fn reorder_line_range(&self, line: core::ops::Range<usize>) -> Vec<usize> {
+        assert!(
+            line.start <= line.end && line.end <= self.levels.len(),
+            "reorder_line_range: line range {line:?} out of bounds for {} chars",
+            self.levels.len(),
+        );
+        let cls = &self.classes[line.clone()];
+        let mut lvl = self.levels[line].to_vec();
+        reset_trailing_levels(cls, &mut lvl, self.paragraph_level);
+        reorder_line(&lvl)
+    }
+}
+
+/// Run the whole UAX #9 §3 paragraph pipeline (P → X → W → N → I) on
+/// the supplied per-character class slice.
+///
+/// `base_level` lets the caller override the §3.3.1 P2 / P3 paragraph
+/// embedding level (HL1: higher-level protocol decided the base
+/// direction). When `None` is passed, the paragraph level is resolved
+/// from the supplied class slice via the same first-strong walk
+/// [`paragraph_level`] performs on text, but operating on the class
+/// slice directly (skipping isolate spans LRI / RLI / FSI .. PDI
+/// per BD8).
+///
+/// All four phases beyond X10 (W1..W7, N1 + N2, I1 + I2) run **per
+/// isolating run sequence** per the X10 step 3 closing note ("the
+/// order that one isolating run sequence is treated relative to
+/// another does not matter"). Each per-sequence pass consumes the
+/// `sos` / `eos` directional types derived from the higher-of-two-
+/// levels rule in X10 step 2 (already attached on each
+/// [`IsolatingRunSequence`] by [`isolating_run_sequences`]).
+///
+/// Returns the full [`ParagraphBidi`] carrier; see its docs for the
+/// per-field semantics. L1 / L2 are not run here — callers either
+/// invoke [`ParagraphBidi::reorder_paragraph`] (treat the paragraph
+/// as one line) or run [`reset_trailing_levels`] + [`reorder_line`]
+/// per display line themselves.
+///
+/// Provenance: §3 driver composed from the §3.3.1 / §3.3.2 / §3.3.3 /
+/// §3.3.4 / §3.3.5 / §3.3.6 entry points already in this module,
+/// each of which cites
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` directly.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{bidi_class, process_paragraph_classes, BidiClass};
+///
+/// // "Hello" — all L, paragraph level 0, every character at level 0.
+/// let cls: Vec<_> = "Hello".chars().map(bidi_class).collect();
+/// let p = process_paragraph_classes(&cls, None);
+/// assert_eq!(p.paragraph_level, 0);
+/// assert_eq!(p.levels, vec![0; 5]);
+/// ```
+#[must_use]
+pub fn process_paragraph_classes(classes: &[BidiClass], base_level: Option<u8>) -> ParagraphBidi {
+    let pl = base_level
+        .map(|l| l & 1)
+        .unwrap_or_else(|| paragraph_level_from_classes(classes));
+
+    // X1..X9: per-character embedding levels + override-rewritten
+    // classes + X9 removed flags. Caller-fed `classes` is preserved
+    // verbatim in the returned carrier (L1 needs the original types
+    // per §3.4 note).
+    let explicit = resolve_explicit_levels(classes, pl);
+
+    // levels starts as a clone of the X-rule output. The W / N / I
+    // sweep below overwrites every non-X9-removed position with its
+    // I-rule resolved level. X9-removed positions stay at the X-rule
+    // level (W / N / I skipped them) — L1 / L2 see them unchanged.
+    let mut levels = explicit.levels.clone();
+
+    let sequences = isolating_run_sequences(classes, &explicit, pl);
+    for seq in &sequences {
+        // Materialise the per-sequence effective class slice + the
+        // logical-index mapping (X9 skips removed positions).
+        let seq_indices: Vec<usize> = seq.indices(&explicit.removed).collect();
+        if seq_indices.is_empty() {
+            continue;
+        }
+        let mut seq_classes: Vec<BidiClass> = seq_indices
+            .iter()
+            .map(|&i| explicit.effective_classes[i])
+            .collect();
+
+        // W1..W7 in place over the per-sequence class buffer.
+        resolve_weak_types(&mut seq_classes, seq.sos, seq.eos);
+        // N1 + N2 in place over the same buffer.
+        resolve_neutral_types(&mut seq_classes, seq.level, seq.sos, seq.eos);
+        // I1 + I2 reads classes and emits levels. The output has the
+        // same length as `seq_classes`.
+        let seq_levels = resolve_implicit_levels(&seq_classes, seq.level);
+        // Scatter resolved levels back to the paragraph-wide vector.
+        for (offset, &paragraph_idx) in seq_indices.iter().enumerate() {
+            levels[paragraph_idx] = seq_levels[offset];
+        }
+    }
+
+    ParagraphBidi {
+        paragraph_level: pl,
+        classes: classes.to_vec(),
+        effective_classes: explicit.effective_classes,
+        removed: explicit.removed,
+        levels,
+    }
+}
+
+/// First-strong paragraph-level walk over a pre-classified
+/// [`BidiClass`] slice, per UAX #9 §3.3.1 **P2 + P3**, with **BD8**
+/// isolate-span skipping.
+///
+/// Mirrors what [`paragraph_level`] does on a `&str`, but consumes
+/// the class slice directly so [`process_paragraph_classes`] does not
+/// need to round-trip back to text. Returns `0` (LTR) if the first
+/// strong character is `L`, `1` (RTL) if it is `R` or `AL`, or `0`
+/// per **P3** when the paragraph contains no strong character.
+fn paragraph_level_from_classes(classes: &[BidiClass]) -> u8 {
+    let n = classes.len();
+    let mut i = 0;
+    while i < n {
+        match classes[i] {
+            BidiClass::L => return 0,
+            BidiClass::R | BidiClass::AL => return 1,
+            BidiClass::LRI | BidiClass::RLI | BidiClass::FSI => {
+                // BD8: skip the isolate span when searching for the
+                // first strong character. The matching PDI also
+                // counts as the close of the span.
+                if let Some(pdi) = matching_pdi(classes, i) {
+                    i = pdi + 1;
+                } else {
+                    // No matching PDI: the spec says skip to end of
+                    // paragraph, i.e. nothing after the isolate
+                    // initiator contributes a strong type for P2.
+                    return 0;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    0
+}
+
+/// Run the whole UAX #9 §3 paragraph pipeline on a `&str` and
+/// return the [`ParagraphBidi`] carrier alongside a parallel vector
+/// of byte offsets locating each character in the input.
+///
+/// `text` must be a single paragraph — callers handle the §3.3.1 P1
+/// paragraph split via [`split_paragraphs`] first. `base_level` is
+/// the HL1 override per [`process_paragraph_classes`] semantics.
+///
+/// Returns `(carrier, char_byte_offsets)` where
+/// `char_byte_offsets[i]` is the byte index of the `i`th character
+/// in `text` (`text.char_indices()`'s first projection). The
+/// `carrier.classes` / `carrier.levels` / etc. are all character-
+/// indexed slices of the same length, so `carrier.levels[i]` carries
+/// the level of the character starting at `text[char_byte_offsets[i]]`.
+///
+/// Provenance: same as [`process_paragraph_classes`] — composed from
+/// the per-rule entry points already in this module.
+#[must_use]
+pub fn process_paragraph(text: &str, base_level: Option<u8>) -> (ParagraphBidi, Vec<usize>) {
+    let mut char_byte_offsets = Vec::new();
+    let mut classes = Vec::new();
+    for (i, c) in text.char_indices() {
+        char_byte_offsets.push(i);
+        classes.push(bidi_class(c));
+    }
+    let carrier = process_paragraph_classes(&classes, base_level);
+    (carrier, char_byte_offsets)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4102,5 +4374,253 @@ mod tests {
         ];
         assert_eq!(matching_pdi(&cls, 0), Some(3));
         assert_eq!(matching_pdi(&cls, 1), Some(2));
+    }
+
+    // --- Section ?: §3 whole-paragraph driver -----------------------
+
+    #[test]
+    fn process_paragraph_classes_empty_input_returns_empty_carrier() {
+        let p = process_paragraph_classes(&[], None);
+        assert_eq!(p.paragraph_level, 0);
+        assert!(p.classes.is_empty());
+        assert!(p.effective_classes.is_empty());
+        assert!(p.removed.is_empty());
+        assert!(p.levels.is_empty());
+    }
+
+    #[test]
+    fn process_paragraph_classes_first_strong_l_is_ltr() {
+        // "ABC" all L → paragraph level 0, every char at level 0.
+        let cls = vec![BidiClass::L, BidiClass::L, BidiClass::L];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 0);
+        assert_eq!(p.levels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_first_strong_r_is_rtl() {
+        // Hebrew-only paragraph: every char at level 1.
+        let cls = vec![BidiClass::R, BidiClass::R, BidiClass::R];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 1);
+        assert_eq!(p.levels, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_first_strong_al_is_rtl() {
+        // Arabic-only paragraph: W3 rewrites AL → R, every char at
+        // level 1.
+        let cls = vec![BidiClass::AL, BidiClass::AL, BidiClass::AL];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 1);
+        assert_eq!(p.levels, vec![1, 1, 1]);
+        // effective_classes preserves AL (X-stack does no W-rule
+        // rewriting); the W-rule rewrite is internal to the per-
+        // sequence pass and never re-published.
+        assert_eq!(p.effective_classes, vec![BidiClass::AL; 3]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_p3_fallback_is_ltr() {
+        // No strong characters → P3 says paragraph level 0 (LTR).
+        let cls = vec![BidiClass::ON, BidiClass::WS, BidiClass::ON];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 0);
+        // The single NI run resolves to L (sos = eos = L), so every
+        // level stays at 0.
+        assert_eq!(p.levels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_base_level_overrides_first_strong() {
+        // "L L L" but caller forces base_level = 1 → all chars at
+        // level 2 (the R-resolution under odd embedding I1 row "L
+        // goes +1").
+        let cls = vec![BidiClass::L, BidiClass::L, BidiClass::L];
+        let p = process_paragraph_classes(&cls, Some(1));
+        assert_eq!(p.paragraph_level, 1);
+        assert_eq!(p.levels, vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_base_level_clamps_to_low_bit() {
+        // Caller passes 5 (an odd embedding) — we mask to the
+        // paragraph-level convention {0, 1}.
+        let cls = vec![BidiClass::L];
+        let p = process_paragraph_classes(&cls, Some(5));
+        assert_eq!(p.paragraph_level, 1);
+    }
+
+    #[test]
+    fn process_paragraph_classes_isolate_span_skipped_by_p2() {
+        // BD8 says the first-strong walk skips the contents of an
+        // LRI..PDI span. Here the first strong outside the isolate
+        // is R, so the paragraph level should be 1.
+        let cls = vec![BidiClass::LRI, BidiClass::L, BidiClass::PDI, BidiClass::R];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 1);
+    }
+
+    #[test]
+    fn process_paragraph_classes_unmatched_isolate_initiator_returns_p3_default() {
+        // BD8 says the walk skips to end of paragraph past an
+        // unmatched initiator. No strong character outside it →
+        // P3 fallback 0.
+        let cls = vec![BidiClass::LRI, BidiClass::R, BidiClass::R];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 0);
+    }
+
+    #[test]
+    fn process_paragraph_classes_x9_removed_chars_retain_x_level() {
+        // L RLE L PDF L — RLE / PDF are X9-removed. The middle L
+        // sits inside an RLE-pushed odd-level scope (X-level 1); I1
+        // under odd EL says L → +1, so the middle L ends at level 2.
+        // The outer L's stay at level 0.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::RLE,
+            BidiClass::L,
+            BidiClass::PDF,
+            BidiClass::L,
+        ];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 0);
+        // RLE + PDF are X9-removed (the W / N / I sweep skipped them);
+        // their level is whatever X1..X9 left there.
+        assert_eq!(p.removed, vec![false, true, false, true, false]);
+        // The outer L's stay at level 0; the inner L lifts to 2
+        // (X-level 1 + I1 odd-EL increment for L).
+        assert_eq!(p.levels[0], 0);
+        assert_eq!(p.levels[2], 2);
+        assert_eq!(p.levels[4], 0);
+    }
+
+    #[test]
+    fn process_paragraph_classes_mixed_l_r_compose_full_pipeline() {
+        // "ABC abc" with abc as Hebrew (R). Paragraph level 0
+        // (first-strong is L). After W / N / I, the R block goes
+        // to level 1, the L block to level 0; the WS between them
+        // resolves to L per N1 / N2 (R/L mismatch → embedding dir
+        // = L at level 0) and stays at level 0.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::L,
+            BidiClass::L, // ABC
+            BidiClass::WS,
+            BidiClass::R,
+            BidiClass::R,
+            BidiClass::R, // hbr
+        ];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 0);
+        // L block + WS at level 0; R block at level 1.
+        assert_eq!(p.levels, vec![0, 0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_rtl_paragraph_lifts_l_to_level_2() {
+        // RTL paragraph (first strong R) with embedded Latin: the
+        // Latin block goes from L at level 0 → L at level 2 (I1
+        // under odd EL: L goes +1; since the surrounding sequence
+        // is level 1, L sits at 1+1=2).
+        let cls = vec![
+            BidiClass::R,
+            BidiClass::R, // RR
+            BidiClass::WS,
+            BidiClass::L,
+            BidiClass::L,
+            BidiClass::L, // abc
+            BidiClass::WS,
+            BidiClass::R,
+            BidiClass::R, // RR
+        ];
+        let p = process_paragraph_classes(&cls, None);
+        assert_eq!(p.paragraph_level, 1);
+        // R block at 1, L block at 2, whitespace at the embedding
+        // level (1) per N2 because L vs R on either side.
+        assert_eq!(p.levels, vec![1, 1, 1, 2, 2, 2, 1, 1, 1]);
+    }
+
+    #[test]
+    fn process_paragraph_text_byte_offsets_track_chars() {
+        // Plain ASCII paragraph: every char-byte is at the char's
+        // own index, len 5.
+        let (p, offsets) = process_paragraph("Hello", None);
+        assert_eq!(p.paragraph_level, 0);
+        assert_eq!(p.levels, vec![0; 5]);
+        assert_eq!(offsets, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn process_paragraph_text_multi_byte_chars_byte_offsets_advance() {
+        // "Ωa" — Ω is 2 bytes, a is 1.
+        let (p, offsets) = process_paragraph("\u{03A9}a", None);
+        assert_eq!(p.classes.len(), 2);
+        assert_eq!(offsets, vec![0, 2]);
+        // Ω is L per our table fallback; both at level 0.
+        assert_eq!(p.levels, vec![0, 0]);
+    }
+
+    #[test]
+    fn reorder_paragraph_ltr_only_is_identity() {
+        let p = process_paragraph_classes(&[BidiClass::L; 4], None);
+        let perm = p.reorder_paragraph();
+        assert_eq!(perm, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn reorder_paragraph_rtl_block_reverses() {
+        // ABC + RTL block. After L1+L2, the RTL block reverses.
+        let cls = vec![
+            BidiClass::L,
+            BidiClass::L,
+            BidiClass::L,
+            BidiClass::R,
+            BidiClass::R,
+            BidiClass::R,
+        ];
+        let p = process_paragraph_classes(&cls, None);
+        let perm = p.reorder_paragraph();
+        // L block stays 0,1,2; R block reverses 3,4,5 → 5,4,3.
+        assert_eq!(perm, vec![0, 1, 2, 5, 4, 3]);
+    }
+
+    #[test]
+    fn reorder_line_range_per_line_works() {
+        // Treat a 5-char "ABCDE" as two lines: [0..2] and [2..5].
+        let p = process_paragraph_classes(&[BidiClass::L; 5], None);
+        let line1 = p.reorder_line_range(0..2);
+        let line2 = p.reorder_line_range(2..5);
+        assert_eq!(line1, vec![0, 1]);
+        assert_eq!(line2, vec![0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn reorder_line_range_out_of_bounds_panics() {
+        let p = process_paragraph_classes(&[BidiClass::L; 3], None);
+        let _ = p.reorder_line_range(0..10);
+    }
+
+    #[test]
+    fn paragraph_level_from_classes_matches_text_walker() {
+        // Cross-check the class-driven P2 walk against the text-
+        // driven `paragraph_level` on a handful of inputs.
+        for s in &[
+            "Hello",
+            "\u{05D0}\u{05D1}\u{05D2}",  // Hebrew
+            "\u{0627}\u{0628}\u{0629}",  // Arabic
+            "Hi \u{05D0}\u{05D1}",       // Mixed Latin + Hebrew (P2 = L)
+            "\u{05D0}\u{05D1} Hi",       // Mixed Hebrew + Latin (P2 = R)
+            "\u{2066}A\u{2069}\u{05D0}", // LRI A PDI + Hebrew → P2 = R
+        ] {
+            let cls: Vec<_> = s.chars().map(bidi_class).collect();
+            assert_eq!(
+                paragraph_level_from_classes(&cls),
+                paragraph_level(s),
+                "mismatch for input {s:?}",
+            );
+        }
     }
 }

@@ -113,9 +113,19 @@
 //!   X1..X9): produces a per-character embedding level + an
 //!   override-rewritten effective-class slice + the X9-removed-
 //!   character flag set, ready for X10's isolating-run-sequence
-//!   partition to feed the W / N / I phases. The bracket-pair rule
-//!   N0, the X10 partition itself, and the L3 / L4 mirroring rules
-//!   are deferred to follow-up rounds.
+//!   partition to feed the W / N / I phases. Round 227 lands
+//!   `bidi::process_paragraph(text, base_level)` and the
+//!   class-driven mirror `bidi::process_paragraph_classes(classes,
+//!   base_level)`, the §3 whole-paragraph driver that composes
+//!   P → X → W → N → I in one call and returns a
+//!   `ParagraphBidi` carrier carrying the paragraph level + the
+//!   original classes + the X9-removed flag set + the resolved
+//!   per-character level vector. The carrier exposes
+//!   `reorder_paragraph()` (whole-paragraph L1 + L2 convenience)
+//!   and `reorder_line_range(start..end)` (per-line variant for
+//!   callers that have a line-breaker). The bracket-pair rule N0
+//!   and the L3 / L4 mirroring rules are deferred to follow-up
+//!   rounds.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -134,10 +144,10 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, isolating_run_sequences, level_runs, paragraph_level, reorder_line,
-    reset_trailing_levels, resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types,
-    resolve_weak_types, split_paragraphs, BidiClass, ExplicitLevels, IsolatingRunSequence,
-    LevelRun, MAX_DEPTH,
+    bidi_class, isolating_run_sequences, level_runs, paragraph_level, process_paragraph,
+    process_paragraph_classes, reorder_line, reset_trailing_levels, resolve_explicit_levels,
+    resolve_implicit_levels, resolve_neutral_types, resolve_weak_types, split_paragraphs,
+    BidiClass, ExplicitLevels, IsolatingRunSequence, LevelRun, ParagraphBidi, MAX_DEPTH,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

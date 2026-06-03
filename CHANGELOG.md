@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3 whole-paragraph driver (round 227)
+
+Eighth UAX #9 surface on scribe, composing the six per-rule entry
+points from rounds 186 / 191 / 198 / 204 / 217 / 220 into a single
+high-level call. The driver runs §3.2 → §3.3.1 → §3.3.2 → §3.3.3 →
+§3.3.4 → §3.3.5 → §3.3.6 on a `&str` or pre-classified `&[BidiClass]`
+slice, then publishes the per-character resolved embedding level
+ready for §3.4 L1 + L2 to consume per display line.
+
+- **`bidi::process_paragraph(text: &str, base_level: Option<u8>) ->
+  (ParagraphBidi, Vec<usize>)`** — text-driving entry point.
+  Walks the input once for `char_indices()`, collecting one
+  `BidiClass` per character plus a parallel byte-offset vector,
+  then dispatches to the class-driven variant. The byte-offset
+  vector locates each character in the original UTF-8 input —
+  callers that need to slice back into `text` after the bidi
+  pass (e.g. to extract per-run glyph clusters) read
+  `text[char_byte_offsets[i]..]` to position the cursor at the
+  character at logical index `i`.
+- **`bidi::process_paragraph_classes(classes: &[BidiClass],
+  base_level: Option<u8>) -> ParagraphBidi`** — class-driven
+  entry point. Composes:
+  - §3.3.1 paragraph level via the new internal
+    `paragraph_level_from_classes` walker (mirrors the existing
+    `paragraph_level` text walker — first-strong L / R / AL,
+    skip LRI..PDI isolate spans per BD8, P3 default 0) unless
+    the caller overrides with `base_level = Some(_)` (HL1).
+  - §3.3.2 X1..X9 explicit-level pass via
+    `resolve_explicit_levels`.
+  - §3.3.3 X10 isolating-run-sequence partition via
+    `isolating_run_sequences`.
+  - §3.3.4 W1..W7 + §3.3.5 N1 + N2 + §3.3.6 I1 + I2
+    **per-sequence** (per the X10 step 3 closing note that
+    sequence order does not matter). Resolved levels are
+    scattered back into the paragraph-wide level vector at the
+    original logical offsets; X9-removed positions retain the
+    X-rule level since W / N / I skipped them.
+- **`bidi::ParagraphBidi`** — the carrier struct. Fields:
+  - `paragraph_level: u8` — the §3.3.1 / HL1 result (0 or 1).
+  - `classes: Vec<BidiClass>` — input verbatim (L1 needs the
+    original types per the §3.4 normative note).
+  - `effective_classes: Vec<BidiClass>` — X4 / X5 / X5a / X5b /
+    X6 / X6a override-rewritten classes from X1..X9.
+  - `removed: Vec<bool>` — X9-removed-flag set.
+  - `levels: Vec<u8>` — per-character resolved embedding level
+    after the full X → W → N → I sweep.
+- **`ParagraphBidi::reorder_paragraph()`** — "whole paragraph as
+  one line" convenience. Runs §3.4 L1 + L2 over the carrier and
+  returns the logical-to-visual permutation.
+- **`ParagraphBidi::reorder_line_range(line: Range<usize>)`** —
+  per-line variant. Slices `classes` + `levels` to the given
+  half-open range, runs L1 + L2 over the slice, and returns a
+  permutation **relative to the line** (caller adds `line.start`
+  to map back into the paragraph).
+- **`base_level` low-bit clamp** — `base_level = Some(5)` maps to
+  paragraph level 1 (the spec only defines two paragraph
+  embedding levels). Removes a footgun for callers wiring HL1
+  from external integer sources.
+- **Tests** — 14 unit + 22 integration tests cover: P2 first-
+  strong L / R / AL recognition, P3 no-strong default, BD8
+  isolate-span skipping (matched + unmatched LRI), HL1
+  base-level override (both directions + low-bit clamp), mixed
+  L / R compositions (LTR with embedded RTL block at level 1,
+  RTL paragraph lifting embedded LTR block to level 2,
+  AL EN → R AN pipeline via W2 + W3 + I1), X9-removed positions
+  retaining their X-rule level, text-driving char-byte offset
+  advancement on ASCII / Hebrew / Arabic, the carrier's field-
+  length invariant, input-class verbatim preservation, the
+  `Clone + Eq + Debug` derive set on `ParagraphBidi`, the
+  `reorder_paragraph` LTR-identity + RTL-reversal pair, per-line
+  `reorder_line_range` on a split LTR paragraph, L1-reset of
+  trailing whitespace agreeing with manual L1 + L2 chaining, and
+  the §3.4 spec example "car means CAR." resolving to its
+  published visual order. The class-driven P2 walker is cross-
+  checked against the existing text-driving `paragraph_level` on
+  six inputs spanning Latin / Hebrew / Arabic / mixed / LRI..PDI.
+  Total scribe lib tests: 412 → 431.
+
+**Still deferred (no change from round 220):**
+
+- N0 bracket-pair resolution (blocked on `BidiBrackets.txt`).
+- L4 bidi mirroring (blocked on `BidiMirroring.txt`).
+- L3 combining-mark reordering (conditional on the renderer's
+  mark-attachment policy; does not fire today under scribe's
+  GPOS stacker).
+
+Provenance: the driver composes the six existing per-rule entry
+points already in this module; each cites
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` (UAX #9
+Revision 50 / Unicode 16.0) directly in its own provenance line.
+The §3 umbrella anchor lives at §3 "Basic Display Algorithm" of
+the same dated snapshot.
+
 ### Added — UAX #9 §3.3.3 X10 isolating-run-sequence partition + sos/eos (round 220)
 
 Seventh UAX #9 surface on scribe, sitting between the §3.3.2
