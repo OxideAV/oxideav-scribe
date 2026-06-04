@@ -145,9 +145,10 @@ pub mod variations;
 
 pub use bidi::{
     bidi_class, isolating_run_sequences, level_runs, paragraph_level, process_paragraph,
-    process_paragraph_classes, reorder_line, reset_trailing_levels, resolve_explicit_levels,
-    resolve_implicit_levels, resolve_neutral_types, resolve_weak_types, split_paragraphs,
-    BidiClass, ExplicitLevels, IsolatingRunSequence, LevelRun, ParagraphBidi, MAX_DEPTH,
+    process_paragraph_classes, process_text, reorder_line, reset_trailing_levels,
+    resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,
+    split_paragraphs, BidiClass, ExplicitLevels, IsolatingRunSequence, LevelRun, ParagraphBidi,
+    ParagraphSlice, TextBidi, MAX_DEPTH,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

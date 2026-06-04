@@ -2477,6 +2477,190 @@ pub fn process_paragraph(text: &str, base_level: Option<u8>) -> (ParagraphBidi, 
     (carrier, char_byte_offsets)
 }
 
+/// Per-paragraph carrier inside a multi-paragraph [`TextBidi`] result.
+///
+/// Wraps a [`ParagraphBidi`] (the §3 P → X → W → N → I output for one
+/// paragraph) with the bookkeeping that locates the paragraph back in
+/// the original input — the byte range it occupies in the input
+/// `&str` (`byte_range`) and the cumulative character offset at which
+/// the paragraph starts within the whole-text logical sequence
+/// (`char_offset`).
+///
+/// The paragraph slice referenced by `byte_range` is the verbatim
+/// substring P1 produced: a paragraph separator (type B — CR, LF, CRLF,
+/// FF, NEL, LS, PS) is *kept with the preceding paragraph* per UAX #9
+/// §3.3.1 P1, so the terminating B character (if any) is included in
+/// both `byte_range` and the paragraph's [`ParagraphBidi::classes`] /
+/// `levels` slices.
+///
+/// `char_byte_offsets[i]` is the byte index of the `i`th character of
+/// the paragraph **within the original whole-text input** (not within
+/// the paragraph slice). Subtract `byte_range.start` to get a paragraph-
+/// local offset. Combined with `char_offset`, this lets callers walk
+/// from a whole-text logical character index `k` to the carrier and
+/// position in O(1) once the right paragraph is selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParagraphSlice {
+    /// Byte range of the paragraph (including its trailing B if any)
+    /// in the original `&str` fed to [`process_text`]. Half-open
+    /// `[start, end)`.
+    pub byte_range: core::ops::Range<usize>,
+    /// Cumulative character offset at which this paragraph begins in
+    /// the whole-text logical sequence. `paragraphs[0].char_offset ==
+    /// 0`; subsequent entries accumulate the prior paragraph's
+    /// `bidi.levels.len()`.
+    pub char_offset: usize,
+    /// The §3 paragraph pipeline output for this paragraph.
+    pub bidi: ParagraphBidi,
+    /// Whole-input byte offset of each character in this paragraph
+    /// (length matches `bidi.classes.len()` / `bidi.levels.len()`).
+    /// `char_byte_offsets[i]` is the byte index of the `i`th character
+    /// in the original `&str` fed to [`process_text`].
+    pub char_byte_offsets: Vec<usize>,
+}
+
+/// Output of the multi-paragraph UAX #9 §3 driver [`process_text`].
+///
+/// The §3 P1 step "Split the text into separate paragraphs" treats a
+/// paragraph separator (BidiClass `B`) as the terminator of the
+/// preceding paragraph; the algorithm then "applies all the other rules
+/// of this algorithm" inside each paragraph independently. This carrier
+/// holds one [`ParagraphSlice`] per such paragraph, in logical order,
+/// alongside the whole-input character count.
+///
+/// The base level applied to each paragraph is the same `base_level`
+/// argument fed to [`process_text`] — UAX #9 §3.3.1 P2 / P3 run *per
+/// paragraph* on the paragraph's own first-strong character, but HL1
+/// (caller override) is paragraph-independent at the public surface
+/// here: passing `Some(level)` forces every paragraph to that level;
+/// `None` lets P2 / P3 walk each paragraph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextBidi {
+    /// One entry per paragraph found by P1, in logical order. Empty
+    /// iff the input is empty (an empty string has no paragraphs).
+    pub paragraphs: Vec<ParagraphSlice>,
+    /// Total character count across all paragraphs. Equals the sum of
+    /// `paragraphs[i].bidi.levels.len()` and `text.chars().count()`
+    /// for the input `text` fed to [`process_text`].
+    pub total_chars: usize,
+}
+
+impl TextBidi {
+    /// Number of paragraphs P1 produced. Zero iff the input was empty.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.paragraphs.len()
+    }
+
+    /// `true` iff [`Self::len`] is zero.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paragraphs.is_empty()
+    }
+
+    /// Locate the paragraph containing the whole-input logical
+    /// character index `k`. Returns `(paragraph_index,
+    /// paragraph_local_char_index)` such that
+    /// `paragraphs[paragraph_index].bidi.classes[paragraph_local_char_index]`
+    /// is the §3.4-input class of the `k`-th whole-input character.
+    ///
+    /// Returns `None` if `k >= total_chars`.
+    #[must_use]
+    pub fn locate_char(&self, k: usize) -> Option<(usize, usize)> {
+        // Linear walk; paragraph counts in real text are small so this
+        // is acceptable. Sorted-by-`char_offset` invariant lets a
+        // future caller swap in a binary search if profiling shows it.
+        for (pi, p) in self.paragraphs.iter().enumerate() {
+            let end = p.char_offset + p.bidi.levels.len();
+            if k < end {
+                return Some((pi, k - p.char_offset));
+            }
+        }
+        None
+    }
+}
+
+/// Run the whole UAX #9 §3 paragraph pipeline (P1 split → per-
+/// paragraph P → X → W → N → I) across a multi-paragraph `&str`.
+///
+/// This is the top-level entry point that callers with whole-document
+/// text (potentially containing newlines, paragraph separators, form
+/// feeds, …) reach for. Internally it walks the §3.3.1 P1 step ("Split
+/// the text into separate paragraphs") via [`split_paragraphs`] —
+/// trailing paragraph separators (BidiClass `B` — `\u{000A}` LF,
+/// `\u{000D}` CR, `\u{000C}` FF, `\u{0085}` NEL, `\u{2028}` LS,
+/// `\u{2029}` PS) are kept with the preceding paragraph per the spec
+/// — and dispatches each paragraph slice through
+/// [`process_paragraph_classes`] independently. The per-paragraph
+/// `char_byte_offsets` are shifted by the paragraph's `byte_range.start`
+/// so callers get whole-input byte indices, not paragraph-local ones.
+///
+/// `base_level` is the [`process_paragraph_classes`] HL1 override and
+/// applies *uniformly* to every paragraph when `Some(_)` (callers that
+/// need per-paragraph HL1 overrides loop [`process_paragraph`]
+/// themselves). The low bit is preserved per HL1.
+///
+/// The empty input produces a `TextBidi { paragraphs: vec![],
+/// total_chars: 0 }` carrier; the spec says nothing applies to an
+/// empty text.
+///
+/// Provenance: §3 P1 + the §3.3.1 / §3.3.2 / §3.3.3 / §3.3.4 / §3.3.5 /
+/// §3.3.6 per-rule entry points already in this module, each citing
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` directly.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::process_text;
+///
+/// // Two-paragraph LTR input separated by LF.
+/// let t = process_text("Hi\nyo", None);
+/// assert_eq!(t.paragraphs.len(), 2);
+/// // First paragraph is "Hi\n" (3 chars: H, i, LF kept with paragraph).
+/// assert_eq!(t.paragraphs[0].bidi.levels.len(), 3);
+/// assert_eq!(t.paragraphs[1].bidi.levels.len(), 2);
+/// assert_eq!(t.total_chars, 5);
+/// ```
+#[must_use]
+pub fn process_text(text: &str, base_level: Option<u8>) -> TextBidi {
+    let slices = split_paragraphs(text);
+    let mut paragraphs = Vec::with_capacity(slices.len());
+    let mut total_chars = 0usize;
+    // `split_paragraphs` returns owned `&str` slices that point into
+    // `text`; converting back to byte ranges via pointer arithmetic
+    // would be UB-adjacent. We rederive the range by walking the
+    // input alongside the slice list — `start` accumulates the
+    // byte length of every prior paragraph.
+    let mut byte_start = 0usize;
+    for slice in slices {
+        let len = slice.len();
+        let byte_range = byte_start..byte_start + len;
+        let mut classes = Vec::new();
+        let mut char_byte_offsets = Vec::new();
+        for (off, c) in slice.char_indices() {
+            // Re-base the paragraph-local byte offset onto the whole
+            // input so callers can index back into the original `&str`
+            // without adding `byte_range.start` themselves.
+            char_byte_offsets.push(byte_start + off);
+            classes.push(bidi_class(c));
+        }
+        let bidi = process_paragraph_classes(&classes, base_level);
+        let char_offset = total_chars;
+        total_chars += bidi.levels.len();
+        paragraphs.push(ParagraphSlice {
+            byte_range,
+            char_offset,
+            bidi,
+            char_byte_offsets,
+        });
+        byte_start += len;
+    }
+    TextBidi {
+        paragraphs,
+        total_chars,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4621,6 +4805,241 @@ mod tests {
                 paragraph_level(s),
                 "mismatch for input {s:?}",
             );
+        }
+    }
+
+    // --- Section N: §3 P1 multi-paragraph driver ---------------------
+
+    #[test]
+    fn process_text_empty_input_returns_empty_carrier() {
+        let t = process_text("", None);
+        assert!(t.is_empty());
+        assert_eq!(t.len(), 0);
+        assert_eq!(t.total_chars, 0);
+        assert!(t.paragraphs.is_empty());
+    }
+
+    #[test]
+    fn process_text_no_paragraph_separator_single_paragraph() {
+        // No B character anywhere → P1 produces a single paragraph
+        // covering the whole input.
+        let t = process_text("Hello", None);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.total_chars, 5);
+        let p = &t.paragraphs[0];
+        assert_eq!(p.byte_range, 0..5);
+        assert_eq!(p.char_offset, 0);
+        assert_eq!(p.bidi.paragraph_level, 0);
+        assert_eq!(p.bidi.levels, vec![0; 5]);
+    }
+
+    #[test]
+    fn process_text_lf_terminator_kept_with_preceding_paragraph_per_p1() {
+        // "Hi\nyo" → P1 splits into ["Hi\n", "yo"]. The first
+        // paragraph contains the LF (which has BidiClass `B`).
+        let t = process_text("Hi\nyo", None);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.total_chars, 5);
+        let p0 = &t.paragraphs[0];
+        let p1 = &t.paragraphs[1];
+        assert_eq!(p0.byte_range, 0..3);
+        assert_eq!(p0.char_offset, 0);
+        assert_eq!(p0.bidi.levels.len(), 3);
+        assert_eq!(p1.byte_range, 3..5);
+        assert_eq!(p1.char_offset, 3);
+        assert_eq!(p1.bidi.levels.len(), 2);
+    }
+
+    #[test]
+    fn process_text_terminal_lf_does_not_create_phantom_paragraph() {
+        // "Hi\n" is one paragraph (the LF closes it but starts no new
+        // one) — `split_paragraphs` only emits the trailing tail if it
+        // contains any character after the last B.
+        let t = process_text("Hi\n", None);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.total_chars, 3);
+        let p = &t.paragraphs[0];
+        assert_eq!(p.byte_range, 0..3);
+        assert_eq!(p.bidi.classes.last(), Some(&BidiClass::B));
+    }
+
+    #[test]
+    fn process_text_per_paragraph_p2_runs_independently() {
+        // First paragraph is Latin (L), second is Hebrew (R). Each P2
+        // walk operates on its own paragraph slice, so paragraph
+        // levels diverge.
+        let t = process_text("Hi\n\u{05D0}\u{05D1}", None);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.paragraphs[0].bidi.paragraph_level, 0);
+        assert_eq!(t.paragraphs[1].bidi.paragraph_level, 1);
+    }
+
+    #[test]
+    fn process_text_base_level_override_applies_uniformly() {
+        // HL1: caller supplies base_level for both paragraphs.
+        let t = process_text("Hi\nyo", Some(1));
+        assert_eq!(t.len(), 2);
+        for p in &t.paragraphs {
+            assert_eq!(p.bidi.paragraph_level, 1);
+        }
+    }
+
+    #[test]
+    fn process_text_char_byte_offsets_are_whole_input_indices() {
+        // Multi-byte characters (Hebrew Alef = 2 bytes in UTF-8) +
+        // multi-paragraph layout. The byte offsets in
+        // `char_byte_offsets` are whole-input indices, not paragraph-
+        // local ones.
+        let s = "A\n\u{05D0}\u{05D1}";
+        let t = process_text(s, None);
+        assert_eq!(t.len(), 2);
+        // Paragraph 0: "A\n" → chars at byte 0, 1.
+        assert_eq!(t.paragraphs[0].char_byte_offsets, vec![0, 1]);
+        // Paragraph 1: "אב" starting at whole-input byte 2.
+        assert_eq!(t.paragraphs[1].char_byte_offsets, vec![2, 4]);
+        // Verify the byte offsets index the original string correctly.
+        for p in &t.paragraphs {
+            for (i, &off) in p.char_byte_offsets.iter().enumerate() {
+                let c = s[off..].chars().next().expect("char at byte offset");
+                assert_eq!(bidi_class(c), p.bidi.classes[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn process_text_byte_range_covers_whole_input_with_no_gap() {
+        // The byte_range entries of consecutive paragraphs tile the
+        // whole input contiguously.
+        let s = "AAA\nBBB\nCCC";
+        let t = process_text(s, None);
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.paragraphs[0].byte_range.start, 0);
+        assert_eq!(
+            t.paragraphs[2].byte_range.end,
+            s.len(),
+            "last paragraph end equals input length",
+        );
+        for w in t.paragraphs.windows(2) {
+            assert_eq!(
+                w[0].byte_range.end, w[1].byte_range.start,
+                "paragraph ranges tile contiguously",
+            );
+        }
+    }
+
+    #[test]
+    fn process_text_char_offset_accumulates_correctly() {
+        let t = process_text("AB\nCDE\nF", None);
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.paragraphs[0].char_offset, 0);
+        // "AB\n" is 3 chars.
+        assert_eq!(t.paragraphs[1].char_offset, 3);
+        // "AB\n" (3) + "CDE\n" (4) = 7 chars before paragraph 2.
+        assert_eq!(t.paragraphs[2].char_offset, 7);
+        assert_eq!(t.total_chars, 8);
+    }
+
+    #[test]
+    fn text_bidi_locate_char_returns_paragraph_and_local_index() {
+        let t = process_text("AB\nCD", None);
+        // k = 0 → paragraph 0, local index 0.
+        assert_eq!(t.locate_char(0), Some((0, 0)));
+        // k = 1 → paragraph 0, local index 1.
+        assert_eq!(t.locate_char(1), Some((0, 1)));
+        // k = 2 → paragraph 0, local index 2 (the LF).
+        assert_eq!(t.locate_char(2), Some((0, 2)));
+        // k = 3 → paragraph 1, local index 0.
+        assert_eq!(t.locate_char(3), Some((1, 0)));
+        // k = 4 → paragraph 1, local index 1.
+        assert_eq!(t.locate_char(4), Some((1, 1)));
+        // k = 5 is out of bounds (total_chars = 5).
+        assert_eq!(t.locate_char(5), None);
+        assert_eq!(t.locate_char(99), None);
+    }
+
+    #[test]
+    fn process_text_splits_on_every_paragraph_separator_class_b_codepoint() {
+        // P1 splits on every class-B character bidi_class() returns.
+        // Whichever codepoints the local bidi_class() table assigns
+        // to class B must induce a split — this guards the
+        // bidi_class() → split_paragraphs → process_text contract end
+        // to end without re-asserting the exact set membership.
+        for sep in &[
+            '\u{000A}', // LF
+            '\u{000D}', // CR
+            '\u{0085}', // NEL
+            '\u{001C}', // File separator
+            '\u{001D}', // Group separator
+            '\u{001E}', // Record separator
+            '\u{2029}', // PS
+        ] {
+            assert_eq!(
+                bidi_class(*sep),
+                BidiClass::B,
+                "test-input invariant: {:#x} should be class B",
+                *sep as u32,
+            );
+            let s = format!("A{sep}B");
+            let t = process_text(&s, None);
+            assert_eq!(t.len(), 2, "{sep:?} should split into 2 paragraphs");
+        }
+    }
+
+    #[test]
+    fn process_text_matches_per_paragraph_process_paragraph_call() {
+        // process_text must be observationally identical to looping
+        // process_paragraph over split_paragraphs (modulo byte-offset
+        // rebasing). Cross-check on a representative LTR + RTL +
+        // mixed input.
+        let s = "Hi \u{05D0}\u{05D1}\n\u{0627}\u{0628}\nBye";
+        let t = process_text(s, None);
+        let slices = split_paragraphs(s);
+        assert_eq!(t.paragraphs.len(), slices.len());
+        let mut byte_start = 0usize;
+        for (carrier, slice) in t.paragraphs.iter().zip(slices.iter()) {
+            let (expected, expected_offsets) = process_paragraph(slice, None);
+            assert_eq!(carrier.bidi, expected);
+            // Per-paragraph `process_paragraph` returns paragraph-
+            // local byte offsets — add `byte_start` to match
+            // `process_text`'s whole-input offsets.
+            let shifted: Vec<usize> = expected_offsets.iter().map(|o| o + byte_start).collect();
+            assert_eq!(carrier.char_byte_offsets, shifted);
+            byte_start += slice.len();
+        }
+    }
+
+    #[test]
+    fn process_text_total_chars_matches_input_char_count() {
+        for s in &[
+            "",
+            "Hi",
+            "Hi\nyo",
+            "Hi\n\u{05D0}\u{05D1}",
+            "A\nB\nC\n",
+            "\u{05D0}\u{05D1}\n\u{0627}\u{0628}",
+        ] {
+            let t = process_text(s, None);
+            assert_eq!(t.total_chars, s.chars().count(), "for input {s:?}");
+        }
+    }
+
+    #[test]
+    fn process_text_base_level_low_bit_clamp_per_paragraph() {
+        // base_level = 5 → low bit 1 → every paragraph RTL.
+        let t = process_text("Hi\nyo", Some(5));
+        for p in &t.paragraphs {
+            assert_eq!(p.bidi.paragraph_level, 1);
+        }
+    }
+
+    #[test]
+    fn process_text_locate_char_round_trips_with_offset_arithmetic() {
+        // For every logical character k, locate_char(k) → (pi, ki)
+        // should satisfy `paragraphs[pi].char_offset + ki == k`.
+        let t = process_text("AB\nCD\nE", None);
+        for k in 0..t.total_chars {
+            let (pi, ki) = t.locate_char(k).expect("k in bounds");
+            assert_eq!(t.paragraphs[pi].char_offset + ki, k);
         }
     }
 }

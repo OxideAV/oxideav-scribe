@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.1 P1 multi-paragraph driver (round 233)
+
+Ninth UAX #9 surface on scribe, sitting one step above the round 227
+§3 whole-paragraph driver: the §3.3.1 **P1** rule "Split the text into
+separate paragraphs. A paragraph separator (type B) is kept with the
+previous paragraph. Within each paragraph, apply all the other rules
+of this algorithm." composed with the per-paragraph driver to take a
+whole-document `&str` and return one [`ParagraphBidi`] per paragraph
+with whole-input byte / character bookkeeping attached.
+
+- **`bidi::process_text(text: &str, base_level: Option<u8>) ->
+  TextBidi`** — top-level entry point. Walks the input via the
+  existing [`split_paragraphs`] (P1: trailing B kept with preceding
+  paragraph), then dispatches each paragraph slice through
+  [`process_paragraph_classes`] independently. Per-paragraph
+  `char_byte_offsets` are rebased onto the whole input so callers
+  index back into the original `&str` directly without adding a
+  paragraph-local offset.
+- **`bidi::TextBidi`** — multi-paragraph carrier. Fields:
+  - `paragraphs: Vec<ParagraphSlice>` — one entry per paragraph
+    found by P1, in logical order.
+  - `total_chars: usize` — cumulative character count across all
+    paragraphs (equals `text.chars().count()`).
+- **`TextBidi::len` / `is_empty`** — paragraph-count accessors.
+- **`TextBidi::locate_char(k: usize) -> Option<(usize, usize)>`** —
+  given a whole-input logical character index, returns
+  `(paragraph_index, paragraph_local_char_index)`. Linear walk over
+  paragraphs; the docstring notes a future binary-search swap point
+  if profiling demands it. Returns `None` past `total_chars`.
+- **`bidi::ParagraphSlice`** — per-paragraph carrier. Fields:
+  - `byte_range: Range<usize>` — half-open byte range of the
+    paragraph (including its trailing B if any) in the original
+    `&str`. Successive paragraph ranges tile the input
+    contiguously.
+  - `char_offset: usize` — cumulative character offset where this
+    paragraph begins in the whole-text logical sequence.
+  - `bidi: ParagraphBidi` — the §3 P → X → W → N → I output (round
+    227 carrier, unchanged).
+  - `char_byte_offsets: Vec<usize>` — whole-input byte index of
+    each character in the paragraph.
+- **`base_level: Option<u8>` HL1 semantics** — when `Some(_)`, every
+  paragraph adopts the same base level (low-bit clamped). When
+  `None`, P2 / P3 walk each paragraph independently, so e.g. the
+  first paragraph of `"Hi\nשלום"` resolves LTR and the second RTL.
+  Callers needing per-paragraph HL1 overrides loop
+  [`process_paragraph`] manually.
+- **Empty-input contract** — `process_text("")` returns
+  `TextBidi { paragraphs: vec![], total_chars: 0 }`; the spec
+  applies to no characters.
+- **Tests** — 14 unit + 24 integration tests cover: P1 split on
+  every class-B codepoint scribe's `bidi_class` recognises (LF, CR,
+  NEL, FS, GS, RS, PS); trailing-B-kept-with-preceding-paragraph
+  invariant; terminal LF not creating a phantom paragraph;
+  consecutive separators producing one paragraph each; per-
+  paragraph P2 / P3 independence (mixed Latin + Hebrew document);
+  HL1 base-level override + low-bit clamp; whole-input byte-range
+  contiguous tiling; `char_offset` accumulation across multi-byte
+  inputs (Hebrew); `char_byte_offsets` whole-input indexing
+  cross-checked against the original string; `total_chars` matches
+  `chars().count()`; `locate_char` round-trip with offset
+  arithmetic + out-of-bounds `None`; observational equivalence
+  with a manual `split_paragraphs` + `process_paragraph` loop;
+  per-paragraph `paragraph_level` cross-check; downstream
+  `reorder_paragraph` continues to work via the carrier; manual
+  L1 / L2 drive via `reset_trailing_levels` + `reorder_line`
+  succeeds for every paragraph; `Clone + Eq + Debug` derive
+  smoke tests on both carriers. Total scribe lib tests: 431 → 446.
+
+**Still deferred (no change from round 227):**
+
+- N0 bracket-pair resolution (blocked on `BidiBrackets.txt`).
+- L4 bidi mirroring (blocked on `BidiMirroring.txt`).
+- L3 combining-mark reordering (conditional on the renderer's
+  mark-attachment policy; does not fire under scribe's current
+  GPOS stacker).
+
+Provenance: P1 transcribed verbatim from UAX #9 Revision 50 /
+Unicode 16.0 §3.3.1 P1 at
+`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`; the per-
+paragraph dispatch composes the six per-rule entry points already
+in this module, each citing the same dated snapshot directly.
+
 ### Added — UAX #9 §3 whole-paragraph driver (round 227)
 
 Eighth UAX #9 surface on scribe, composing the six per-rule entry

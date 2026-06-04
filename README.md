@@ -355,6 +355,49 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `docs/text/unicode-bidi/`); L4 blocked on `BidiMirroring.txt`
   (same gap); L3 is conditional on the renderer's mark-attachment
   policy and does not yet fire under scribe's GPOS stacker.
+- **BiDi §3.3.1 P1 multi-paragraph driver (round 233)** —
+  `bidi::process_text(text, base_level) -> TextBidi` is the top-
+  level entry point for whole-document text. It walks the P1 split
+  (paragraph separator type B kept with the previous paragraph per
+  the §3.3.1 prose: LF, CR, NEL, FS / GS / RS, PS — every codepoint
+  scribe's `bidi_class()` table assigns to class B) via the existing
+  `split_paragraphs` and dispatches each paragraph slice through
+  `process_paragraph_classes` independently. The returned
+  [`TextBidi`] carrier publishes `paragraphs: Vec<ParagraphSlice>`
+  (one entry per paragraph, in logical order) plus `total_chars:
+  usize` (whole-input character count). Each `ParagraphSlice` carries
+  the paragraph's `byte_range: Range<usize>` (half-open, including
+  any trailing B), `char_offset: usize` (cumulative whole-text
+  character offset where the paragraph starts), the round-227
+  `bidi: ParagraphBidi` (the §3 P → X → W → N → I result), and
+  `char_byte_offsets: Vec<usize>` (whole-input byte index of every
+  character — pre-rebased so callers index back into the original
+  `&str` without paragraph-local offset arithmetic). `TextBidi::len`
+  / `is_empty` / `locate_char(k) -> Option<(usize, usize)>` are
+  paragraph-count + character-position accessors;
+  `locate_char` returns `(paragraph_index,
+  paragraph_local_char_index)` for any whole-input character index
+  below `total_chars`, `None` past it. `base_level: Option<u8>`
+  applies the HL1 override uniformly across paragraphs (low-bit
+  clamped); `None` lets P2 / P3 walk each paragraph independently,
+  so the LTR + RTL paragraphs of `"Hi\nשלום"` resolve to levels 0
+  and 1 respectively without caller bookkeeping. 14 unit + 24
+  integration tests cover P1 split on every recognised class-B
+  separator, the trailing-B-kept-with-preceding-paragraph invariant,
+  terminal-LF not creating a phantom paragraph, consecutive
+  separators producing one paragraph each, per-paragraph P2 / P3
+  independence, HL1 uniform application + low-bit clamp,
+  contiguous-tiling byte ranges, multi-byte char_byte_offsets
+  (Hebrew alef = 2 UTF-8 bytes), `total_chars == chars().count()`,
+  `locate_char` round-trip with offset arithmetic + out-of-bounds
+  `None`, observational equivalence with a manual `split_paragraphs`
+  + `process_paragraph` loop, per-paragraph `paragraph_level` cross-
+  check against the text walker, downstream
+  `ParagraphBidi::reorder_paragraph` continuing to work via the
+  carrier, manual L1 / L2 drive via `reset_trailing_levels` +
+  `reorder_line` succeeding per paragraph, and Clone + Eq + Debug
+  derive smoke tests on both carrier types. N0 / L3 / L4 remain
+  deferred (same blocking conditions as round 220).
 - **BiDi §3 whole-paragraph driver (round 227)** —
   `bidi::process_paragraph(text, base_level) -> (ParagraphBidi,
   Vec<usize>)` and the class-driven mirror
