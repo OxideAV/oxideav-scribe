@@ -302,9 +302,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   paragraphs flowing through `paragraph_level →
   resolve_explicit_levels` end-to-end. The X10 isolating-run-
   sequence partition that consumes X1..X9's output landed in round
-  220 (`level_runs` + `isolating_run_sequences`). The bracket-pair
-  rule N0 (still blocked on `BidiBrackets.txt`) and the L3 / L4
-  mirroring rules remain deferred.
+  220 (`level_runs` + `isolating_run_sequences`); L3 combining-
+  mark reordering landed in round 247. The bracket-pair rule N0
+  (still blocked on `BidiBrackets.txt`) and L4 mirroring remain
+  deferred.
 - **BiDi X10 isolating-run-sequence partition (round 220)** —
   `bidi::level_runs(&levels) -> Vec<LevelRun>` returns the UAX #9
   §3.1.2 **BD7** partition of the per-character embedding-level
@@ -336,7 +337,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   skipping X9-removed positions, ready to drive the in-place W / N
   / I passes per sequence per the X10 step 3 closing note "the
   order that one isolating run sequence is treated relative to
-  another does not matter." 17 unit + 16 integration tests cover
+  another does not matter." L3 combining-mark reordering landed in
+  round 247 — see the dedicated entry above. 17 unit + 16 integration tests cover
   the BD7 partition (empty / uniform-level / multi-change / full
   coverage invariant), the X10 sos / eos derivation under
   paragraph-edge / RLE-bounded / unmatched-isolate / non-zero-base
@@ -348,13 +350,13 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   sequence share their embedding level, the `indices` iterator's
   X9-skip behaviour and isolate-format-character preservation, and
   an end-to-end `X → W → N → I` compose driving the existing
-  weak / neutral / implicit-level passes per-sequence. **N0
-  (bracket-pair resolution per §3.1.3) and L3 / L4 (combining-mark
-  reordering + bidi-mirroring per §3.4 / §4.7) remain deferred** —
-  N0 blocked on `BidiBrackets.txt` (not yet vendored under
+  weak / neutral / implicit-level passes per-sequence. L3
+  combining-mark reordering (§3.4) landed in round 247 — see the
+  dedicated entry. **N0 (bracket-pair resolution per §3.1.3) and L4
+  (bidi-mirroring per §4.7) remain deferred** — N0 blocked on
+  `BidiBrackets.txt` (not yet vendored under
   `docs/text/unicode-bidi/`); L4 blocked on `BidiMirroring.txt`
-  (same gap); L3 is conditional on the renderer's mark-attachment
-  policy and does not yet fire under scribe's GPOS stacker.
+  (same gap).
 - **BiDi §3.3.1 P1 multi-paragraph driver (round 233)** —
   `bidi::process_text(text, base_level) -> TextBidi` is the top-
   level entry point for whole-document text. It walks the P1 split
@@ -396,8 +398,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `ParagraphBidi::reorder_paragraph` continuing to work via the
   carrier, manual L1 / L2 drive via `reset_trailing_levels` +
   `reorder_line` succeeding per paragraph, and Clone + Eq + Debug
-  derive smoke tests on both carrier types. N0 / L3 / L4 remain
-  deferred (same blocking conditions as round 220).
+  derive smoke tests on both carrier types. L3 landed in round 247;
+  N0 / L4 remain deferred (same blocking conditions as round 220).
 - **BiDi §3 whole-paragraph driver (round 227)** —
   `bidi::process_paragraph(text, base_level) -> (ParagraphBidi,
   Vec<usize>)` and the class-driven mirror
@@ -440,8 +442,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   reorder_paragraph identity / RTL-reversal pair, per-line
   reorder_line_range on a split paragraph, and the §3.4 spec
   example "car means CAR." resolving to its published visual order.
-  N0 / L3 / L4 remain deferred (same blocking conditions as round
-  220).
+  L3 landed in round 247; N0 / L4 remain deferred (same blocking
+  conditions as round 220).
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
   UAX #9 §3.2 normative bidirectional class for every code point
   scribe needs today (the 12 explicit-format controls in full, ASCII
@@ -495,6 +497,41 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi §3.4 L3 combining-mark reordering (round 247)** —
+  `bidi::reorder_combining_marks(orig_classes, levels, &mut visual)`
+  applies UAX #9 §3.4 rule **L3** in place to the visual permutation
+  returned by `reorder_line`: every `[NSM, …, NSM, base]` block in
+  visual order whose logical indices form an L2-reversed strictly-
+  decreasing sequence (i.e. the post-L2 footprint of one RTL
+  `base + marks` cluster) is wholesale reversed back to
+  `[base, NSM, …, NSM]` so the marks follow the base in the final
+  display stream — the contract a renderer that paints marks with
+  rightward overhangs (the spec's "expects them to follow"
+  alternative) requires. The block is reversed wholesale per the
+  spec wording "the ordering of the marks and the base character
+  must be reversed", which restores the marks to their original
+  logical-source order behind the base. The decreasing-logical-
+  index check uniquely identifies the L2-reversed shape, so L3 is
+  idempotent (re-running on already-rotated visual is a no-op) and
+  multi-cluster RTL runs rotate each cluster independently. Even-
+  level (LTR) runs are untouched — L2 didn't reverse them, so
+  marks are already after the base. NSMs whose level differs from
+  the following base (rare post-W1 leftover) and orphan NSMs with
+  no matching base in the same level-1 block are conservatively
+  left alone. 9 unit + 15 integration tests cover the single-base
+  RTL one-mark / two-mark / three-mark cases, multi-cluster RTL
+  with same and different mark counts, AL (Arabic-letter) base,
+  LTR-marks-untouched, RTL-island in an LTR paragraph, LTR-island
+  in an RTL paragraph (level-2 nested, marks out of scope), empty
+  input, orphan leading NSM, idempotency, the
+  L3-yields-a-permutation invariant, end-to-end L1 → L2 → L3
+  composition, and the pure-RTL multi-letter word with one mark.
+  Scribe's GPOS mark-to-base / mark-to-mark stacker keeps marks in
+  logical (post-base) order on both LTR and RTL, so callers using
+  scribe's own renderer can skip the L3 step; the L3 entry point is
+  for external callers wiring a different mark-attachment policy.
+  L4 (bidi-mirroring) remains deferred — `BidiMirroring.txt` is not
+  yet vendored under `docs/text/unicode-bidi/`.
 - **BiDi line-level reordering L1 + L2 (round 210)** —
   `bidi::reset_trailing_levels(&orig_classes, &mut levels,
   paragraph_level)` runs the UAX #9 §3.4 rule **L1** in place,
@@ -521,16 +558,12 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   by their spec-published resolved-level vectors, a permutation-
   invariant sweep over a small set of mixed-level shapes, and
   end-to-end W → N → I → L1 → L2 runs on real Arabic + Latin
-  fragments. **X-rules (explicit-embedding / override / isolate
-  stack + isolating-run-sequence partition), N0 (bracket-pair
-  resolution), and L3 / L4 (combining-mark reordering + bidi-
-  mirroring) remain deferred.** L3 is conditional on the
-  renderer's mark-attachment policy — scribe's GPOS mark-to-base /
-  mark-to-mark stacker keeps logical (post-base) order in both
-  directions, so the spec's "If the rendering engine expects them
-  to follow the base characters" guard does not fire; L4 needs
-  `BidiMirroring.txt` to identify the mirrored set, which is not
-  yet vendored alongside the UAX HTML.
+  fragments. The X-rules pair (X1..X9 stack + X10 isolating-run-
+  sequence partition) landed in rounds 217 + 220; L3 (combining-
+  mark reordering) landed in round 247 — see the entry above.
+  **N0 (bracket-pair resolution) and L4 (bidi-mirroring) remain
+  deferred** — N0 needs `BidiBrackets.txt`, L4 needs
+  `BidiMirroring.txt`, neither yet vendored alongside the UAX HTML.
 - **BiDi implicit-level resolution I1 + I2 (round 204)** —
   `bidi::resolve_implicit_levels(&classes, embedding_level) ->
   Vec<u8>` runs the UAX #9 §3.3.6 implicit-level pass over one
@@ -592,9 +625,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) N0 bracket pairs + L3 / L4** (X1..X9 explicit-
+- **Bidi (UAX #9) N0 bracket pairs + L4** (X1..X9 explicit-
   level pass landed in round 217; X10 isolating-run-sequence
-  partition + sos/eos derivation landed in round 220), **CFF2
+  partition + sos/eos derivation landed in round 220; L3
+  combining-mark reordering landed in round 247), **CFF2
   variable charstrings**
   (the `blend` operator in TN5177 v3 — scribe parses the CFF2
   INDEX walker, but doesn't yet emit variation-blended cubic

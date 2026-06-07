@@ -123,9 +123,18 @@
 //!   per-character level vector. The carrier exposes
 //!   `reorder_paragraph()` (whole-paragraph L1 + L2 convenience)
 //!   and `reorder_line_range(start..end)` (per-line variant for
-//!   callers that have a line-breaker). The bracket-pair rule N0
-//!   and the L3 / L4 mirroring rules are deferred to follow-up
-//!   rounds.
+//!   callers that have a line-breaker). Round 247 lands
+//!   `bidi::reorder_combining_marks(orig_classes, levels,
+//!   &mut visual)`, the §3.4 rule **L3** in-place permutation
+//!   adjuster: every L2-reversed `[NSM, …, NSM, base]` block in
+//!   the visual stream (identified by its strictly-decreasing
+//!   logical indices) is reversed back to `[base, NSM, …, NSM]`
+//!   so callers running a non-scribe mark-attachment policy get
+//!   the spec's "expects them to follow" alternative shape; the
+//!   function is idempotent and ignores even-level (LTR) runs. The
+//!   bracket-pair rule N0 and the L4 mirroring rule are deferred
+//!   to follow-up rounds (`BidiBrackets.txt` / `BidiMirroring.txt`
+//!   not yet vendored under `docs/text/unicode-bidi/`).
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -145,10 +154,10 @@ pub mod variations;
 
 pub use bidi::{
     bidi_class, isolating_run_sequences, level_runs, paragraph_level, process_paragraph,
-    process_paragraph_classes, process_text, reorder_line, reset_trailing_levels,
-    resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,
-    split_paragraphs, BidiClass, ExplicitLevels, IsolatingRunSequence, LevelRun, ParagraphBidi,
-    ParagraphSlice, TextBidi, MAX_DEPTH,
+    process_paragraph_classes, process_text, reorder_combining_marks, reorder_line,
+    reset_trailing_levels, resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types,
+    resolve_weak_types, split_paragraphs, BidiClass, ExplicitLevels, IsolatingRunSequence,
+    LevelRun, ParagraphBidi, ParagraphSlice, TextBidi, MAX_DEPTH,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

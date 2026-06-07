@@ -114,15 +114,17 @@
 //!   ranges, the per-sequence embedding level, and the sos / eos
 //!   directional types W1..W7 / N0..N2 / I1..I2 consume at the
 //!   sequence boundaries.
-//! - L3 (combining-mark reordering for RTL bases). The rule is
-//!   conditional on the rendering engine's mark-attachment policy
-//!   per UAX #9 §3.4: "If the rendering engine expects them to
-//!   follow the base characters in the final display process, then
-//!   the ordering of the marks and the base character must be
-//!   reversed." Scribe's GPOS mark-to-base + mark-to-mark stacker
-//!   keeps the logical (post-base) order in both directions, so
-//!   the conditional does not fire today; revisit when a CTL
-//!   pipeline using glyph-spacing overhangs lands.
+//! - L3 (combining-mark reordering for RTL bases) landed in round
+//!   247 as [`reorder_combining_marks`], an in-place permutation
+//!   adjuster that reverses each post-L2 `[NSM, …, NSM, base]`
+//!   block back to `[base, NSM, …, NSM]` for callers running a
+//!   non-scribe mark-attachment policy (the spec's "expects them
+//!   to follow" alternative). Scribe's own GPOS mark-to-base +
+//!   mark-to-mark stacker keeps logical (post-base) order in both
+//!   directions, so callers using scribe's renderer can skip the
+//!   L3 step; the entry point is for external callers wiring a
+//!   different mark-attachment policy (e.g. mark glyphs with
+//!   rightward overhangs).
 //! - L4 (mirroring of bidi-mirrored characters at R-resolved
 //!   levels per UAX #9 §3.4 / §4.7); requires the Unicode
 //!   `BidiMirroring.txt` / `Bidi_Mirrored` data file to identify
@@ -1716,6 +1718,139 @@ pub fn reorder_line(levels: &[u8]) -> Vec<usize> {
         level -= 1;
     }
     visual
+}
+
+/// Apply UAX #9 §3.4 rule **L3** in place to the visual permutation
+/// returned by [`reorder_line`].
+///
+/// Per §3.4 L3:
+///
+/// > Combining marks applied to a right-to-left base character will at
+/// > this point precede their base character. If the rendering engine
+/// > expects them to follow the base characters in the final display
+/// > process, then the ordering of the marks and the base character
+/// > must be reversed.
+///
+/// After [`reorder_line`], an RTL run that was originally
+/// `base, nsm_1, nsm_2, ..., nsm_k` in logical order appears in visual
+/// order as `nsm_k, ..., nsm_2, nsm_1, base` (the whole odd-level run
+/// was reversed by L2). L3 reverses each such `[m_k, …, m_1, base]`
+/// block back to `[base, m_1, …, m_k]` so the marks follow the base
+/// in the final display stream — the contract a renderer that paints
+/// marks with rightward overhangs (the spec's "expects them to
+/// follow" alternative) requires. The block is reversed wholesale
+/// per the spec wording "the ordering of the marks and the base
+/// character must be reversed", which restores the marks to their
+/// original logical-source order behind the base.
+///
+/// `orig_classes` is the same class slice the caller fed into the
+/// W / N / I passes, per the §3.4 normative note "the original types
+/// of the characters". `levels` is the post-L1 / I-rules level
+/// vector (same shape as the input to [`reorder_line`]).
+///
+/// LTR runs (even level) are untouched — L2 did not reverse them, so
+/// their marks are already after their base in visual order. NSMs at
+/// the start of an odd-level run with no preceding non-NSM base in
+/// the same run are left in place (W1 retypes such NSMs to `sos`, and
+/// no base is available to attach them to). Mixed-level transitions
+/// (e.g. NSMs whose level differs from their preceding base after
+/// W1's retyping moved them) are conservatively left alone, since the
+/// spec's L3 wording scopes the reordering to "marks applied to a
+/// right-to-left base character" — taken to mean marks that share
+/// the base's resolved level.
+///
+/// L3 is a no-op when every level is even (no RTL runs exist) and
+/// when no NSM is present at an odd level. Idempotent: calling twice
+/// yields the same permutation as calling once.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{reorder_combining_marks, reorder_line, BidiClass};
+///
+/// // Logical: R NSM NSM (Hebrew base + two combining marks).
+/// // Post-I levels: 1 1 1. L2 reverses to visual [2, 1, 0].
+/// let cls = [BidiClass::R, BidiClass::NSM, BidiClass::NSM];
+/// let lvl = [1, 1, 1];
+/// let mut visual = reorder_line(&lvl);
+/// assert_eq!(visual, vec![2, 1, 0]);
+/// reorder_combining_marks(&cls, &lvl, &mut visual);
+/// // L3 rotates the block: base first, then marks in original order.
+/// assert_eq!(visual, vec![0, 1, 2]);
+/// ```
+pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual: &mut [usize]) {
+    assert_eq!(
+        orig_classes.len(),
+        levels.len(),
+        "reorder_combining_marks: class slice and level slice must be the same length",
+    );
+    assert_eq!(
+        orig_classes.len(),
+        visual.len(),
+        "reorder_combining_marks: class slice and visual slice must be the same length",
+    );
+    let n = visual.len();
+    if n == 0 {
+        return;
+    }
+    // Walk the VISUAL order. At each odd-level NSM, look ahead for
+    // the maximal contiguous block of `[NSM, …, NSM, base]` whose
+    // LOGICAL indices form a strictly decreasing sequence ending at
+    // the base — i.e. the post-L2 footprint of one RTL
+    // `base + marks` cluster `(b, b+1, ..., b+k)` mapped to visual
+    // `(b+k, b+k-1, ..., b+1, b)`. The strictly-decreasing check
+    // identifies the L2-reversed shape uniquely; once L3 has
+    // reversed a block to ascending logical order, a second pass
+    // sees the same block as ascending and leaves it alone (L3 is
+    // idempotent).
+    let mut vi = 0;
+    while vi < n {
+        let logical = visual[vi];
+        if orig_classes[logical] == BidiClass::NSM && levels[logical] % 2 == 1 {
+            let lvl = levels[logical];
+            // Walk forward over consecutive NSMs at this same level
+            // whose LOGICAL index decreases by exactly 1 each step
+            // (matching L2's contiguous-run reversal output).
+            let mut vj = vi;
+            let mut expected = logical;
+            while vj < n {
+                let lj = visual[vj];
+                if orig_classes[lj] == BidiClass::NSM && levels[lj] == lvl && lj == expected {
+                    vj += 1;
+                    expected = expected.saturating_sub(1);
+                } else {
+                    break;
+                }
+            }
+            // `vj` now points at the first non-NSM (or
+            // non-decreasing-NSM) in the visual stream. For the
+            // reversal to apply, that position must be a non-NSM
+            // base at the same odd level AND its logical index
+            // must continue the decreasing sequence (i.e. equal
+            // `expected`).
+            if vj < n {
+                let lb = visual[vj];
+                if orig_classes[lb] != BidiClass::NSM && levels[lb] == lvl && lb == expected {
+                    // Block is `visual[vi..=vj]`. Per §3.4 L3 "the
+                    // ordering of the marks and the base character
+                    // must be reversed": reverse the whole block
+                    // so visual `[m_k, ..., m_1, base]` becomes
+                    // `[base, m_1, ..., m_k]` — the base comes
+                    // first and the marks regain their logical
+                    // source order.
+                    visual[vi..=vj].reverse();
+                    // Advance past the reversed block.
+                    vi = vj + 1;
+                    continue;
+                }
+            }
+            // No matching base — leave these NSMs untouched and
+            // skip past them so we don't re-scan.
+            vi = vj.max(vi + 1);
+        } else {
+            vi += 1;
+        }
+    }
 }
 
 /// Split `text` into paragraphs at every character of class `B`
@@ -3878,6 +4013,131 @@ mod tests {
         let visual = reorder_line(&lvl);
         // All level 1 → full reverse. Visual order: WS, B, A.
         assert_eq!(visual, vec![2, 1, 0]);
+    }
+
+    // --- Section 8b: rule L3 (combining-mark reordering) -------
+
+    #[test]
+    fn l3_empty_input_no_op() {
+        let mut visual: Vec<usize> = Vec::new();
+        reorder_combining_marks(&[], &[], &mut visual);
+        assert!(visual.is_empty());
+    }
+
+    #[test]
+    fn l3_all_ltr_no_op() {
+        // Even levels everywhere → no L2 reversal happened, marks
+        // already follow base. L3 is a no-op.
+        let cls = [BidiClass::L, BidiClass::NSM, BidiClass::NSM];
+        let lvl = [0, 0, 0];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![0, 1, 2]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        assert_eq!(visual, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn l3_rtl_base_with_one_mark_swaps_to_base_first() {
+        // R NSM at level 1: L2 → [1, 0]. L3 → [0, 1].
+        let cls = [BidiClass::R, BidiClass::NSM];
+        let lvl = [1, 1];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![1, 0]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        assert_eq!(visual, vec![0, 1]);
+    }
+
+    #[test]
+    fn l3_rtl_base_with_multiple_marks_preserves_mark_order() {
+        // R NSM NSM NSM at level 1: L2 → [3, 2, 1, 0]. L3 rotates
+        // the base into the front and preserves logical order
+        // among the marks.
+        let cls = [BidiClass::R, BidiClass::NSM, BidiClass::NSM, BidiClass::NSM];
+        let lvl = [1, 1, 1, 1];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![3, 2, 1, 0]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        // Base 0 first; marks then in original logical order 1, 2, 3.
+        assert_eq!(visual, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn l3_rtl_run_inside_ltr_paragraph() {
+        // Logical: L L R NSM L L (level 0 0 1 1 0 0).
+        // L2 reverses the single level-1 run [R, NSM] to [NSM, R].
+        // L3 rotates back so the base precedes its mark in visual.
+        let cls = [
+            BidiClass::L,
+            BidiClass::L,
+            BidiClass::R,
+            BidiClass::NSM,
+            BidiClass::L,
+            BidiClass::L,
+        ];
+        let lvl = [0, 0, 1, 1, 0, 0];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![0, 1, 3, 2, 4, 5]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        assert_eq!(visual, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn l3_multiple_rtl_clusters_each_rotate_independently() {
+        // R NSM R NSM at level 1: L2 reverses to [3, 2, 1, 0].
+        // L3 sees in visual order: pos0=NSM(3), pos1=base(2),
+        // pos2=NSM(1), pos3=base(0). Two clusters; rotate each.
+        let cls = [BidiClass::R, BidiClass::NSM, BidiClass::R, BidiClass::NSM];
+        let lvl = [1, 1, 1, 1];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![3, 2, 1, 0]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        // Each [NSM, base] block becomes [base, NSM]. Result is
+        // [base2, nsm3, base0, nsm1] → [2, 3, 0, 1].
+        assert_eq!(visual, vec![2, 3, 0, 1]);
+    }
+
+    #[test]
+    fn l3_leading_orphan_nsm_in_rtl_run_is_left_alone() {
+        // Pathological: an NSM with no preceding base in its run.
+        // Logical: NSM NSM at level 1. L2 → [1, 0]. L3 finds no
+        // following base, so it leaves the visual order untouched.
+        let cls = [BidiClass::NSM, BidiClass::NSM];
+        let lvl = [1, 1];
+        let mut visual = reorder_line(&lvl);
+        assert_eq!(visual, vec![1, 0]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        assert_eq!(visual, vec![1, 0]);
+    }
+
+    #[test]
+    fn l3_idempotent_when_applied_twice() {
+        // Applying L3 a second time on the same visual must yield
+        // the same vector (the marks are already after their base
+        // so no rotation has anything to do).
+        let cls = [BidiClass::R, BidiClass::NSM, BidiClass::NSM];
+        let lvl = [1, 1, 1];
+        let mut visual = reorder_line(&lvl);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        let once = visual.clone();
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        assert_eq!(visual, once);
+    }
+
+    #[test]
+    fn l3_mixed_level_nsm_left_alone() {
+        // NSM whose level differs from its surrounding RTL base
+        // (an unusual post-W1 leftover) is conservatively skipped.
+        // Logical R(1) NSM(0) — the NSM ended up level 0. L2's
+        // sequence at level 1 is just position 0, reversed = [0].
+        // Then level-1+ run [0] does not include position 1.
+        let cls = [BidiClass::R, BidiClass::NSM];
+        let lvl = [1, 0];
+        let mut visual = reorder_line(&lvl);
+        // Single position-0 level-1 run reversed = identity.
+        assert_eq!(visual, vec![0, 1]);
+        reorder_combining_marks(&cls, &lvl, &mut visual);
+        // NSM at level 0 (even) is not in scope of L3.
+        assert_eq!(visual, vec![0, 1]);
     }
 
     // --- Section 9: X-rules (X1..X9) ---------------------------

@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.4 L3 combining-mark reordering (round 247)
+
+Tenth UAX #9 surface on scribe and the third entry in the §3.4
+line-level pass: rule **L3**, the post-L2 combining-mark reordering
+that callers running a non-scribe mark-attachment policy need to
+turn the L2 permutation into a visually-correct display stream.
+
+- **`bidi::reorder_combining_marks(orig_classes: &[BidiClass],
+  levels: &[u8], visual: &mut [usize])`** — in-place permutation
+  adjuster. After [`reorder_line`], an RTL run that was originally
+  `base, nsm_1, …, nsm_k` in logical order appears as
+  `nsm_k, …, nsm_1, base` in visual order (L2 reversed the whole
+  odd-level run). `reorder_combining_marks` walks the visual stream
+  and reverses each such `[NSM, …, NSM, base]` block back to
+  `[base, NSM, …, NSM]` per the §3.4 L3 wording "the ordering of
+  the marks and the base character must be reversed". The block is
+  identified by the strictly-decreasing logical-index signature
+  L2 leaves behind, so the function is **idempotent** (re-running
+  on already-rotated visual is a no-op) and multi-cluster RTL runs
+  rotate each cluster independently without bleeding into one
+  another.
+- LTR (even-level) runs are untouched — L2 didn't reverse them so
+  marks already follow the base. NSMs whose level differs from the
+  following base (rare post-W1 leftover) and orphan NSMs with no
+  matching base in the same level-1 block are conservatively left
+  alone.
+- Scribe's own GPOS mark-to-base + mark-to-mark stacker keeps marks
+  in logical (post-base) order in both directions, so callers
+  using scribe's renderer can skip the L3 step; the L3 entry point
+  is for external callers wiring a different mark-attachment policy
+  (the spec's "expects them to follow the base characters" branch).
+- 9 unit + 15 integration tests cover the single-base RTL one-mark
+  / two-mark / three-mark cases, multi-cluster RTL with same and
+  different mark counts, AL (Arabic-letter) base, LTR marks
+  untouched, RTL island in an LTR paragraph, LTR island in an RTL
+  paragraph (level-2 nested, marks out of scope), empty input,
+  orphan leading NSM, idempotency, the L3-yields-a-permutation
+  invariant, end-to-end L1 → L2 → L3 composition, and the
+  pure-RTL multi-letter word with one mark.
+- **N0 (bracket-pair resolution per §3.1.3) and L4 (bidi-mirroring
+  per §4.7) remain deferred** — N0 blocked on `BidiBrackets.txt`,
+  L4 blocked on `BidiMirroring.txt`, neither yet vendored under
+  `docs/text/unicode-bidi/` alongside the UAX HTML.
+
+Provenance: rule L3 is transcribed verbatim from UAX #9 Revision 50
+/ Unicode 16.0 §3.4 (`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
+
 ### Added — UAX #9 §3.3.1 P1 multi-paragraph driver (round 233)
 
 Ninth UAX #9 surface on scribe, sitting one step above the round 227
