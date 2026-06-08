@@ -1,8 +1,9 @@
 //! Unicode Bidirectional Algorithm — UAX #9 character classes,
 //! paragraph-level resolution (rules P1 / P2 / P3), explicit-level
 //! / override / isolate stack (rules X1..X9), weak-type resolution
-//! (rules W1..W7), neutral-type resolution (rules N1 and N2 —
-//! bracket-pair rule N0 deferred to a follow-up round),
+//! (rules W1..W7), bracket-pair resolution (rule N0 — ASCII
+//! bracket set; the full Unicode `BidiBrackets.txt` table is not
+//! yet vendored), neutral-type resolution (rules N1 and N2),
 //! implicit-level resolution (rules I1 / I2), and line-level
 //! reordering (rules L1 / L2).
 //!
@@ -59,9 +60,41 @@
 //!   leftover `ES` / `ET` / `CS` (collapsed to `ON`), so the
 //!   N-rules can resolve neutrals against a clean weak-type
 //!   vocabulary.
+//! - [`paired_bracket`] — the BD14 / BD15 paired-bracket lookup for
+//!   the six ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`).
+//!   Returns `Some((paired_char, BracketKind))` for any of the six,
+//!   `None` otherwise. The wider Unicode `BidiBrackets.txt` table
+//!   is not yet vendored under `docs/text/unicode-bidi/`; callers
+//!   needing the full UCS pair set can wrap [`bracket_pairs`] and
+//!   [`resolve_bracket_pairs`] with their own lookup of the same
+//!   `(char, BracketKind)` shape.
+//! - [`bracket_pairs`] — the **BD16** (§3.1.3) paired-bracket walk
+//!   over one isolating run sequence. Maintains the spec-mandated
+//!   63-element stack (overflow → empty list, per the BD16
+//!   "return an empty list" branch), pairs nested brackets by
+//!   popping through the matching opener inclusively, and finally
+//!   sorts the result by opener position in ascending logical
+//!   order — the §3.3.5 N0 sequencing invariant.
+//! - [`resolve_bracket_pairs`] — the **N0** rule from §3.3.5 applied
+//!   to one isolating run sequence post-W7 and pre-N1. For each
+//!   pair, inspects the bracket interior for a strong type (EN /
+//!   AN projected to R), then dispatches the N0 a / b / c.1 / c.2
+//!   / d cases in place: matching-embedding-inside → both brackets
+//!   to embedding direction (N0 b); opposite-inside + preceding-
+//!   strong-also-opposite → both brackets to that direction (N0
+//!   c.1); opposite-inside + preceding-strong-matches-embedding →
+//!   both brackets to embedding direction (N0 c.2); no inside-
+//!   strong → leave the pair untouched (N0 d). The trailing-NSM
+//!   clarification ("any NSM following a paired bracket which
+//!   changed under N0 should change to match the bracket") is
+//!   honoured for the contiguous NSM run after each rewritten
+//!   bracket. Pairs are processed sequentially in opener-
+//!   ascending order so inner pairs see the rewrites of every
+//!   outer pair already processed.
 //! - [`resolve_neutral_types`] — the **N1 + N2** rules from §3.3.5
 //!   applied to one isolating run sequence already passed through
-//!   `resolve_weak_types`. N1 walks every maximal run of Neutral-or-
+//!   `resolve_weak_types` (and `resolve_bracket_pairs`, if N0 is
+//!   wired in). N1 walks every maximal run of Neutral-or-
 //!   Isolate-formatting (NI) elements (`B` / `S` / `WS` / `ON` /
 //!   `LRI` / `RLI` / `FSI` / `PDI`) and, when the strong type on
 //!   both sides (counting `EN` / `AN` as `R`, and `sos` / `eos` at
@@ -102,10 +135,12 @@
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
-//! - N0 (bracket-pair resolution per §3.1.3 + §3.3.5); requires the
-//!   Unicode `BidiBrackets.txt` data file to identify opening /
-//!   closing paired brackets, which is not yet vendored under
-//!   `docs/`.
+//! - The full Unicode `BidiBrackets.txt` paired-bracket table (~60
+//!   entries across the Mathematical Operators, CJK Symbols and
+//!   Punctuation, and Ornamental Brackets blocks). The N0 rule
+//!   itself is implemented (round 257); only [`paired_bracket`]'s
+//!   ASCII-bracket seed table needs widening, which awaits the
+//!   `BidiBrackets.txt` snapshot landing under `docs/text/unicode-bidi/`.
 //! - X10 isolating-run-sequence partition + sos/eos derivation are
 //!   now implemented in [`level_runs`] (BD7) and
 //!   [`isolating_run_sequences`] (BD13 + X10 step 2). Callers feed
@@ -341,6 +376,13 @@ pub fn bidi_class(c: char) -> BidiClass {
         0x002C | 0x002E | 0x002F | 0x003A => return BidiClass::CS,
         // ET: NUMBER SIGN, DOLLAR SIGN, PERCENT SIGN.
         0x0023..=0x0025 => return BidiClass::ET,
+        // ON: ASCII brackets (the six BidiBrackets.txt entries in the
+        // ASCII range — round 257). LEFT/RIGHT PARENTHESIS, LEFT/RIGHT
+        // SQUARE BRACKET, LEFT/RIGHT CURLY BRACKET. The
+        // Bidi_Paired_Bracket_Type property lookup happens in
+        // [`paired_bracket`]; the class slot itself is ON per UAX #9
+        // §3.2 Table 4.
+        0x0028 | 0x0029 | 0x005B | 0x005D | 0x007B | 0x007D => return BidiClass::ON,
         _ => {}
     }
 
@@ -1446,6 +1488,400 @@ pub fn resolve_neutral_types(
     }
 }
 
+/// Open / Close classification for a paired-bracket character per UAX
+/// #9 **BD14 + BD15** (§3.1.3).
+///
+/// Returned by [`paired_bracket`]. The kind is a property of the
+/// character itself, not the position in the input — a balanced opener
+/// always reports `Open`, its closer `Close`. The bracket-pair walker
+/// in [`bracket_pairs`] combines the kind with the surrounding bidi
+/// classes to honour the BD14 / BD15 "current bidirectional character
+/// type is ON" qualifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BracketKind {
+    /// BD14 — opening paired bracket.
+    Open,
+    /// BD15 — closing paired bracket.
+    Close,
+}
+
+/// Bidi paired-bracket lookup per UAX #9 **§3.1.3** (BD14 / BD15 /
+/// BD16) for the ASCII bracket pairs.
+///
+/// Returns `Some((paired_char, kind))` when `c` is one of the six
+/// ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`). The paired
+/// character is the **other** member of the pair (so `paired_bracket(
+/// '(')` returns `(')', BracketKind::Open)` and `paired_bracket(')')`
+/// returns `('(', BracketKind::Close)`). Returns `None` for every
+/// other code point.
+///
+/// # Scope note
+///
+/// UAX #9 §3.1.3 defines the full Bidi_Paired_Bracket /
+/// Bidi_Paired_Bracket_Type properties via `BidiBrackets.txt` from the
+/// Unicode Character Database — ~60 pairs across the Mathematical
+/// Operators, Misc Mathematical Symbols, Supplementary Mathematical
+/// Operators, CJK Symbols and Punctuation, and Ornamental Brackets
+/// blocks. The table file is not yet vendored under
+/// `docs/text/unicode-bidi/`, so this round ships the six ASCII
+/// brackets named explicitly in the UAX #9 §3.1.3 worked examples and
+/// the §1.6 "RTL Mark" discussion. Callers needing the full UCS
+/// table can wrap the helpers below with their own
+/// `paired_bracket`-equivalent function — `bracket_pairs` and
+/// [`resolve_bracket_pairs`] accept any lookup that follows the
+/// `(char, BracketKind)` shape via the per-character iteration
+/// pattern shown in [`bracket_pairs`].
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{paired_bracket, BracketKind};
+/// assert_eq!(paired_bracket('('), Some((')', BracketKind::Open)));
+/// assert_eq!(paired_bracket(')'), Some(('(', BracketKind::Close)));
+/// assert_eq!(paired_bracket('['), Some((']', BracketKind::Open)));
+/// assert_eq!(paired_bracket(']'), Some(('[', BracketKind::Close)));
+/// assert_eq!(paired_bracket('{'), Some(('}', BracketKind::Open)));
+/// assert_eq!(paired_bracket('}'), Some(('{', BracketKind::Close)));
+/// assert_eq!(paired_bracket('a'), None);
+/// assert_eq!(paired_bracket(' '), None);
+/// ```
+#[must_use]
+pub fn paired_bracket(c: char) -> Option<(char, BracketKind)> {
+    match c {
+        '(' => Some((')', BracketKind::Open)),
+        ')' => Some(('(', BracketKind::Close)),
+        '[' => Some((']', BracketKind::Open)),
+        ']' => Some(('[', BracketKind::Close)),
+        '{' => Some(('}', BracketKind::Open)),
+        '}' => Some(('{', BracketKind::Close)),
+        _ => None,
+    }
+}
+
+/// Identify the paired-bracket text positions in one isolating run
+/// sequence per UAX #9 **BD16** (§3.1.3).
+///
+/// `chars` is the per-position character slice the sequence covers
+/// (the `i`th entry is the character at sequence-local logical index
+/// `i`); `classes` is the parallel **post-W7** bidi-class slice for
+/// the same positions (the same slice [`resolve_neutral_types`]
+/// consumes). The two must have equal length.
+///
+/// The walker mirrors the BD16 pseudocode verbatim:
+///
+/// 1. Maintain a fixed-size stack of `(opener_paired_char,
+///    text_position)` entries — capacity **63** per the spec's "fixed
+///    size for exactly 63 elements" clause.
+/// 2. Walk `chars` in logical order. Per BD14 / BD15 a position is a
+///    paired bracket *only if its current bidi class is `ON`* — so
+///    every test gates on `classes[i] == BidiClass::ON`. Positions
+///    that paired-bracket to a non-`ON` slot (e.g. an opener inside
+///    an RLO override that rewrote its class to `R`) are ignored, as
+///    the spec dictates.
+/// 3. On an `Open`-kind ON bracket: if stack room remains, push
+///    `(closer_for_this_opener, i)`. If the stack is full, BD16's
+///    "stop processing BD16 ... and return an empty list" branch is
+///    taken — the function abandons the sequence and returns the
+///    empty vector. Pairs already collected before the overflow are
+///    **dropped** per the spec.
+///
+///    Note: the BD16 step uses the opener's
+///    `Bidi_Paired_Bracket` value (i.e. the matching closer) as the
+///    stack-element bracket, *not* the opener itself. The match in
+///    the close branch then compares the inspected closer to that
+///    stored value.
+/// 4. On a `Close`-kind ON bracket: scan the stack top-down. If a
+///    stack element matches (the stored closer equals the inspected
+///    closer), append `(opener_position, i)` to the result and pop
+///    *through* (inclusive of) that element. If no stack element
+///    matches, the close is consumed without popping (the BD16
+///    "continue with inspecting the next character" branch).
+/// 5. Finally, sort the result by opener position in ascending order
+///    — the N0 walker per the §3.3.5 "Process bracket pairs ...
+///    sequentially in the logical order of the text positions of the
+///    opening paired brackets" clause requires this ordering.
+///
+/// The BD16 step's "U+3009 and U+232A are treated as equivalent"
+/// special case is not exercised by the ASCII bracket set [`paired_bracket`]
+/// covers (those two codepoints are CJK angle brackets); future-extended
+/// lookups can model the equivalence by returning the *same* closer
+/// `char` for both U+3009 and U+232A from their respective `Open`
+/// entries.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{bidi_class, bracket_pairs};
+///
+/// // "a ( b ) c" — one bracket pair at (2, 6).
+/// let chars: Vec<char> = "a(b)c".chars().collect();
+/// let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+/// assert_eq!(bracket_pairs(&chars, &classes), vec![(1, 3)]);
+/// ```
+#[must_use]
+pub fn bracket_pairs(chars: &[char], classes: &[BidiClass]) -> Vec<(usize, usize)> {
+    assert_eq!(
+        chars.len(),
+        classes.len(),
+        "bracket_pairs: chars / classes length mismatch ({} != {})",
+        chars.len(),
+        classes.len(),
+    );
+
+    // BD16's "fixed-size stack for exactly 63 elements" — a hard cap
+    // the spec ties to the equally hard MAX_DEPTH 125 stack limit
+    // (overflow → abandon the sequence's brackets entirely).
+    const BRACKET_STACK_CAP: usize = 63;
+    let mut stack: Vec<(char, usize)> = Vec::with_capacity(BRACKET_STACK_CAP);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+
+    for (i, &c) in chars.iter().enumerate() {
+        // BD14 / BD15: only ON-classified positions count as paired
+        // brackets. Post-W7 the only ON contributors are characters
+        // whose original class was ON (including ASCII brackets) plus
+        // any ES / ET / CS the W4..W6 rules collapsed to ON, none of
+        // which paired_bracket() recognises. So the gate is exact.
+        if classes[i] != BidiClass::ON {
+            continue;
+        }
+        let Some((other, kind)) = paired_bracket(c) else {
+            continue;
+        };
+        match kind {
+            BracketKind::Open => {
+                if stack.len() == BRACKET_STACK_CAP {
+                    // Spec: "stop processing BD16 for the remainder
+                    // of the isolating run sequence and return an
+                    // empty list."
+                    return Vec::new();
+                }
+                // Stack stores the *closer* paired with this opener
+                // (BD16's "push its Bidi_Paired_Bracket property
+                // value"), plus the opener's text position.
+                stack.push((other, i));
+            }
+            BracketKind::Close => {
+                // Spec close-branch: walk the stack top-down looking
+                // for a matching opener. If found, append the pair
+                // and pop through it inclusively; otherwise, continue
+                // without popping.
+                let mut hit: Option<usize> = None;
+                for depth in (0..stack.len()).rev() {
+                    if stack[depth].0 == c {
+                        hit = Some(depth);
+                        break;
+                    }
+                }
+                if let Some(depth) = hit {
+                    let (_closer, open_pos) = stack[depth];
+                    pairs.push((open_pos, i));
+                    stack.truncate(depth);
+                }
+            }
+        }
+    }
+
+    // BD16 final step: "Sort the list of resulting bracket pairs in
+    // ascending order based on the text position of the opening
+    // paired bracket." The walk above appends in close-position
+    // order, so nested pairs (inner pair closes first) appear before
+    // their enclosing pair. Sort by opener to fix the order.
+    pairs.sort_by_key(|&(open, _close)| open);
+    pairs
+}
+
+/// Resolve **bracket-pair types** for one isolating run sequence per
+/// UAX #9 **N0** (§3.3.5).
+///
+/// `classes` is the per-character [`BidiClass`] vector left by the W
+/// pass — the same buffer [`resolve_neutral_types`] consumes. N0
+/// runs **before** N1 / N2: it inspects bracket-pair interiors,
+/// decides per-pair whether to flip both brackets to a strong type,
+/// and writes that type into both bracket slots in place. Any pair
+/// the rule leaves untouched stays `ON` for N1 / N2 to handle.
+///
+/// `pairs` is the BD16 output ([`bracket_pairs`]) — a list of
+/// `(open_pos, close_pos)` index pairs into `classes`, **sorted by
+/// `open_pos` in ascending logical order** per the §3.3.5 "Process
+/// bracket pairs ... sequentially in the logical order of the text
+/// positions of the opening paired brackets" sequencing clause. The
+/// function asserts the ordering invariant.
+///
+/// `embedding_level` and `sos` carry the run's embedding direction
+/// and the §3.3.3 X10-derived sos type — the same arguments
+/// [`resolve_neutral_types`] consumes for this sequence.
+///
+/// The walk implements N0 verbatim per §3.3.5:
+///
+/// * For each pair, scan `classes[open_pos+1..close_pos]` for a
+///   strong contributor (L / R / EN / AN with EN + AN treated as R
+///   per the spec's "EN and AN should be treated as a strong R type
+///   when searching within the brackets" note).
+/// * **N0 b** — if any inside-strong matches the embedding direction
+///   (L for even, R for odd), set both brackets to that direction.
+/// * **N0 c** — otherwise if any inside-strong is the opposite of
+///   the embedding direction, derive the "established context" by
+///   walking *backwards* from `open_pos - 1` through `classes` for
+///   the most-recent strong contributor (EN / AN again projected to
+///   R). The walk skips any position already inside a *prior* pair
+///   that this rule has just rewritten — N0 narrates a "sequential
+///   in logical order" walk so each pair sees the rewrites of every
+///   pair with a smaller `open_pos`. If no preceding strong is found
+///   within the sequence, fall back to `sos`.
+///     * **N0 c.1** — if the preceding strong matches the inside-
+///       opposite-of-embedding direction (i.e. matches the inside
+///       strong), set both brackets to that direction.
+///     * **N0 c.2** — otherwise (preceding strong matches the
+///       embedding direction), set both brackets to the embedding
+///       direction.
+/// * **N0 d** — no strong inside the brackets → leave the pair
+///   untouched. N1 / N2 will pick the type up later.
+///
+/// The optional "any NSM following a paired bracket which changed
+/// under N0 should change to match the bracket" clarification is
+/// implemented by walking forward from each rewritten bracket through
+/// the contiguous NSM run immediately following and rewriting each
+/// NSM to the bracket's new type. NSMs whose preceding position is
+/// **not** a just-rewritten bracket are left for W1 to have already
+/// handled.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{
+///     bidi_class, bracket_pairs, resolve_bracket_pairs, BidiClass,
+/// };
+///
+/// // "a(b)c" — pair at (1, 3). LTR embedding (level 0), inside-strong is L,
+/// // matches the embedding direction, so N0 b flips both brackets to L.
+/// let chars: Vec<char> = "a(b)c".chars().collect();
+/// let mut classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+/// assert_eq!(
+///     classes,
+///     vec![BidiClass::L, BidiClass::ON, BidiClass::L, BidiClass::ON, BidiClass::L]
+/// );
+/// let pairs = bracket_pairs(&chars, &classes);
+/// resolve_bracket_pairs(&mut classes, &pairs, 0, BidiClass::L);
+/// assert_eq!(
+///     classes,
+///     vec![BidiClass::L, BidiClass::L, BidiClass::L, BidiClass::L, BidiClass::L]
+/// );
+/// ```
+pub fn resolve_bracket_pairs(
+    classes: &mut [BidiClass],
+    pairs: &[(usize, usize)],
+    embedding_level: u8,
+    sos: BidiClass,
+) {
+    if pairs.is_empty() {
+        return;
+    }
+    // Caller invariant — `bracket_pairs` returns pairs sorted by
+    // opener; reject anything else so the N0 sequencing assumption
+    // holds.
+    debug_assert!(
+        pairs.windows(2).all(|w| w[0].0 < w[1].0),
+        "resolve_bracket_pairs: pairs must be sorted by opener and non-overlapping at the opener"
+    );
+
+    // N0 narration: EN / AN are projected to R both inside the
+    // brackets and in the backward "established context" walk.
+    fn strong_dir_n0(c: BidiClass) -> Option<BidiClass> {
+        match c {
+            BidiClass::L => Some(BidiClass::L),
+            BidiClass::R | BidiClass::EN | BidiClass::AN => Some(BidiClass::R),
+            _ => None,
+        }
+    }
+
+    let sos_dir = strong_dir_n0(sos).unwrap_or(BidiClass::L);
+    let embedding_dir = if embedding_level % 2 == 0 {
+        BidiClass::L
+    } else {
+        BidiClass::R
+    };
+
+    let n = classes.len();
+    for &(open, close) in pairs {
+        debug_assert!(
+            open < close && close < n,
+            "resolve_bracket_pairs: pair ({open}, {close}) out of bounds for {n} classes",
+        );
+
+        // N0 step 2a — inspect the inside of the bracket pair for a
+        // strong contributor (L / R / EN / AN, with EN / AN → R).
+        // We collect *both* "matches embedding" and "matches
+        // opposite" so we can decide between N0 b and N0 c in one
+        // pass without a second walk.
+        let mut saw_matching = false;
+        let mut saw_opposite = false;
+        for slot in &classes[open + 1..close] {
+            if let Some(dir) = strong_dir_n0(*slot) {
+                if dir == embedding_dir {
+                    saw_matching = true;
+                    break;
+                }
+                saw_opposite = true;
+            }
+        }
+
+        let target = if saw_matching {
+            // N0 b
+            embedding_dir
+        } else if saw_opposite {
+            // N0 c — find the most recent preceding strong within
+            // the sequence (per-sequence here = whole `classes`
+            // slice); fall back to sos if none exists. Since prior
+            // pairs in the iteration order have already been
+            // rewritten, the walk picks up their N0 output for
+            // free, satisfying the §3.3.5 "sequentially in logical
+            // order" clause.
+            let mut preceding = sos_dir;
+            for i in (0..open).rev() {
+                if let Some(dir) = strong_dir_n0(classes[i]) {
+                    preceding = dir;
+                    break;
+                }
+            }
+            if preceding != embedding_dir {
+                // N0 c.1 — established context matches the inside-
+                // opposite direction → both brackets get the
+                // opposite direction.
+                preceding
+            } else {
+                // N0 c.2 — established context matches the
+                // embedding → both brackets get the embedding.
+                embedding_dir
+            }
+        } else {
+            // N0 d — nothing strong inside: leave the pair alone
+            // for N1 / N2 to fold along with the surrounding
+            // neutrals.
+            continue;
+        };
+
+        classes[open] = target;
+        classes[close] = target;
+
+        // N0 trailing-NSM clarification — any NSM run that
+        // immediately follows the open bracket OR the close bracket
+        // adopts the bracket's new type. (W1 already inherited NSM
+        // from its predecessor; we re-rewrite to honour the bracket
+        // rewrite.) The walk stops at the first non-NSM character;
+        // each rewrite is local.
+        let mut k = open + 1;
+        while k < classes.len() && classes[k] == BidiClass::NSM {
+            classes[k] = target;
+            k += 1;
+        }
+        let mut k = close + 1;
+        while k < classes.len() && classes[k] == BidiClass::NSM {
+            classes[k] = target;
+            k += 1;
+        }
+    }
+}
+
 /// Resolve **implicit embedding levels** for one isolating run sequence
 /// per UAX #9 **I1, I2** (§3.3.6).
 ///
@@ -2368,8 +2804,13 @@ pub fn isolating_run_sequences(
 /// 5. Per-sequence weak-type pass (§3.3.4 W1..W7 /
 ///    [`resolve_weak_types`]).
 /// 6. Per-sequence neutral-type pass (§3.3.5 N1 + N2 /
-///    [`resolve_neutral_types`]). N0 bracket-pair resolution is
-///    deferred — see the module-level out-of-scope list.
+///    [`resolve_neutral_types`]). The §3.3.5 bracket-pair pass
+///    (N0) is **not** run by [`process_paragraph_classes`] —
+///    callers wanting bracket-pair resolution should use
+///    [`process_paragraph_classes_with_brackets`] /
+///    [`process_paragraph_with_brackets`], which compose
+///    [`bracket_pairs`] (BD16) and [`resolve_bracket_pairs`] (N0)
+///    in between W7 and N1.
 /// 7. Per-sequence implicit-level pass (§3.3.6 I1 + I2 /
 ///    [`resolve_implicit_levels`]).
 ///
@@ -2609,6 +3050,147 @@ pub fn process_paragraph(text: &str, base_level: Option<u8>) -> (ParagraphBidi, 
         classes.push(bidi_class(c));
     }
     let carrier = process_paragraph_classes(&classes, base_level);
+    (carrier, char_byte_offsets)
+}
+
+/// Run the whole UAX #9 §3 paragraph pipeline (P → X → W → **N0** →
+/// N1 / N2 → I) on the supplied per-character class slice, with the
+/// **N0 bracket-pair pass** wired in.
+///
+/// Mirrors [`process_paragraph_classes`] in every respect except it
+/// also runs **N0** per §3.3.5 between W7 and N1: each isolating run
+/// sequence first identifies its bracket pairs via [`bracket_pairs`]
+/// (BD16 over the per-sequence char slice), then folds them with
+/// [`resolve_bracket_pairs`] (N0 a / b / c / d) before N1 + N2 see
+/// the buffer. `chars` is the parallel character slice — `chars[i]`
+/// is the literal `char` at paragraph index `i` whose class is
+/// `classes[i]`. The two slices must have equal length; the
+/// function asserts the invariant.
+///
+/// For any caller that already holds the input text, the
+/// `&str`-based [`process_paragraph_with_brackets`] convenience
+/// performs the `char_indices` walk and then delegates here.
+///
+/// Provenance: §3 driver composed from the §3.3.1 / §3.3.2 / §3.3.3 /
+/// §3.3.4 / **§3.3.5 N0** / §3.3.5 N1+N2 / §3.3.6 entry points
+/// already in this module, each of which cites
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` directly.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::{
+///     bidi_class, process_paragraph_classes, process_paragraph_classes_with_brackets,
+/// };
+///
+/// // Bracket pair around an L glyph in an LTR paragraph: N0 b fires,
+/// // both brackets resolve to L, so all five characters end up at
+/// // level 0. (Without N0, the parens are ON, then N1 collapses them
+/// // to L per the L↔L surround — same end result here, but the path
+/// // through the algorithm is different.)
+/// let text = "a(b)c";
+/// let chars: Vec<char> = text.chars().collect();
+/// let cls: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+/// let p = process_paragraph_classes_with_brackets(&cls, &chars, None);
+/// assert_eq!(p.paragraph_level, 0);
+/// assert_eq!(p.levels, vec![0; 5]);
+/// ```
+#[must_use]
+pub fn process_paragraph_classes_with_brackets(
+    classes: &[BidiClass],
+    chars: &[char],
+    base_level: Option<u8>,
+) -> ParagraphBidi {
+    assert_eq!(
+        classes.len(),
+        chars.len(),
+        "process_paragraph_classes_with_brackets: classes / chars length mismatch ({} != {})",
+        classes.len(),
+        chars.len(),
+    );
+
+    let pl = base_level
+        .map(|l| l & 1)
+        .unwrap_or_else(|| paragraph_level_from_classes(classes));
+
+    let explicit = resolve_explicit_levels(classes, pl);
+    let mut levels = explicit.levels.clone();
+
+    let sequences = isolating_run_sequences(classes, &explicit, pl);
+    for seq in &sequences {
+        let seq_indices: Vec<usize> = seq.indices(&explicit.removed).collect();
+        if seq_indices.is_empty() {
+            continue;
+        }
+        let mut seq_classes: Vec<BidiClass> = seq_indices
+            .iter()
+            .map(|&i| explicit.effective_classes[i])
+            .collect();
+        let seq_chars: Vec<char> = seq_indices.iter().map(|&i| chars[i]).collect();
+
+        // W1..W7 in place.
+        resolve_weak_types(&mut seq_classes, seq.sos, seq.eos);
+        // N0 — BD16 walk over the post-W7 class slice (BD14 / BD15
+        // require the *current* class to be ON; post-W7 the only
+        // surviving ON contributors are the brackets themselves and
+        // the W6-neutralised separators).
+        let pairs = bracket_pairs(&seq_chars, &seq_classes);
+        resolve_bracket_pairs(&mut seq_classes, &pairs, seq.level, seq.sos);
+        // N1 + N2 in place.
+        resolve_neutral_types(&mut seq_classes, seq.level, seq.sos, seq.eos);
+        // I1 + I2 reads classes and emits levels.
+        let seq_levels = resolve_implicit_levels(&seq_classes, seq.level);
+        for (offset, &paragraph_idx) in seq_indices.iter().enumerate() {
+            levels[paragraph_idx] = seq_levels[offset];
+        }
+    }
+
+    ParagraphBidi {
+        paragraph_level: pl,
+        classes: classes.to_vec(),
+        effective_classes: explicit.effective_classes,
+        removed: explicit.removed,
+        levels,
+    }
+}
+
+/// Run the whole UAX #9 §3 paragraph pipeline **with N0 bracket-pair
+/// resolution** on a `&str` and return the [`ParagraphBidi`] carrier
+/// alongside a parallel vector of byte offsets locating each
+/// character in the input.
+///
+/// `text` must be a single paragraph — callers handle the §3.3.1 P1
+/// paragraph split via [`split_paragraphs`] first. `base_level` is
+/// the HL1 override per [`process_paragraph_classes_with_brackets`]
+/// semantics.
+///
+/// The function differs from [`process_paragraph`] only in that it
+/// runs **N0** between W7 and N1 per UAX #9 §3.3.5, using
+/// [`paired_bracket`]'s ASCII bracket lookup. For tightly-controlled
+/// text that does not contain RTL strong types intermixed with
+/// neutrals or bracket-spanning runs, the two functions produce
+/// identical output; the divergence matters for the
+/// `RTL ( LTR-content ) RTL` / `LTR ( RTL-content ) LTR` shapes
+/// where N0's "established context" walk picks a different strong
+/// direction for the brackets than N1 / N2 would on their own.
+///
+/// Returns `(carrier, char_byte_offsets)` where
+/// `char_byte_offsets[i]` is the byte index of the `i`th character
+/// in `text`.
+#[must_use]
+pub fn process_paragraph_with_brackets(
+    text: &str,
+    base_level: Option<u8>,
+) -> (ParagraphBidi, Vec<usize>) {
+    let mut char_byte_offsets = Vec::new();
+    let mut chars = Vec::new();
+    let mut classes = Vec::new();
+    for (i, c) in text.char_indices() {
+        char_byte_offsets.push(i);
+        chars.push(c);
+        classes.push(bidi_class(c));
+    }
+    let carrier = process_paragraph_classes_with_brackets(&classes, &chars, base_level);
     (carrier, char_byte_offsets)
 }
 
@@ -5301,5 +5883,342 @@ mod tests {
             let (pi, ki) = t.locate_char(k).expect("k in bounds");
             assert_eq!(t.paragraphs[pi].char_offset + ki, k);
         }
+    }
+
+    // --- Section N0: bracket-pair lookup + BD16 + N0 rule ----------
+
+    #[test]
+    fn paired_bracket_round_trips_each_ascii_pair() {
+        // The six ASCII brackets pair up symmetrically: opener ↔
+        // closer round-trip via paired_bracket().
+        for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+            let (other, kind) = paired_bracket(open).expect("opener recognised");
+            assert_eq!(other, close);
+            assert_eq!(kind, BracketKind::Open);
+
+            let (other, kind) = paired_bracket(close).expect("closer recognised");
+            assert_eq!(other, open);
+            assert_eq!(kind, BracketKind::Close);
+        }
+    }
+
+    #[test]
+    fn paired_bracket_returns_none_for_non_bracket_codepoints() {
+        // Letters, digits, whitespace, punctuation, and other ON
+        // characters are all not paired brackets.
+        for c in [
+            'a',
+            'Z',
+            '0',
+            ' ',
+            ',',
+            '!',
+            '\u{0028}'.to_ascii_uppercase(),
+        ] {
+            if matches!(c, '(' | ')' | '[' | ']' | '{' | '}') {
+                continue;
+            }
+            assert!(paired_bracket(c).is_none(), "{c:?} should not pair");
+        }
+        // Non-ASCII near-brackets that the ASCII table excludes.
+        for c in ['\u{2329}', '\u{232A}', '\u{3008}', '\u{3009}', '\u{27E6}'] {
+            assert!(paired_bracket(c).is_none(), "{c:?} should not pair");
+        }
+    }
+
+    #[test]
+    fn bracket_pairs_empty_input_yields_empty_list() {
+        let pairs = bracket_pairs(&[], &[]);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn bracket_pairs_simple_single_pair() {
+        // "a(b)c" — pair at (1, 3) per UAX #9 §3.1.3 worked example
+        // "a ( b ) c" → 2-4 in the spec's 1-indexed table.
+        let chars: Vec<char> = "a(b)c".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert_eq!(bracket_pairs(&chars, &classes), vec![(1, 3)]);
+    }
+
+    #[test]
+    fn bracket_pairs_unbalanced_closer_only_yields_nothing() {
+        // "a)b(c" — closer with no opener (skipped), then opener
+        // with no later closer (never matched). UAX #9 BD16:
+        // "If a closing paired bracket is found ... Else, if the
+        // current stack element is not at the bottom of the
+        // stack, advance ... Else, continue with inspecting the
+        // next character without popping the stack."
+        let chars: Vec<char> = "a)b(c".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert!(bracket_pairs(&chars, &classes).is_empty());
+    }
+
+    #[test]
+    fn bracket_pairs_mismatched_closer_does_not_pop() {
+        // "a(b]c" — `]` does not match the `)` opener-closer the
+        // top-of-stack expects. UAX #9 BD16 spec table line:
+        // "a ( b ] c   None"
+        let chars: Vec<char> = "a(b]c".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert!(bracket_pairs(&chars, &classes).is_empty());
+    }
+
+    #[test]
+    fn bracket_pairs_nested_returns_sorted_by_opener() {
+        // "a(b(c)d)" — UAX #9 BD16 spec table:
+        // "a ( b ( c ) d )   2-8, 4-6"
+        // We walk close-first, so the inner (4,6) is appended
+        // before (2,8); the final sort restores opener-ascending
+        // order: [(2,8), (4,6)] in spec 1-index → [(1,7), (3,5)]
+        // in our 0-index.
+        let chars: Vec<char> = "a(b(c)d)".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert_eq!(bracket_pairs(&chars, &classes), vec![(1, 7), (3, 5)]);
+    }
+
+    #[test]
+    fn bracket_pairs_unmatched_inner_opener_still_pairs_outer() {
+        // "a(b[c)d]" — UAX #9 BD16 spec table:
+        // "a ( b [ c ) d ]   2-6"
+        // The `(` opens, `[` opens, `)` matches the deeper
+        // matching opener — `(` — popping past `[`. Final `]` has
+        // no live opener on the stack and is dropped.
+        let chars: Vec<char> = "a(b[c)d]".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert_eq!(bracket_pairs(&chars, &classes), vec![(1, 5)]);
+    }
+
+    #[test]
+    fn bracket_pairs_curly_matches_curly() {
+        // "a(b{c}d)" — both pairs balanced; UAX #9 BD16 spec
+        // table: "a ( b { c } d )   2-8, 4-6".
+        let chars: Vec<char> = "a(b{c}d)".chars().collect();
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert_eq!(bracket_pairs(&chars, &classes), vec![(1, 7), (3, 5)]);
+    }
+
+    #[test]
+    fn bracket_pairs_overflow_returns_empty_list() {
+        // BD16: "If an opening paired bracket is found and there
+        // is no room in the stack, stop processing BD16 for the
+        // remainder of the isolating run sequence and return an
+        // empty list." Stack cap = 63.
+        let chars: Vec<char> = vec!['('; 64];
+        let classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        assert!(bracket_pairs(&chars, &classes).is_empty());
+    }
+
+    #[test]
+    fn bracket_pairs_non_on_position_skipped() {
+        // BD14 / BD15: bracket must currently be ON. If a caller
+        // hands us an `(` whose class slot has been rewritten by
+        // X6 / RLO to R, the walker treats it as a non-bracket.
+        let chars: Vec<char> = "a(b)c".chars().collect();
+        let mut classes: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        classes[1] = BidiClass::R; // simulate post-RLO rewrite
+        assert!(bracket_pairs(&chars, &classes).is_empty());
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0b_inside_strong_matches_embedding() {
+        // LTR embedding + inside L → N0 b → brackets become L.
+        // "a(b)c", embedding level 0, sos L.
+        let chars: Vec<char> = "a(b)c".chars().collect();
+        let mut cls: Vec<_> = chars.iter().copied().map(bidi_class).collect();
+        let pairs = bracket_pairs(&chars, &cls);
+        resolve_bracket_pairs(&mut cls, &pairs, 0, BidiClass::L);
+        assert_eq!(cls[1], BidiClass::L);
+        assert_eq!(cls[3], BidiClass::L);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0b_en_inside_counts_as_r() {
+        // RTL embedding + inside EN (counted as R per N0 note) → N0 b → brackets R.
+        // sequence: R ( EN ) R, levels=1, sos=R.
+        let mut cls = vec![
+            BidiClass::R,
+            BidiClass::ON,
+            BidiClass::EN,
+            BidiClass::ON,
+            BidiClass::R,
+        ];
+        let pairs = vec![(1usize, 3usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 1, BidiClass::R);
+        assert_eq!(cls[1], BidiClass::R);
+        assert_eq!(cls[3], BidiClass::R);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0c1_opposite_inside_picks_preceding_strong() {
+        // RTL embedding + inside L (opposite of R embedding) +
+        // preceding strong is L → N0 c.1 → brackets become L.
+        // sequence: L ( L ) ... level 1, sos R.
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::L, BidiClass::ON];
+        let pairs = vec![(1usize, 3usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 1, BidiClass::R);
+        assert_eq!(cls[1], BidiClass::L);
+        assert_eq!(cls[3], BidiClass::L);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0c2_opposite_inside_falls_to_embedding() {
+        // RTL embedding + inside L (opposite) + preceding strong
+        // is R → N0 c.2 → brackets become R (embedding).
+        // sequence: R ( L ) ... level 1, sos R.
+        let mut cls = vec![BidiClass::R, BidiClass::ON, BidiClass::L, BidiClass::ON];
+        let pairs = vec![(1usize, 3usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 1, BidiClass::R);
+        assert_eq!(cls[1], BidiClass::R);
+        assert_eq!(cls[3], BidiClass::R);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0c1_uses_sos_when_no_preceding_strong() {
+        // RTL embedding + inside L + no preceding strong + sos L
+        // → N0 c.1 → brackets become L (sos matches inside).
+        let mut cls = vec![BidiClass::ON, BidiClass::L, BidiClass::ON];
+        let pairs = vec![(0usize, 2usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 1, BidiClass::L);
+        assert_eq!(cls[0], BidiClass::L);
+        assert_eq!(cls[2], BidiClass::L);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_n0d_nothing_strong_leaves_pair_untouched() {
+        // No strong inside → N0 d → leave brackets as ON for N1/N2.
+        // sequence: L ( WS ) L, level 0.
+        let mut cls = vec![
+            BidiClass::L,
+            BidiClass::ON,
+            BidiClass::WS,
+            BidiClass::ON,
+            BidiClass::L,
+        ];
+        let pairs = vec![(1usize, 3usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 0, BidiClass::L);
+        assert_eq!(cls[1], BidiClass::ON);
+        assert_eq!(cls[3], BidiClass::ON);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_sequential_lets_inner_see_outer_rewrite() {
+        // "RTL paragraph: R ( R ( L ) R ) R" — both pairs nested.
+        // Outer pair: inside has R → embedding match → N0 b → brackets R.
+        // Inner pair: inside has L (opposite of R embedding) →
+        // preceding strong from outer-pair's `(` is now R (just
+        // rewritten by N0 on the outer pair) → N0 c.2 → brackets R.
+        let mut cls = vec![
+            BidiClass::R,  // 0  R
+            BidiClass::ON, // 1  (   outer open
+            BidiClass::R,  // 2  R
+            BidiClass::ON, // 3  (   inner open
+            BidiClass::L,  // 4  L
+            BidiClass::ON, // 5  )   inner close
+            BidiClass::R,  // 6  R
+            BidiClass::ON, // 7  )   outer close
+            BidiClass::R,  // 8  R
+        ];
+        // BD16-sorted pairs: outer (1,7), inner (3,5).
+        let pairs = vec![(1usize, 7usize), (3usize, 5usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 1, BidiClass::R);
+        assert_eq!(cls[1], BidiClass::R);
+        assert_eq!(cls[7], BidiClass::R);
+        assert_eq!(cls[3], BidiClass::R);
+        assert_eq!(cls[5], BidiClass::R);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_trailing_nsm_inherits_bracket_type() {
+        // "L ( L ) NSM" — N0 b rewrites the close to L, and the
+        // trailing NSM should adopt the bracket's L per the N0
+        // NSM-clarification clause.
+        let mut cls = vec![
+            BidiClass::L,
+            BidiClass::ON,
+            BidiClass::L,
+            BidiClass::ON,
+            BidiClass::NSM,
+        ];
+        let pairs = vec![(1usize, 3usize)];
+        resolve_bracket_pairs(&mut cls, &pairs, 0, BidiClass::L);
+        assert_eq!(cls[3], BidiClass::L);
+        assert_eq!(cls[4], BidiClass::L);
+    }
+
+    #[test]
+    fn resolve_bracket_pairs_no_pairs_is_noop() {
+        let mut cls = vec![BidiClass::L, BidiClass::ON, BidiClass::L];
+        let before = cls.clone();
+        resolve_bracket_pairs(&mut cls, &[], 0, BidiClass::L);
+        assert_eq!(cls, before);
+    }
+
+    // --- Section N0: paragraph-driver wiring -----------------------
+
+    #[test]
+    fn process_paragraph_with_brackets_smoke_ltr() {
+        // "(a)" — LTR paragraph, paragraph level 0, all chars at 0.
+        let (p, _offsets) = process_paragraph_with_brackets("(a)", None);
+        assert_eq!(p.paragraph_level, 0);
+        assert_eq!(p.levels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn process_paragraph_with_brackets_n0b_promotes_brackets_in_rtl() {
+        // RTL paragraph "AB(CD)" where AB and CD are Hebrew (R).
+        // Inside the brackets is R → embedding match → N0 b → both
+        // brackets become R → R-grade level (1) for both.
+        let text = "\u{05D0}\u{05D1}(\u{05D2}\u{05D3})";
+        let (p, _offsets) = process_paragraph_with_brackets(text, None);
+        assert_eq!(p.paragraph_level, 1);
+        // All chars at level 1 (R glyphs and brackets-as-R).
+        assert_eq!(p.levels, vec![1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn process_paragraph_with_brackets_n0c2_diverges_from_plain_n() {
+        // RTL paragraph: `R ( L L L ) R` — brackets enclose LTR-only
+        // text. N1 alone would resolve brackets via L↔L surround
+        // (matching neighbours) → brackets become L. N0 c sees an
+        // opposite-direction inside-strong L and walks back: the
+        // preceding R matches the embedding, so N0 c.2 fires →
+        // brackets become R. Test that the new pipeline picks
+        // brackets at level 1 (R).
+        let text = "\u{05D0}(abc)\u{05D1}";
+        let (p, _offsets) = process_paragraph_with_brackets(text, None);
+        assert_eq!(p.paragraph_level, 1);
+        // chars: 0=R 1=( 2=a 3=b 4=c 5=) 6=R
+        // After N0 b/c: '(' = R, ')' = R. After N1/N2: the L run
+        // inside stays L. After I-rules: R → 1 (already at emb 1),
+        // L at odd level → +1 = level 2. EN/AN N/A.
+        assert_eq!(p.levels[0], 1); // R
+        assert_eq!(p.levels[1], 1); // (
+        assert_eq!(p.levels[2], 2); // a (L bumped under odd embedding)
+        assert_eq!(p.levels[3], 2); // b
+        assert_eq!(p.levels[4], 2); // c
+        assert_eq!(p.levels[5], 1); // )
+        assert_eq!(p.levels[6], 1); // R
+    }
+
+    #[test]
+    fn process_paragraph_with_brackets_n0d_unchanged_when_no_inside_strong() {
+        // "(  )" — only whitespace inside, no strong type. N0 d
+        // leaves the brackets alone; N1 then resolves them via
+        // the sos / eos defaults. LTR paragraph (P3) → both
+        // brackets resolve to L at level 0.
+        let (p, _offsets) = process_paragraph_with_brackets("(  )", None);
+        assert_eq!(p.paragraph_level, 0);
+        assert_eq!(p.levels, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn process_paragraph_classes_with_brackets_length_mismatch_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let chars = vec!['a', 'b'];
+            let classes = vec![BidiClass::L];
+            let _ = process_paragraph_classes_with_brackets(&classes, &chars, None);
+        });
+        assert!(result.is_err(), "length mismatch must panic");
     }
 }

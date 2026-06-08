@@ -497,6 +497,55 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
   exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
   N / I / X / L rules remain deferred.
+- **BiDi §3.3.5 N0 bracket-pair resolution (round 257)** —
+  `bidi::paired_bracket(c)` returns the BD14 / BD15 paired-bracket
+  lookup for the six ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔
+  `}`) as `Some((paired_char, BracketKind::{Open, Close}))`;
+  `bidi::bracket_pairs(chars, classes)` runs the **BD16**
+  (§3.1.3) stack walk over one isolating run sequence, returning
+  the list of `(open_pos, close_pos)` pairs sorted by opener in
+  ascending logical order (the N0 sequencing invariant). The
+  walker maintains the spec-mandated 63-element stack — overflow
+  triggers the BD16 "stop processing and return an empty list"
+  branch — and honours the BD14 / BD15 "current bidi class is ON"
+  gate, so brackets whose class was rewritten by X6 / RLO are
+  ignored. `bidi::resolve_bracket_pairs(classes, pairs,
+  embedding_level, sos)` applies **N0** in place to one isolating
+  run sequence post-W7 and pre-N1: each pair's interior is scanned
+  for a strong type (EN / AN projected to R per the §3.3.5 note),
+  then the N0 b / c.1 / c.2 / d branches are dispatched —
+  matching-embedding-inside → both brackets to embedding direction
+  (b); opposite-inside + preceding-strong-also-opposite → both to
+  that direction (c.1); opposite-inside + preceding-strong-
+  matches-embedding → both to embedding direction (c.2); nothing
+  strong inside → leave the pair untouched for N1 / N2 (d). The
+  trailing-NSM clarification ("any NSM following a paired bracket
+  which changed under N0 should change to match the bracket") is
+  honoured for the contiguous NSM run after each rewritten
+  bracket. Pairs are processed sequentially in opener-ascending
+  order so an inner pair sees the rewrites of every outer pair
+  already processed (the §3.3.5 "sequentially in the logical
+  order of the text positions of the opening paired brackets"
+  invariant). `bidi::process_paragraph_with_brackets(text,
+  base_level)` and `bidi::process_paragraph_classes_with_brackets(
+  classes, chars, base_level)` are paragraph-driver mirrors of
+  the round-227 entry points with N0 wired in between W7 and N1;
+  the non-`with_brackets` variants stay the legacy
+  pass-through (N0 not run) so existing callers see no
+  behaviour change. The six ASCII brackets are now classified
+  `BidiClass::ON` in `bidi::bidi_class` (previously they fell
+  through to the L default). 23 unit + 22 integration tests cover
+  every BD16 worked-example line from the §3.1.3 spec table, every
+  N0 case (b / c.1 / c.2 / d), the EN / AN projection note, the
+  63-stack overflow branch, the non-ON skip gate, the sequential-
+  rewrite invariant, and the trailing-NSM clarification. The
+  wider Unicode `BidiBrackets.txt` table (~60 paired-bracket
+  entries across the Mathematical Operators / CJK Symbols /
+  Ornamental Brackets blocks) is not yet vendored under
+  `docs/text/unicode-bidi/`; the N0 algorithm itself is complete,
+  only the lookup table is partial — callers needing the wider
+  UCS pair set can wrap `bracket_pairs` / `resolve_bracket_pairs`
+  with their own `(char, BracketKind)` lookup of the same shape.
 - **BiDi §3.4 L3 combining-mark reordering (round 247)** —
   `bidi::reorder_combining_marks(orig_classes, levels, &mut visual)`
   applies UAX #9 §3.4 rule **L3** in place to the visual permutation
@@ -625,15 +674,21 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) N0 bracket pairs + L4** (X1..X9 explicit-
-  level pass landed in round 217; X10 isolating-run-sequence
-  partition + sos/eos derivation landed in round 220; L3
-  combining-mark reordering landed in round 247), **CFF2
-  variable charstrings**
-  (the `blend` operator in TN5177 v3 — scribe parses the CFF2
-  INDEX walker, but doesn't yet emit variation-blended cubic
-  outlines), **TrueType bytecode hinting**, **subpixel LCD
-  filtering**, **GPOS cursive attachment** — deferred.
+- **Bidi (UAX #9) full `BidiBrackets.txt` pair table + L4** (X1..X9
+  explicit-level pass landed in round 217; X10 isolating-run-
+  sequence partition + sos/eos derivation landed in round 220; L3
+  combining-mark reordering landed in round 247; the N0 bracket-
+  pair algorithm itself landed in round 257, with the six ASCII
+  brackets covered — the wider Unicode `BidiBrackets.txt` table
+  of ~60 paired-bracket entries across the Mathematical Operators
+  / CJK Symbols / Ornamental Brackets blocks is not yet vendored
+  under `docs/text/unicode-bidi/`, so non-ASCII bracket pairs are
+  deferred until the table lands; L4 mirroring also awaits
+  `BidiMirroring.txt`), **CFF2 variable charstrings** (the
+  `blend` operator in TN5177 v3 — scribe parses the CFF2 INDEX
+  walker, but doesn't yet emit variation-blended cubic outlines),
+  **TrueType bytecode hinting**, **subpixel LCD filtering**,
+  **GPOS cursive attachment** — deferred.
 
 ## Test fixtures
 

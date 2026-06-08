@@ -131,10 +131,27 @@
 //!   logical indices) is reversed back to `[base, NSM, …, NSM]`
 //!   so callers running a non-scribe mark-attachment policy get
 //!   the spec's "expects them to follow" alternative shape; the
-//!   function is idempotent and ignores even-level (LTR) runs. The
-//!   bracket-pair rule N0 and the L4 mirroring rule are deferred
-//!   to follow-up rounds (`BidiBrackets.txt` / `BidiMirroring.txt`
-//!   not yet vendored under `docs/text/unicode-bidi/`).
+//!   function is idempotent and ignores even-level (LTR) runs.
+//!   Round 257 lands the §3.3.5 **N0 bracket-pair pass**:
+//!   `bidi::paired_bracket(c)` is the BD14 / BD15 lookup for the
+//!   six ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`);
+//!   `bidi::bracket_pairs(chars, classes)` runs the BD16 stack
+//!   walk (63-deep, overflow → empty list, sort by opener);
+//!   `bidi::resolve_bracket_pairs(classes, pairs, embedding,
+//!   sos)` applies the N0 a / b / c / d cases in place (EN/AN
+//!   counted as R for the inside-strong + preceding-strong walks,
+//!   sequential ordering so inner pairs see the rewrites of outer
+//!   ones, trailing-NSM inheritance per the §3.3.5 note); and
+//!   `bidi::process_paragraph_with_brackets(text, base_level)` /
+//!   `process_paragraph_classes_with_brackets(classes, chars,
+//!   base_level)` are the §3 paragraph driver with N0 wired in
+//!   between W7 and N1. The full Unicode `BidiBrackets.txt`
+//!   table (the ~60 paired-bracket entries across the
+//!   Mathematical Operators / CJK Symbols / Ornamental Brackets
+//!   blocks) is not yet vendored under `docs/text/unicode-bidi/`;
+//!   non-ASCII bracket pairs are deferred until the table lands.
+//!   The L4 mirroring rule remains deferred (`BidiMirroring.txt`
+//!   also not yet vendored).
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -153,11 +170,13 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, isolating_run_sequences, level_runs, paragraph_level, process_paragraph,
-    process_paragraph_classes, process_text, reorder_combining_marks, reorder_line,
-    reset_trailing_levels, resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types,
-    resolve_weak_types, split_paragraphs, BidiClass, ExplicitLevels, IsolatingRunSequence,
-    LevelRun, ParagraphBidi, ParagraphSlice, TextBidi, MAX_DEPTH,
+    bidi_class, bracket_pairs, isolating_run_sequences, level_runs, paired_bracket,
+    paragraph_level, process_paragraph, process_paragraph_classes,
+    process_paragraph_classes_with_brackets, process_paragraph_with_brackets, process_text,
+    reorder_combining_marks, reorder_line, reset_trailing_levels, resolve_bracket_pairs,
+    resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,
+    split_paragraphs, BidiClass, BracketKind, ExplicitLevels, IsolatingRunSequence, LevelRun,
+    ParagraphBidi, ParagraphSlice, TextBidi, MAX_DEPTH,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;

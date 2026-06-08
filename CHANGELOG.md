@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.3.5 N0 bracket-pair resolution (round 257)
+
+Eleventh UAX #9 surface on scribe and the first entry to land the
+bracket-pair phase of the §3.3.5 neutral pass: rule **N0** with the
+**BD14** / **BD15** / **BD16** support definitions, all wired through
+a new paragraph-driver variant.
+
+- **`bidi::paired_bracket(c: char) -> Option<(char, BracketKind)>`**
+  — the BD14 / BD15 lookup for the six ASCII brackets (`(` ↔ `)`,
+  `[` ↔ `]`, `{` ↔ `}`). Returns `Some((paired_char, kind))` where
+  `kind` is `BracketKind::Open` or `BracketKind::Close`. The wider
+  Unicode `BidiBrackets.txt` table is not yet vendored under
+  `docs/text/unicode-bidi/`; callers needing the ~60-entry UCS pair
+  set can wrap `bracket_pairs` / `resolve_bracket_pairs` with their
+  own `(char, BracketKind)` lookup of the same shape.
+- **`bidi::bracket_pairs(chars: &[char], classes: &[BidiClass]) ->
+  Vec<(usize, usize)>`** — the **BD16** stack walk over one
+  isolating run sequence. Maintains the spec-mandated 63-element
+  stack (overflow → empty list per the BD16 "stop processing
+  BD16 ... and return an empty list" branch), pairs nested
+  brackets by popping through the matching opener inclusively,
+  honours the BD14 / BD15 "current bidi class is ON" gate (so
+  brackets rewritten to `R` by X6 / RLO are ignored), and sorts
+  the result by opener position in ascending logical order — the
+  §3.3.5 N0 sequencing invariant.
+- **`bidi::resolve_bracket_pairs(classes: &mut [BidiClass],
+  pairs: &[(usize, usize)], embedding_level: u8, sos: BidiClass)`**
+  — the **N0** rule applied to one isolating run sequence post-W7
+  and pre-N1. For each pair, inspects the bracket interior for a
+  strong type (EN / AN projected to R per the §3.3.5 note), then
+  dispatches the N0 a / b / c.1 / c.2 / d cases in place:
+  matching-embedding-inside → both brackets to embedding direction
+  (N0 b); opposite-inside + preceding-strong-also-opposite → both
+  brackets to that direction (N0 c.1); opposite-inside +
+  preceding-strong-matches-embedding → both brackets to embedding
+  direction (N0 c.2); no inside-strong → leave the pair untouched
+  (N0 d). The trailing-NSM clarification ("any NSM following a
+  paired bracket which changed under N0 should change to match the
+  bracket") is honoured for the contiguous NSM run after each
+  rewritten bracket. Pairs are processed sequentially in opener-
+  ascending order so inner pairs see the rewrites of every outer
+  pair already processed.
+- **`bidi::process_paragraph_classes_with_brackets(classes, chars,
+  base_level) -> ParagraphBidi`** + **`bidi::process_paragraph_with_brackets(
+  text, base_level) -> (ParagraphBidi, Vec<usize>)`** — §3 paragraph
+  driver mirrors of the round-227 / round-233 entry points, with
+  N0 wired in between W7 and N1 per the §3.3.5 ordering. The two
+  driver variants without `_with_brackets` stay the legacy pass-
+  through (N0 not run), so existing callers see no behaviour
+  change; the `_with_brackets` variants become the recommended
+  default for any caller that handles arbitrary user-supplied
+  text containing brackets.
+- **`bidi_class('(' / ')' / '[' / ']' / '{' / '}') == BidiClass::ON`**
+  — added the six ASCII brackets to the `bidi_class` lookup
+  table. They were previously falling through to the L default
+  per the unassigned-character convention, which would have made
+  every bracket appear strong-L to the W / N walks. Existing test
+  suites that assumed ASCII-bracket = L stay passing because the
+  new ON class still resolves to the surrounding strong direction
+  under N1 / N2 for LTR-only inputs (the only change is in
+  bracket-spanning RTL / mixed-direction inputs — exactly what N0
+  exists to fix).
+- **23 unit tests + 22 integration tests**
+  (`tests/round257_bidi_n0_bracket_pairs.rs`) cover every BD16
+  worked-example line from the §3.1.3 spec table (`a(b)c → 2-4`,
+  `a)b(c → None`, `a(b]c → None`, `a(b]c)d → 2-6`, `a(b)c)d → 2-4`,
+  `a(b(c)d → 4-6`, `a(b(c)d) → 2-8, 4-6`, `a(b{c}d) → 2-8, 4-6`),
+  every N0 case (b / c.1 / c.2 / d), the EN / AN projection note,
+  the 63-stack overflow branch, the non-ON skip gate, the
+  sequential-rewrite invariant, and the trailing-NSM clarification.
+
+Out-of-scope tail (`README.md`): the full Unicode `BidiBrackets.txt`
+table — ~60 paired-bracket entries across the Mathematical
+Operators, Misc Mathematical Symbols, Supplementary Mathematical
+Operators, CJK Symbols and Punctuation, and Ornamental Brackets
+blocks — needs to land under `docs/text/unicode-bidi/` before
+`paired_bracket` can grow past the ASCII set. The N0 algorithm
+itself is complete; only the lookup table is partial. The L4
+mirroring rule remains deferred for the same reason
+(`BidiMirroring.txt` also not vendored).
+
 ### Added — UAX #9 §3.4 L3 combining-mark reordering (round 247)
 
 Tenth UAX #9 surface on scribe and the third entry in the §3.4
