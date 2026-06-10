@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GPOS LookupType 3 cursive attachment (round 276)
+
+The shaper's positioning pipeline grows a sixth step: **cursive
+attachment** (GPOS LookupType 3, CursivePosFormat1), the
+exit-anchor → entry-anchor joining pass that connects adjacent
+glyphs in joining scripts. Per the GPOS chapter's CursivePos
+section, the two axes work differently and both are implemented:
+
+- **Line-layout direction (X)** — "the layout engine adjusts the
+  advance of the first glyph (in logical order)": the first glyph's
+  `x_advance` is rewritten so the second glyph's entry anchor lands
+  exactly on the first glyph's exit anchor, accounting for both
+  glyphs' `x_offset`s and any intervening zero-advance marks.
+- **Cross-stream direction (Y)** — "placement of one glyph is
+  adjusted to make the anchors align": with the parent lookup's
+  RIGHT_TO_LEFT flag clear, the **second** glyph's `y_offset` moves
+  to the first glyph's exit height. Adjustments accumulate down a
+  connected chain (each second glyph is placed relative to the
+  already-adjusted first), producing the cascading-baseline
+  behaviour cursive scripts need. Marks attached to the second
+  glyph follow it vertically; no X fix-up is needed because the
+  advance rewrite shifts the pen of the second glyph and its
+  trailing marks equally.
+
+NULL entry/exit anchor offsets skip the pair ("no positioning
+adjustment is applied" per spec); fonts without any LookupType-3
+lookup skip the pass entirely (one `gpos_lookup_list` probe per
+run). The pass runs after mark attachment so cursive chains walk
+consecutive **non-mark** glyphs. Scope note: the RIGHT_TO_LEFT
+flag-**set** variant (first glyph adjusted cross-stream, chain
+anchored to the last glyph's baseline position) needs the GPOS
+lookup flag, which `oxideav-ttf`'s public API does not yet expose —
+deferred.
+
+Verified by `tests/round276_cursive_attachment.rs`: a synthetic
+4-glyph TTF carrying one `curs` feature / CursivePosFormat1 lookup
+(byte layout per the staged GPOS / Coverage / Anchor-Format-1 spec
+tables) exercises exact anchor alignment, chain accumulation,
+px-size scaling, NULL-anchor skips, and the no-GPOS no-op.
+
 ### Added — UAX #9 §3.4 L4 bidi mirroring (round 268)
 
 Twelfth UAX #9 surface on scribe and the final entry in the §3.4

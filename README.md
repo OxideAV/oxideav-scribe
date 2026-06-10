@@ -47,9 +47,22 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   bakes the Y-flip + scale into a render-ready `Node::Path` (or
   `Node::Image` for CBDT colour glyphs).
 - **Shaper** — `cmap` + GSUB type 4 (ligatures) + GPOS type 2 (pair
-  kerning) + GPOS type 4/5/6 (mark-to-base, mark-to-mark stacking),
-  enough for Latin / Cyrillic / Greek / basic CJK / Vietnamese /
-  polytonic Greek.
+  kerning) + GPOS type 3 (cursive attachment) + GPOS type 4/5/6
+  (mark-to-base, mark-to-mark stacking), enough for Latin / Cyrillic
+  / Greek / basic CJK / Vietnamese / polytonic Greek.
+- **GPOS cursive attachment (round 276)** — the shaper's positioning
+  pipeline runs a CursivePosFormat1 pass over consecutive non-mark
+  glyph pairs: when the first glyph publishes an **exit** anchor and
+  the second an **entry** anchor, the first glyph's advance is
+  rewritten so the anchors align in the line-layout direction, and
+  the second glyph's `y_offset` moves so they align cross-stream
+  (the RIGHT_TO_LEFT-flag-clear semantics — second glyph adjusted).
+  Cross-stream adjustments accumulate down a connected chain (the
+  cascading-baseline behaviour joining scripts need), marks attached
+  to a cursive glyph follow it vertically, and NULL entry/exit
+  anchor offsets skip the pair per spec. The flag-set variant (first
+  glyph adjusted, chain anchored at the last glyph) is deferred
+  until `oxideav-ttf` exposes GPOS lookup flags.
 - **GSUB feature-tag introspection (round 88)** — `Face::gsub_features_for_script(script_tag, lang_tag)`
   returns the four-byte feature tags the active face publishes under
   an OpenType script tag (in declaration order, required-feature
@@ -725,7 +738,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `blend` operator in TN5177 v3 — scribe parses the CFF2 INDEX
   walker, but doesn't yet emit variation-blended cubic outlines),
   **TrueType bytecode hinting**, **subpixel LCD filtering**,
-  **GPOS cursive attachment** — deferred.
+  **GPOS cursive attachment RIGHT_TO_LEFT-flag semantics** (the
+  flag-clear pass landed in round 276; the flag-set cross-stream
+  variant needs lookup-flag exposure in `oxideav-ttf`'s public GPOS
+  API) — deferred.
 
 ## Test fixtures
 
