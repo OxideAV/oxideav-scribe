@@ -150,8 +150,17 @@
 //!   Mathematical Operators / CJK Symbols / Ornamental Brackets
 //!   blocks) is not yet vendored under `docs/text/unicode-bidi/`;
 //!   non-ASCII bracket pairs are deferred until the table lands.
-//!   The L4 mirroring rule remains deferred (`BidiMirroring.txt`
-//!   also not yet vendored).
+//!   Round 268 lands the §3.4 **L4 mirroring rule**:
+//!   `bidi::mirrored_glyph(c)` is the `Bidi_Mirroring_Glyph`
+//!   acceptable-mirror-pair lookup for the same six ASCII brackets
+//!   (an involution, `None` outside the seed set including the
+//!   §3.4-excluded ornate parentheses U+FD3E / U+FD3F), and
+//!   `bidi::apply_mirroring(chars, levels)` rewrites every
+//!   odd-resolved-level (directionality R) position that has a
+//!   mirror pair in place over the line's logical character
+//!   sequence. The wider `BidiMirroring.txt` pair table
+//!   (mathematical operators, angle brackets, CJK bracket blocks)
+//!   is deferred until that data file is vendored.
 //!
 //! See `README.md` for a tour and the deferral list.
 
@@ -170,8 +179,8 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    bidi_class, bracket_pairs, isolating_run_sequences, level_runs, paired_bracket,
-    paragraph_level, process_paragraph, process_paragraph_classes,
+    apply_mirroring, bidi_class, bracket_pairs, isolating_run_sequences, level_runs,
+    mirrored_glyph, paired_bracket, paragraph_level, process_paragraph, process_paragraph_classes,
     process_paragraph_classes_with_brackets, process_paragraph_with_brackets, process_text,
     reorder_combining_marks, reorder_line, reset_trailing_levels, resolve_bracket_pairs,
     resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,

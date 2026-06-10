@@ -4,8 +4,10 @@
 //! (rules W1..W7), bracket-pair resolution (rule N0 — ASCII
 //! bracket set; the full Unicode `BidiBrackets.txt` table is not
 //! yet vendored), neutral-type resolution (rules N1 and N2),
-//! implicit-level resolution (rules I1 / I2), and line-level
-//! reordering (rules L1 / L2).
+//! implicit-level resolution (rules I1 / I2), line-level
+//! reordering (rules L1 / L2 / L3), and bidi mirroring (rule L4 —
+//! ASCII mirror seed set; the full Unicode `BidiMirroring.txt`
+//! table is not yet vendored).
 //!
 //! ## Scope
 //!
@@ -132,6 +134,19 @@
 //!   least the iteration level. The output drives the
 //!   logical-to-visual remap a renderer applies before rasterising
 //!   the glyph sequence.
+//! - [`mirrored_glyph`] — the `Bidi_Mirroring_Glyph` acceptable-
+//!   mirror-pair lookup for the six ASCII paired brackets (`(` ↔
+//!   `)`, `[` ↔ `]`, `{` ↔ `}`), an involution returning `None`
+//!   outside the seed set (including the §3.4 backward-compatibility
+//!   exclusions U+FD3E / U+FD3F ornate parentheses).
+//! - [`apply_mirroring`] — the **L4** rule from §3.4 applied in
+//!   place to a line's logical character sequence: every position
+//!   whose resolved level is odd (resolved directionality R, per
+//!   the §3.2 even-LTR / odd-RTL level convention) and whose
+//!   character has a mirror pair is replaced by the mirrored
+//!   character, realising the spec's "depicted by a mirrored
+//!   glyph" requirement through the §7 acceptable-mirror-pair
+//!   substitution.
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
@@ -160,11 +175,13 @@
 //!   L3 step; the entry point is for external callers wiring a
 //!   different mark-attachment policy (e.g. mark glyphs with
 //!   rightward overhangs).
-//! - L4 (mirroring of bidi-mirrored characters at R-resolved
-//!   levels per UAX #9 §3.4 / §4.7); requires the Unicode
-//!   `BidiMirroring.txt` / `Bidi_Mirrored` data file to identify
-//!   the mirrored set + their mirror pair, which is not yet
-//!   vendored under `docs/` alongside the UAX HTML.
+//! - The full Unicode `BidiMirroring.txt` mirrored-pair table. The
+//!   L4 rule itself is implemented (round 268) in
+//!   [`apply_mirroring`]; only [`mirrored_glyph`]'s ASCII-bracket
+//!   seed table needs widening (mathematical operators, angle
+//!   brackets, CJK bracket blocks, …), which awaits the
+//!   `BidiMirroring.txt` snapshot landing under
+//!   `docs/text/unicode-bidi/`.
 //!
 //! The UCD-derived per-code-point class table is also intentionally
 //! a **partial** table. Filling it out fully (every code point in
@@ -2285,6 +2302,148 @@ pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual
             vi = vj.max(vi + 1);
         } else {
             vi += 1;
+        }
+    }
+}
+
+/// Bidi mirrored-glyph lookup (the UCD `Bidi_Mirroring_Glyph`
+/// property) for the ASCII paired-bracket set, consumed by the UAX #9
+/// §3.4 rule **L4** pass in [`apply_mirroring`].
+///
+/// Returns `Some(mirror)` when `c` has an acceptable mirror-pair
+/// character per UAX #9 §7 *Mirroring* ("sometimes pairs of
+/// characters are acceptable mirrors for one another — for example,
+/// U+0028 LEFT PARENTHESIS and U+0029 RIGHT PARENTHESIS"), `None`
+/// otherwise. The mapping is an involution: `mirrored_glyph(m) ==
+/// Some(c)` whenever `mirrored_glyph(c) == Some(m)`.
+///
+/// # Scope note
+///
+/// The full mirrored-pair catalogue is the informative
+/// `BidiMirroring.txt` data file from the Unicode Character Database
+/// (formal property name `Bidi_Mirroring_Glyph`), which is not yet
+/// vendored under `docs/text/unicode-bidi/`. This round therefore
+/// ships the seed set whose mirror pairing is establishable from the
+/// staged UAX #9 snapshot alone: the six ASCII paired brackets — the
+/// same set [`paired_bracket`] covers — whose open ↔ close pairing
+/// the §3.1.3 BD16 worked examples exercise and whose parenthesis
+/// member the §3.4 L4 prose worked-examples directly ("U+0028 LEFT
+/// PARENTHESIS … appears as '(' when its resolved level is even, and
+/// as the mirrored glyph ')' when its resolved level is odd").
+/// Mirrored characters outside this set (the mathematical operators,
+/// angle brackets, CJK bracket blocks, …) are deferred until the
+/// `BidiMirroring.txt` snapshot lands; callers needing them can run
+/// [`apply_mirroring`]'s trivial per-position loop against their own
+/// wider lookup of the same `char -> Option<char>` shape.
+///
+/// Per the §3.4 L4 backward-compatibility note, U+FD3E ORNATE LEFT
+/// PARENTHESIS and U+FD3F ORNATE RIGHT PARENTHESIS are **not**
+/// mirrored — they return `None` here and always will.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::mirrored_glyph;
+/// assert_eq!(mirrored_glyph('('), Some(')'));
+/// assert_eq!(mirrored_glyph(')'), Some('('));
+/// assert_eq!(mirrored_glyph('['), Some(']'));
+/// assert_eq!(mirrored_glyph(']'), Some('['));
+/// assert_eq!(mirrored_glyph('{'), Some('}'));
+/// assert_eq!(mirrored_glyph('}'), Some('{'));
+/// assert_eq!(mirrored_glyph('a'), None);
+/// // §3.4 L4 note: the ornate parentheses are not mirrored.
+/// assert_eq!(mirrored_glyph('\u{FD3E}'), None);
+/// assert_eq!(mirrored_glyph('\u{FD3F}'), None);
+/// ```
+#[must_use]
+pub fn mirrored_glyph(c: char) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        ')' => Some('('),
+        '[' => Some(']'),
+        ']' => Some('['),
+        '{' => Some('}'),
+        '}' => Some('{'),
+        _ => None,
+    }
+}
+
+/// Apply UAX #9 §3.4 rule **L4** in place to a line's logical
+/// character sequence.
+///
+/// Per §3.4 L4:
+///
+/// > A character is depicted by a mirrored glyph if and only if (a)
+/// > the resolved directionality of that character is R, and (b) the
+/// > Bidi_Mirrored property value of that character is Yes.
+///
+/// Condition (a) is read off the resolved level vector: an odd
+/// resolved level means the character's resolved directionality is R
+/// (per the §3.2 level convention — even levels are left-to-right,
+/// odd levels are right-to-left). Condition (b) is the
+/// [`mirrored_glyph`] lookup (currently the ASCII paired-bracket seed
+/// set — see its scope note). Every position satisfying both has its
+/// character replaced by the mirror-pair character, which is how an
+/// implementation without per-glyph mirroring support in the font
+/// stack realises the spec's "depicted by a mirrored glyph"
+/// requirement (§7: "pairs of characters are acceptable mirrors for
+/// one another").
+///
+/// `chars` is the line's character sequence in **logical order**;
+/// `levels` is the parallel resolved-level vector for the same line
+/// (the post-L1 levels — the same vector [`reorder_line`] consumes).
+/// L4 is a per-position glyph selection and is independent of the L2
+/// / L3 permutation, so callers may apply it before or after
+/// reordering as long as the levels stay paired with the right
+/// characters; applying it to the logical sequence (as here) and
+/// then walking the L2 permutation is the straightforward
+/// composition.
+///
+/// Because [`mirrored_glyph`] is an involution, applying L4 twice
+/// restores the original sequence — callers must run it exactly once
+/// per rendered line.
+///
+/// The HL6 higher-level-protocol override ("this rule can be
+/// overridden in certain cases; see HL6") is out of scope — callers
+/// implementing an HL6 protocol pre-filter the positions they
+/// exempt.
+///
+/// # Panics
+///
+/// Panics when `chars` and `levels` have different lengths.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::bidi::apply_mirroring;
+///
+/// // §3.4 L4 worked example: U+0028 appears as '(' when its
+/// // resolved level is even, and as the mirrored glyph ')' when
+/// // its resolved level is odd.
+/// let mut even = ['(', 'a', ')'];
+/// apply_mirroring(&mut even, &[0, 0, 0]);
+/// assert_eq!(even, ['(', 'a', ')']);
+///
+/// let mut odd = ['(', 'a', ')'];
+/// apply_mirroring(&mut odd, &[1, 2, 1]);
+/// assert_eq!(odd, [')', 'a', '(']);
+/// ```
+pub fn apply_mirroring(chars: &mut [char], levels: &[u8]) {
+    assert_eq!(
+        chars.len(),
+        levels.len(),
+        "apply_mirroring: chars / levels length mismatch ({} != {})",
+        chars.len(),
+        levels.len(),
+    );
+    for (c, &level) in chars.iter_mut().zip(levels.iter()) {
+        // L4 (a): resolved directionality R ⇔ odd resolved level.
+        if level % 2 == 1 {
+            // L4 (b): Bidi_Mirrored = Yes, realised through the
+            // acceptable-mirror-pair substitution per §7.
+            if let Some(mirror) = mirrored_glyph(*c) {
+                *c = mirror;
+            }
         }
     }
 }
@@ -6220,5 +6379,134 @@ mod tests {
             let _ = process_paragraph_classes_with_brackets(&classes, &chars, None);
         });
         assert!(result.is_err(), "length mismatch must panic");
+    }
+
+    // --- §3.4 rule L4: bidi mirroring (round 268) -------------------
+
+    #[test]
+    fn l4_mirrored_glyph_covers_each_ascii_bracket_pair() {
+        for (a, b) in [('(', ')'), ('[', ']'), ('{', '}')] {
+            assert_eq!(mirrored_glyph(a), Some(b));
+            assert_eq!(mirrored_glyph(b), Some(a));
+        }
+    }
+
+    #[test]
+    fn l4_mirrored_glyph_is_an_involution() {
+        for c in ['(', ')', '[', ']', '{', '}'] {
+            let m = mirrored_glyph(c).expect("seed-set member must have a mirror");
+            assert_eq!(mirrored_glyph(m), Some(c), "mirror of mirror returns {c}");
+        }
+    }
+
+    #[test]
+    fn l4_mirrored_glyph_none_outside_seed_set() {
+        for c in ['a', 'Z', '0', ' ', ',', '.', '\u{05D0}', '\u{0627}'] {
+            assert_eq!(
+                mirrored_glyph(c),
+                None,
+                "{c:?} has no mirror in the seed set"
+            );
+        }
+    }
+
+    #[test]
+    fn l4_ornate_parentheses_not_mirrored_per_spec_note() {
+        // §3.4 L4 note: "for backward compatibility the characters
+        // U+FD3E ORNATE LEFT PARENTHESIS and U+FD3F ORNATE RIGHT
+        // PARENTHESIS are not mirrored."
+        assert_eq!(mirrored_glyph('\u{FD3E}'), None);
+        assert_eq!(mirrored_glyph('\u{FD3F}'), None);
+    }
+
+    #[test]
+    fn l4_mirrored_glyph_agrees_with_paired_bracket_on_seed_set() {
+        // For the ASCII paired brackets the acceptable mirror is the
+        // BD14 / BD15 paired character — the two lookups must agree.
+        for c in ['(', ')', '[', ']', '{', '}'] {
+            let (paired, _kind) = paired_bracket(c).expect("seed-set member is a paired bracket");
+            assert_eq!(mirrored_glyph(c), Some(paired));
+        }
+    }
+
+    #[test]
+    fn l4_even_levels_leave_characters_unchanged() {
+        // L4 (a) fails: resolved directionality L (even level) — the
+        // '(' keeps its un-mirrored shape per the spec worked example.
+        let mut chars = ['(', 'a', ')'];
+        apply_mirroring(&mut chars, &[0, 0, 0]);
+        assert_eq!(chars, ['(', 'a', ')']);
+        let mut chars2 = ['[', 'b', ']'];
+        apply_mirroring(&mut chars2, &[2, 2, 2]);
+        assert_eq!(chars2, ['[', 'b', ']']);
+    }
+
+    #[test]
+    fn l4_odd_levels_mirror_bracket_positions() {
+        // L4 worked example: U+0028 "appears as '(' when its resolved
+        // level is even, and as the mirrored glyph ')' when its
+        // resolved level is odd".
+        let mut chars = ['(', 'a', ')'];
+        apply_mirroring(&mut chars, &[1, 1, 1]);
+        assert_eq!(chars, [')', 'a', '(']);
+    }
+
+    #[test]
+    fn l4_mixed_levels_mirror_only_odd_positions() {
+        // Same bracket character at different resolved levels: only
+        // the odd-level occurrences flip.
+        let mut chars = ['(', '(', ')', ')'];
+        apply_mirroring(&mut chars, &[0, 1, 1, 0]);
+        assert_eq!(chars, ['(', ')', '(', ')']);
+    }
+
+    #[test]
+    fn l4_non_mirrored_characters_untouched_at_odd_levels() {
+        // L4 (b) fails: no Bidi_Mirrored property in the seed set —
+        // strong letters and digits pass through at any level.
+        let mut chars = ['\u{05D0}', 'a', '7', '.'];
+        apply_mirroring(&mut chars, &[1, 1, 1, 1]);
+        assert_eq!(chars, ['\u{05D0}', 'a', '7', '.']);
+    }
+
+    #[test]
+    fn l4_empty_input_no_op() {
+        let mut chars: [char; 0] = [];
+        apply_mirroring(&mut chars, &[]);
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn l4_double_application_restores_original() {
+        // mirrored_glyph is an involution, so running L4 twice swaps
+        // every mirrored position back — callers run it exactly once.
+        let original = ['{', '\u{05D0}', '}'];
+        let mut chars = original;
+        let levels = [1, 1, 1];
+        apply_mirroring(&mut chars, &levels);
+        assert_eq!(chars, ['}', '\u{05D0}', '{']);
+        apply_mirroring(&mut chars, &levels);
+        assert_eq!(chars, original);
+    }
+
+    #[test]
+    fn l4_length_mismatch_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let mut chars = ['(', ')'];
+            apply_mirroring(&mut chars, &[1]);
+        });
+        assert!(result.is_err(), "length mismatch must panic");
+    }
+
+    #[test]
+    fn l4_composes_with_bracket_driver_on_rtl_paragraph() {
+        // RTL paragraph "א(ב)ג": the N0 b case resolves both brackets
+        // to R; I2 keeps every R at the embedding level 1 (odd), so
+        // L4 mirrors both brackets.
+        let (p, _offsets) = process_paragraph_with_brackets("\u{05D0}(\u{05D1})\u{05D2}", None);
+        assert_eq!(p.paragraph_level, 1);
+        let mut chars: Vec<char> = "\u{05D0}(\u{05D1})\u{05D2}".chars().collect();
+        apply_mirroring(&mut chars, &p.levels);
+        assert_eq!(chars, vec!['\u{05D0}', ')', '\u{05D1}', '(', '\u{05D2}']);
     }
 }

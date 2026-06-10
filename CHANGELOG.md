@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 §3.4 L4 bidi mirroring (round 268)
+
+Twelfth UAX #9 surface on scribe and the final entry in the §3.4
+line-level pass: rule **L4**, the mirrored-glyph selection for
+characters whose resolved directionality is R, shipped — like the
+round-257 N0 pass — with the algorithm complete and the lookup
+table seeded from the ASCII paired-bracket set pending the
+`BidiMirroring.txt` vendoring.
+
+- **`bidi::mirrored_glyph(c: char) -> Option<char>`** — the
+  `Bidi_Mirroring_Glyph` acceptable-mirror-pair lookup for the six
+  ASCII paired brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`). The
+  mapping is an involution (`mirrored_glyph(m) == Some(c)` whenever
+  `mirrored_glyph(c) == Some(m)`) and agrees with the round-257
+  `paired_bracket` lookup on the seed set. Per the §3.4 L4
+  backward-compatibility note, U+FD3E / U+FD3F ORNATE LEFT / RIGHT
+  PARENTHESIS are **not** mirrored and return `None`. The full
+  mirrored-pair catalogue is the informative `BidiMirroring.txt`
+  data file from the UCD, not yet vendored under
+  `docs/text/unicode-bidi/`; callers needing the wider set
+  (mathematical operators, angle brackets, CJK bracket blocks) can
+  run the same per-position loop against their own
+  `char -> Option<char>` lookup.
+- **`bidi::apply_mirroring(chars: &mut [char], levels: &[u8])`** —
+  rule **L4** applied in place to a line's logical character
+  sequence: "A character is depicted by a mirrored glyph if and
+  only if (a) the resolved directionality of that character is R,
+  and (b) the Bidi_Mirrored property value of that character is
+  Yes." Condition (a) is read off the resolved level vector (odd
+  level ⇔ directionality R per the §3.2 even-LTR / odd-RTL level
+  convention); condition (b) is the `mirrored_glyph` lookup, with
+  the replacement realising the spec's "depicted by a mirrored
+  glyph" requirement through the §7 acceptable-mirror-pair
+  substitution. L4 is a per-position glyph selection independent
+  of the L2 / L3 permutation; the documented composition applies
+  it to the logical sequence and then walks the L2 permutation.
+  Because the lookup is an involution, double application restores
+  the input — callers run it exactly once per rendered line. The
+  HL6 higher-level-protocol override is out of scope. Panics on
+  `chars` / `levels` length mismatch.
+- **`oxideav_scribe::mirrored_glyph`** +
+  **`oxideav_scribe::apply_mirroring`** — public re-exports
+  alongside the existing W / N / I / X / L surface.
+- **13 unit tests + 19 integration tests**
+  (`tests/round268_bidi_l4_mirroring.rs`) cover the seed-pair
+  round-trips, the involution + paired-bracket agreement
+  invariants, the ornate-parentheses exclusion, the §3.4 worked
+  example (`(` even-level vs odd-level), mixed / higher-odd level
+  dispatch, non-mirrored pass-through at odd levels, empty input,
+  double-application restore, the length-mismatch panic, and
+  end-to-end compositions through
+  `process_paragraph_with_brackets` + L1 → L2 → L3 → L4 on RTL
+  Hebrew lines carrying bracket pairs and combining marks
+  (including the display-stream assertion that mirrored brackets
+  open toward the enclosed text in visual order). Total scribe
+  tests: 861 → 895.
+
+Out-of-scope tail (`README.md`): the `BidiMirroring.txt`
+mirrored-pair table needs to land under `docs/text/unicode-bidi/`
+before `mirrored_glyph` can grow past the ASCII paired-bracket
+seed set — same shape as the `BidiBrackets.txt` gap blocking the
+wider N0 table. The L4 algorithm itself is complete; only the
+lookup table is partial. With L4 landed, every UAX #9 rule scribe
+tracks (P / X / W / N0 / N1 / N2 / I / L1 / L2 / L3 / L4) now has
+an implementation; the remaining BiDi work is data-file vendoring
+(`BidiBrackets.txt`, `BidiMirroring.txt`, `DerivedBidiClass.txt`)
+plus wiring the pipeline into the high-level `layout::*` API.
+
+Provenance: rule L4 and the §7 *Mirroring* acceptable-pair note are
+transcribed verbatim from UAX #9 Revision 50 / Unicode 16.0
+(`docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
+
 ### Added — UAX #9 §3.3.5 N0 bracket-pair resolution (round 257)
 
 Eleventh UAX #9 surface on scribe and the first entry to land the
