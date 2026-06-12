@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UAX #9 Unicode 16.0 UCD data tables (round 283)
+
+The three bidi property lookups are now data-driven from the Unicode
+16.0 UCD snapshots staged under `docs/text/unicode-bidi/` and
+vendored verbatim into `src/bidi/` (embedded via `include_str!`,
+parsed once on first lookup into sorted binary-searched range
+tables behind `OnceLock`s):
+
+- **`bidi::bidi_class(c)`** — full per-code-point `Bidi_Class` from
+  `DerivedBidiClass.txt` (2289 explicit ranges), replacing the
+  previous hand-mapped block list. The file's `@missing` lines are
+  honoured for unassigned code points: `R` / `AL` defaults in the
+  blocks reserved for right-to-left scripts, `ET` in the Currency
+  Symbols block, global `L` fallback elsewhere. ASCII punctuation
+  such as `!` / `"` that previously fell through to the `L` default
+  now resolves to its UCD class (`ON`), and noncharacters resolve
+  to `BN`.
+- **`bidi::paired_bracket(c)`** — full normative
+  `Bidi_Paired_Bracket` / `Bidi_Paired_Bracket_Type` table from
+  `BidiBrackets.txt` (64 open/close pairs: ASCII, Tibetan gug
+  rtags, square-bracket-with-quill, mathematical, CJK / fullwidth),
+  replacing the six-ASCII-bracket seed table from round 257. The
+  BD16 walker's close-branch comparison now implements the "where
+  U+3009 and U+232A are treated as equivalent"
+  canonical-equivalence clause, so mixed U+2329/U+3009 and
+  U+3008/U+232A bracket pairs are identified.
+- **`bidi::mirrored_glyph(c)`** — full informative
+  `Bidi_Mirroring_Glyph` table from `BidiMirroring.txt` (428
+  entries — brackets, angle quotation marks, mathematical
+  relations and operators, CJK brackets), replacing the
+  six-ASCII-bracket seed table from round 268, so rule L4 now
+  mirrors `<` ↔ `>`, `«` ↔ `»`, `≤` ↔ `≥`, `〈` ↔ `〉`, … at odd
+  resolved levels.
+
+4 unit tests pin the table-size / sortedness / involution /
+open-close-symmetry / brackets-are-ON-and-mirrored invariants
+straight off the parsed tables; 11 integration tests
+(`round283_bidi_unicode_data_tables.rs`) cover explicit class
+assignments across planes, the `@missing` fallbacks, noncharacter
+BN, the BD16 canonical-equivalence pairings, and N0 + L4
+end-to-end through `process_paragraph_with_brackets` with
+non-ASCII brackets and mirrors. No public API change — the three
+lookup signatures are unchanged.
+
 ### Added — GPOS LookupType 3 cursive attachment (round 276)
 
 The shaper's positioning pipeline grows a sixth step: **cursive

@@ -1,13 +1,12 @@
 //! Unicode Bidirectional Algorithm — UAX #9 character classes,
 //! paragraph-level resolution (rules P1 / P2 / P3), explicit-level
 //! / override / isolate stack (rules X1..X9), weak-type resolution
-//! (rules W1..W7), bracket-pair resolution (rule N0 — ASCII
-//! bracket set; the full Unicode `BidiBrackets.txt` table is not
-//! yet vendored), neutral-type resolution (rules N1 and N2),
-//! implicit-level resolution (rules I1 / I2), line-level
-//! reordering (rules L1 / L2 / L3), and bidi mirroring (rule L4 —
-//! ASCII mirror seed set; the full Unicode `BidiMirroring.txt`
-//! table is not yet vendored).
+//! (rules W1..W7), bracket-pair resolution (rule N0 — full
+//! normative `BidiBrackets.txt` table, Unicode 16.0), neutral-type
+//! resolution (rules N1 and N2), implicit-level resolution (rules
+//! I1 / I2), line-level reordering (rules L1 / L2 / L3), and bidi
+//! mirroring (rule L4 — full `BidiMirroring.txt` table, Unicode
+//! 16.0).
 //!
 //! ## Scope
 //!
@@ -21,22 +20,14 @@
 //! - [`BidiClass`] — the 23 normative bidirectional character types
 //!   from UAX #9 §3.2 Table 4 (3 Strong, 7 Weak, 4 Neutral, 9
 //!   Explicit Formatting).
-//! - [`bidi_class`] — a `char` → [`BidiClass`] lookup covering the
-//!   ranges scribe needs for shaping today: the 12 explicit
-//!   formatting characters (LRM / RLM / ALM / LRE / RLE / PDF / LRO /
-//!   RLO / LRI / RLI / FSI / PDI), the paragraph / segment / line
-//!   separators, the ASCII / Latin-1 punctuation + digit zones, the
-//!   Hebrew block (U+0590..U+05FF), the four core Arabic blocks
-//!   (U+0600..U+06FF, U+0700..U+074F Syriac, U+0750..U+077F Arabic
-//!   Supplement, U+FB50..U+FDFF Arabic Presentation Forms-A,
-//!   U+FE70..U+FEFF Arabic Presentation Forms-B), Thaana
-//!   (U+0780..U+07BF), N'Ko (U+07C0..U+07FF), Hebrew Presentation
-//!   Forms (U+FB1D..U+FB4F), and combining marks (U+0300..U+036F
-//!   Combining Diacritical Marks, U+064B..U+065F Arabic combining
-//!   marks, U+0670 Arabic letter superscript alef, U+06D6..U+06ED
-//!   Arabic combining marks B). Unmapped code points fall back to
-//!   `L` per the UAX #9 §3.2 default ("Unassigned characters are
-//!   given strong types in the algorithm.").
+//! - [`bidi_class`] — the full per-code-point `Bidi_Class` lookup,
+//!   data-driven from the Unicode 16.0 `DerivedBidiClass.txt` UCD
+//!   snapshot (vendored in `src/bidi/`, parsed once on first use by
+//!   the private `data` submodule). Covers every assigned code
+//!   point plus the `@missing` defaults for unassigned code points
+//!   in the right-to-left script blocks (`R` / `AL`) and the
+//!   Currency Symbols block (`ET`), with the file's global
+//!   Left_To_Right default for everything else.
 //! - [`paragraph_level`] — the **P1 + P2 + P3** rules: walk the
 //!   text, skip the contents of any isolate (LRI / RLI / FSI ... PDI)
 //!   region, find the first strong character (L / R / AL); P3 sets
@@ -62,14 +53,13 @@
 //!   leftover `ES` / `ET` / `CS` (collapsed to `ON`), so the
 //!   N-rules can resolve neutrals against a clean weak-type
 //!   vocabulary.
-//! - [`paired_bracket`] — the BD14 / BD15 paired-bracket lookup for
-//!   the six ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`).
-//!   Returns `Some((paired_char, BracketKind))` for any of the six,
-//!   `None` otherwise. The wider Unicode `BidiBrackets.txt` table
-//!   is not yet vendored under `docs/text/unicode-bidi/`; callers
-//!   needing the full UCS pair set can wrap [`bracket_pairs`] and
-//!   [`resolve_bracket_pairs`] with their own lookup of the same
-//!   `(char, BracketKind)` shape.
+//! - [`paired_bracket`] — the BD14 / BD15 paired-bracket lookup,
+//!   data-driven from the normative Unicode 16.0 `BidiBrackets.txt`
+//!   UCD snapshot (64 open/close pairs spanning the ASCII brackets,
+//!   the Tibetan gug rtags / ang khang pairs, the mathematical
+//!   bracket blocks, and the CJK bracket blocks). Returns
+//!   `Some((paired_char, BracketKind))` for every Bidi_Paired_Bracket
+//!   entry, `None` otherwise.
 //! - [`bracket_pairs`] — the **BD16** (§3.1.3) paired-bracket walk
 //!   over one isolating run sequence. Maintains the spec-mandated
 //!   63-element stack (overflow → empty list, per the BD16
@@ -135,10 +125,13 @@
 //!   logical-to-visual remap a renderer applies before rasterising
 //!   the glyph sequence.
 //! - [`mirrored_glyph`] — the `Bidi_Mirroring_Glyph` acceptable-
-//!   mirror-pair lookup for the six ASCII paired brackets (`(` ↔
-//!   `)`, `[` ↔ `]`, `{` ↔ `}`), an involution returning `None`
-//!   outside the seed set (including the §3.4 backward-compatibility
-//!   exclusions U+FD3E / U+FD3F ornate parentheses).
+//!   mirror-pair lookup, data-driven from the Unicode 16.0
+//!   `BidiMirroring.txt` UCD snapshot (428 entries — paired
+//!   brackets, angle quotation marks, mathematical relations and
+//!   operators, CJK brackets, …). An involution returning `None`
+//!   for every character without a mirror pair (including the §3.4
+//!   backward-compatibility exclusions U+FD3E / U+FD3F ornate
+//!   parentheses).
 //! - [`apply_mirroring`] — the **L4** rule from §3.4 applied in
 //!   place to a line's logical character sequence: every position
 //!   whose resolved level is odd (resolved directionality R, per
@@ -150,12 +143,6 @@
 //!
 //! ## Out of scope (deferred to follow-up rounds)
 //!
-//! - The full Unicode `BidiBrackets.txt` paired-bracket table (~60
-//!   entries across the Mathematical Operators, CJK Symbols and
-//!   Punctuation, and Ornamental Brackets blocks). The N0 rule
-//!   itself is implemented (round 257); only [`paired_bracket`]'s
-//!   ASCII-bracket seed table needs widening, which awaits the
-//!   `BidiBrackets.txt` snapshot landing under `docs/text/unicode-bidi/`.
 //! - X10 isolating-run-sequence partition + sos/eos derivation are
 //!   now implemented in [`level_runs`] (BD7) and
 //!   [`isolating_run_sequences`] (BD13 + X10 step 2). Callers feed
@@ -175,33 +162,21 @@
 //!   L3 step; the entry point is for external callers wiring a
 //!   different mark-attachment policy (e.g. mark glyphs with
 //!   rightward overhangs).
-//! - The full Unicode `BidiMirroring.txt` mirrored-pair table. The
-//!   L4 rule itself is implemented (round 268) in
-//!   [`apply_mirroring`]; only [`mirrored_glyph`]'s ASCII-bracket
-//!   seed table needs widening (mathematical operators, angle
-//!   brackets, CJK bracket blocks, …), which awaits the
-//!   `BidiMirroring.txt` snapshot landing under
-//!   `docs/text/unicode-bidi/`.
-//!
-//! The UCD-derived per-code-point class table is also intentionally
-//! a **partial** table. Filling it out fully (every code point in
-//! the Bidi_Mirrored / NSM / EN / ET / AN ranges across the BMP and
-//! supplementary planes) is a follow-up that needs the
-//! `DerivedBidiClass.txt` data file from the Unicode Character
-//! Database, which UAX #9 references but which is not itself a
-//! UAX. The current table is enough to drive paragraph-level
-//! detection on every real-world mixed Latin / Hebrew / Arabic
-//! string, and is exhaustive for the explicit formatting control
-//! plane (so X1..X8 dispatchers have a complete domain when they
-//! land).
+//! - HL1..HL6 higher-level-protocol overrides (§4.3) — callers'
+//!   responsibility throughout.
 //!
 //! ## Provenance
 //!
 //! All material in this module is sourced exclusively from
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` (UAX #9
-//! Revision 50, Unicode 16.0, fetched 2026-05-29).
+//! Revision 50, Unicode 16.0, fetched 2026-05-29) and the three
+//! Unicode 16.0 UCD data files staged alongside it
+//! (`DerivedBidiClass.txt`, `BidiBrackets.txt`, `BidiMirroring.txt` —
+//! vendored verbatim in `src/bidi/`, round 283).
 
 #![allow(clippy::module_name_repetitions)]
+
+mod data;
 
 /// Normative bidirectional character type from UAX #9 §3.2 Table 4.
 ///
@@ -327,192 +302,21 @@ impl BidiClass {
 
 /// Return the [`BidiClass`] of the code point per UAX #9 §3.2.
 ///
-/// The implementation covers the ranges scribe needs today: the 12
-/// explicit-formatting control characters in full, the
-/// paragraph / segment / line separators, the ASCII / Latin-1
-/// blocks (digits, common separators, terminators, punctuation,
-/// whitespace), the Hebrew block, the four core Arabic blocks +
-/// Syriac + Arabic Supplement + Arabic Presentation Forms A and B,
-/// Thaana, N'Ko, and the most common combining-mark ranges. Other
-/// code points return [`BidiClass::L`] per the UAX #9 §3.2 default
-/// for unassigned characters.
-///
-/// This default is intentionally conservative: every code point in
-/// our coverage that should be `R` / `AL` / `EN` / `AN` / `NSM` is
-/// in one of the listed ranges, and falling back to `L` for
-/// everything else (most of which is in fact `L` in `DerivedBidiClass.txt`)
-/// makes the paragraph-level detector behave correctly for every
-/// real-world mixed Latin / Hebrew / Arabic / CJK string.
+/// Data-driven from the Unicode 16.0 `DerivedBidiClass.txt` UCD
+/// snapshot (UAX #9 §3.2: "For assignments to character types, see
+/// DerivedBidiClass.txt \[DerivedBIDI\] in the \[UCD\]"), vendored in
+/// `src/bidi/` and parsed once on first use. Every assigned code
+/// point gets its listed class; unassigned code points get the
+/// file's `@missing` block defaults — `R` / `AL` in the blocks
+/// reserved for right-to-left scripts, `ET` in the Currency Symbols
+/// block (per §3.2: "Unassigned characters are given strong types
+/// in the algorithm. This is an explicit exception to the general
+/// Unicode conformance requirements with respect to unassigned
+/// characters.") — and everything else falls back to the file's
+/// global Left_To_Right default.
 #[must_use]
 pub fn bidi_class(c: char) -> BidiClass {
-    let u = c as u32;
-
-    // --- Explicit formatting controls (UAX #9 §2.1..§2.5) --------
-    match u {
-        0x061C => return BidiClass::AL, // ALM ARABIC LETTER MARK (§2.6)
-        0x200E => return BidiClass::L,  // LRM
-        0x200F => return BidiClass::R,  // RLM
-        0x202A => return BidiClass::LRE,
-        0x202B => return BidiClass::RLE,
-        0x202C => return BidiClass::PDF,
-        0x202D => return BidiClass::LRO,
-        0x202E => return BidiClass::RLO,
-        0x2066 => return BidiClass::LRI,
-        0x2067 => return BidiClass::RLI,
-        0x2068 => return BidiClass::FSI,
-        0x2069 => return BidiClass::PDI,
-        _ => {}
-    }
-
-    // --- Neutral separators (UAX #9 §3.2 Table 4 row B / S / WS) -
-    match u {
-        // Paragraph separators (B):
-        // - CR (U+000D), LF (U+000A), NEL (U+0085), and U+001C..U+001E
-        //   are file/group/record/unit separators all assigned B by
-        //   the UCD;  U+2029 PARAGRAPH SEPARATOR is the canonical one.
-        0x000A | 0x000D | 0x0085 | 0x001C..=0x001E | 0x2029 => return BidiClass::B,
-        // Segment separator (S):
-        0x0009 | 0x000B | 0x001F => return BidiClass::S,
-        // Whitespace (WS):
-        0x000C | 0x0020 | 0x1680 | 0x2028 | 0x202F | 0x205F | 0x3000 => return BidiClass::WS,
-        // U+00A0 NO-BREAK SPACE is CS, not WS.
-        _ => {}
-    }
-    // En space, em space, etc. (U+2000..U+200A) are WS.
-    if (0x2000..=0x200A).contains(&u) {
-        return BidiClass::WS;
-    }
-
-    // --- ASCII digits + common separators / terminators ---------
-    match u {
-        // EN: ASCII digits.
-        0x0030..=0x0039 => return BidiClass::EN,
-        // ES: PLUS / MINUS / HYPHEN-MINUS.
-        0x002B | 0x002D => return BidiClass::ES,
-        // CS: COLON, COMMA, FULL STOP, SOLIDUS.
-        0x002C | 0x002E | 0x002F | 0x003A => return BidiClass::CS,
-        // ET: NUMBER SIGN, DOLLAR SIGN, PERCENT SIGN.
-        0x0023..=0x0025 => return BidiClass::ET,
-        // ON: ASCII brackets (the six BidiBrackets.txt entries in the
-        // ASCII range — round 257). LEFT/RIGHT PARENTHESIS, LEFT/RIGHT
-        // SQUARE BRACKET, LEFT/RIGHT CURLY BRACKET. The
-        // Bidi_Paired_Bracket_Type property lookup happens in
-        // [`paired_bracket`]; the class slot itself is ON per UAX #9
-        // §3.2 Table 4.
-        0x0028 | 0x0029 | 0x005B | 0x005D | 0x007B | 0x007D => return BidiClass::ON,
-        _ => {}
-    }
-
-    // ASCII letters (L).
-    if matches!(u, 0x0041..=0x005A | 0x0061..=0x007A) {
-        return BidiClass::L;
-    }
-
-    // C0 / DEL boundary-neutral controls (UAX #9 §3.2 BN row).
-    if matches!(u, 0x0000..=0x0008 | 0x000E..=0x001B | 0x007F..=0x0084 | 0x0086..=0x009F) {
-        return BidiClass::BN;
-    }
-
-    // --- Latin-1 supplement -------------------------------------
-    match u {
-        0x00A0 => return BidiClass::CS,          // NO-BREAK SPACE
-        0x00A2..=0x00A5 => return BidiClass::ET, // ¢ £ ¤ ¥
-        0x00B0 | 0x00B1 => return BidiClass::ET, // DEGREE SIGN, PLUS-MINUS
-        0x00AD => return BidiClass::BN,          // SOFT HYPHEN
-        _ => {}
-    }
-    // Latin-1 letters (L).
-    if matches!(u, 0x00C0..=0x00D6 | 0x00D8..=0x00F6 | 0x00F8..=0x00FF) {
-        return BidiClass::L;
-    }
-
-    // --- Combining marks (NSM) ----------------------------------
-    // Combining Diacritical Marks.
-    if (0x0300..=0x036F).contains(&u) {
-        return BidiClass::NSM;
-    }
-    // Arabic combining marks (per UAX #9 + DerivedBidiClass narrative
-    // ranges): tatweel U+0640 is AL, U+0610..U+061A + U+064B..U+065F +
-    // U+0670 + U+06D6..U+06ED + U+06EA..U+06ED are NSM.
-    if matches!(
-        u,
-        0x0610..=0x061A
-            | 0x064B..=0x065F
-            | 0x0670
-            | 0x06D6..=0x06DC
-            | 0x06DF..=0x06E4
-            | 0x06E7..=0x06E8
-            | 0x06EA..=0x06ED
-    ) {
-        return BidiClass::NSM;
-    }
-
-    // --- Hebrew block (R) ---------------------------------------
-    // Hebrew letters and punctuation (U+0590..U+05FF).
-    if (0x0590..=0x05FF).contains(&u) {
-        return BidiClass::R;
-    }
-    // Hebrew Presentation Forms (U+FB1D..U+FB4F).
-    if (0x0FB1D..=0x0FB4F).contains(&u) {
-        return BidiClass::R;
-    }
-
-    // --- Arabic blocks (AL) -------------------------------------
-    // Arabic (U+0600..U+06FF) minus the NSM ranges + ALM handled above.
-    if (0x0600..=0x06FF).contains(&u) {
-        // U+0660..U+0669 ARABIC-INDIC DIGITS are AN; U+06F0..U+06F9
-        // EXTENDED ARABIC-INDIC DIGITS are EN per UAX #9 §3.2.
-        if (0x0660..=0x0669).contains(&u) {
-            return BidiClass::AN;
-        }
-        if (0x06F0..=0x06F9).contains(&u) {
-            return BidiClass::EN;
-        }
-        return BidiClass::AL;
-    }
-    // Syriac (U+0700..U+074F).
-    if (0x0700..=0x074F).contains(&u) {
-        return BidiClass::AL;
-    }
-    // Arabic Supplement (U+0750..U+077F).
-    if (0x0750..=0x077F).contains(&u) {
-        return BidiClass::AL;
-    }
-    // Thaana (U+0780..U+07BF).
-    if (0x0780..=0x07BF).contains(&u) {
-        return BidiClass::AL;
-    }
-    // N'Ko (U+07C0..U+07FF).
-    if (0x07C0..=0x07FF).contains(&u) {
-        return BidiClass::R;
-    }
-    // Arabic Presentation Forms-A (U+FB50..U+FDFF).
-    if (0xFB50..=0xFDFF).contains(&u) {
-        return BidiClass::AL;
-    }
-    // Arabic Presentation Forms-B (U+FE70..U+FEFF).
-    if (0xFE70..=0xFEFF).contains(&u) {
-        return BidiClass::AL;
-    }
-
-    // ZWJ / ZWNJ (BN per UAX #9 §3.2, not part of explicit
-    // formatting set even though they are joiner controls).
-    if matches!(u, 0x200B..=0x200D | 0x2060..=0x2064) {
-        return BidiClass::BN;
-    }
-
-    // Object replacement character (ON).
-    if u == 0xFFFC {
-        return BidiClass::ON;
-    }
-
-    // Default: L (UAX #9 §3.2: "Unassigned characters are given
-    // strong types in the algorithm."). This is intentionally
-    // conservative: any code point we have not explicitly mapped
-    // returns L, which is correct for the vast majority of the
-    // BMP (Latin / Cyrillic / Greek / Han / Hiragana / Katakana /
-    // Hangul / etc.).
-    BidiClass::L
+    data::class_lookup(c as u32)
 }
 
 /// Resolve the paragraph embedding level per UAX #9 rules **P1, P2,
@@ -1523,31 +1327,27 @@ pub enum BracketKind {
 }
 
 /// Bidi paired-bracket lookup per UAX #9 **§3.1.3** (BD14 / BD15 /
-/// BD16) for the ASCII bracket pairs.
+/// BD16) — the normative `Bidi_Paired_Bracket` +
+/// `Bidi_Paired_Bracket_Type` properties.
 ///
-/// Returns `Some((paired_char, kind))` when `c` is one of the six
-/// ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔ `}`). The paired
-/// character is the **other** member of the pair (so `paired_bracket(
-/// '(')` returns `(')', BracketKind::Open)` and `paired_bracket(')')`
-/// returns `('(', BracketKind::Close)`). Returns `None` for every
-/// other code point.
+/// Data-driven from the Unicode 16.0 `BidiBrackets.txt` UCD snapshot
+/// (vendored in `src/bidi/`, parsed once on first use): 64 open /
+/// close pairs spanning the ASCII brackets, the Tibetan gug rtags /
+/// ang khang pairs, the Mathematical Operators / Miscellaneous
+/// Mathematical Symbols brackets, and the CJK / fullwidth bracket
+/// blocks.
 ///
-/// # Scope note
-///
-/// UAX #9 §3.1.3 defines the full Bidi_Paired_Bracket /
-/// Bidi_Paired_Bracket_Type properties via `BidiBrackets.txt` from the
-/// Unicode Character Database — ~60 pairs across the Mathematical
-/// Operators, Misc Mathematical Symbols, Supplementary Mathematical
-/// Operators, CJK Symbols and Punctuation, and Ornamental Brackets
-/// blocks. The table file is not yet vendored under
-/// `docs/text/unicode-bidi/`, so this round ships the six ASCII
-/// brackets named explicitly in the UAX #9 §3.1.3 worked examples and
-/// the §1.6 "RTL Mark" discussion. Callers needing the full UCS
-/// table can wrap the helpers below with their own
-/// `paired_bracket`-equivalent function — `bracket_pairs` and
-/// [`resolve_bracket_pairs`] accept any lookup that follows the
-/// `(char, BracketKind)` shape via the per-character iteration
-/// pattern shown in [`bracket_pairs`].
+/// Returns `Some((paired_char, kind))` when `c` is a paired bracket.
+/// The paired character is the character's `Bidi_Paired_Bracket`
+/// property value — the **other** member of the pair (so
+/// `paired_bracket('(')` returns `(')', BracketKind::Open)` and
+/// `paired_bracket(')')` returns `('(', BracketKind::Close)`).
+/// Returns `None` for every other code point — including U+FD3E /
+/// U+FD3F ORNATE LEFT/RIGHT PARENTHESIS, which per the
+/// `BidiBrackets.txt` header "do not mirror in bidirectional display
+/// and therefore do not form a bracket pair", and including
+/// mirrored-but-unpaired characters such as `<` / `>` (gc=Sm, not
+/// Ps/Pe).
 ///
 /// # Examples
 ///
@@ -1559,20 +1359,19 @@ pub enum BracketKind {
 /// assert_eq!(paired_bracket(']'), Some(('[', BracketKind::Close)));
 /// assert_eq!(paired_bracket('{'), Some(('}', BracketKind::Open)));
 /// assert_eq!(paired_bracket('}'), Some(('{', BracketKind::Close)));
+/// // U+3008 / U+3009 LEFT/RIGHT ANGLE BRACKET (CJK).
+/// assert_eq!(
+///     paired_bracket('\u{3008}'),
+///     Some(('\u{3009}', BracketKind::Open))
+/// );
 /// assert_eq!(paired_bracket('a'), None);
 /// assert_eq!(paired_bracket(' '), None);
+/// assert_eq!(paired_bracket('<'), None);
+/// assert_eq!(paired_bracket('\u{FD3E}'), None);
 /// ```
 #[must_use]
 pub fn paired_bracket(c: char) -> Option<(char, BracketKind)> {
-    match c {
-        '(' => Some((')', BracketKind::Open)),
-        ')' => Some(('(', BracketKind::Close)),
-        '[' => Some((']', BracketKind::Open)),
-        ']' => Some(('[', BracketKind::Close)),
-        '{' => Some(('}', BracketKind::Open)),
-        '}' => Some(('{', BracketKind::Close)),
-        _ => None,
-    }
+    data::bracket_lookup(c)
 }
 
 /// Identify the paired-bracket text positions in one isolating run
@@ -1618,12 +1417,16 @@ pub fn paired_bracket(c: char) -> Option<(char, BracketKind)> {
 ///    sequentially in the logical order of the text positions of the
 ///    opening paired brackets" clause requires this ordering.
 ///
-/// The BD16 step's "U+3009 and U+232A are treated as equivalent"
-/// special case is not exercised by the ASCII bracket set [`paired_bracket`]
-/// covers (those two codepoints are CJK angle brackets); future-extended
-/// lookups can model the equivalence by returning the *same* closer
-/// `char` for both U+3009 and U+232A from their respective `Open`
-/// entries.
+/// The close-branch comparison honours the BD16 step's "Compare the
+/// closing paired bracket being inspected to the bracket in the
+/// current stack element, **where U+3009 and U+232A are treated as
+/// equivalent**" clause by canonicalising U+232A RIGHT-POINTING
+/// ANGLE BRACKET to U+3009 RIGHT ANGLE BRACKET on both sides of the
+/// comparison. Per the spec note, canonical equivalents only exist
+/// between U+3008/U+3009 and U+2329/U+232A ("the Unicode Consortium
+/// will not add more such pairs"), so this single substitution
+/// covers the clause in full — a U+2329 opener pairs with a U+3009
+/// closer and a U+3008 opener pairs with a U+232A closer.
 ///
 /// # Examples
 ///
@@ -1651,6 +1454,20 @@ pub fn bracket_pairs(chars: &[char], classes: &[BidiClass]) -> Vec<(usize, usize
     const BRACKET_STACK_CAP: usize = 63;
     let mut stack: Vec<(char, usize)> = Vec::with_capacity(BRACKET_STACK_CAP);
     let mut pairs: Vec<(usize, usize)> = Vec::new();
+
+    // BD16 close-branch comparison: "where U+3009 and U+232A are
+    // treated as equivalent" — canonicalise the deprecated U+232A
+    // RIGHT-POINTING ANGLE BRACKET to its canonical equivalent
+    // U+3009 RIGHT ANGLE BRACKET before comparing. The spec note
+    // limits canonical equivalence to exactly the U+3008/U+3009 and
+    // U+2329/U+232A pairs, so this one substitution is exhaustive.
+    const fn canon(c: char) -> char {
+        if c as u32 == 0x232A {
+            '\u{3009}'
+        } else {
+            c
+        }
+    }
 
     for (i, &c) in chars.iter().enumerate() {
         // BD14 / BD15: only ON-classified positions count as paired
@@ -1684,7 +1501,7 @@ pub fn bracket_pairs(chars: &[char], classes: &[BidiClass]) -> Vec<(usize, usize
                 // without popping.
                 let mut hit: Option<usize> = None;
                 for depth in (0..stack.len()).rev() {
-                    if stack[depth].0 == c {
+                    if canon(stack[depth].0) == canon(c) {
                         hit = Some(depth);
                         break;
                     }
@@ -2307,8 +2124,15 @@ pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual
 }
 
 /// Bidi mirrored-glyph lookup (the UCD `Bidi_Mirroring_Glyph`
-/// property) for the ASCII paired-bracket set, consumed by the UAX #9
-/// §3.4 rule **L4** pass in [`apply_mirroring`].
+/// property), consumed by the UAX #9 §3.4 rule **L4** pass in
+/// [`apply_mirroring`].
+///
+/// Data-driven from the Unicode 16.0 `BidiMirroring.txt` UCD
+/// snapshot (vendored in `src/bidi/`, parsed once on first use):
+/// 428 entries covering the paired brackets, the angle quotation
+/// marks (`«` ↔ `»`, `‹` ↔ `›`), the mathematical relations and
+/// operators (`<` ↔ `>`, `≤` ↔ `≥`, …), and the CJK / fullwidth
+/// bracket blocks.
 ///
 /// Returns `Some(mirror)` when `c` has an acceptable mirror-pair
 /// character per UAX #9 §7 *Mirroring* ("sometimes pairs of
@@ -2317,28 +2141,12 @@ pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual
 /// otherwise. The mapping is an involution: `mirrored_glyph(m) ==
 /// Some(c)` whenever `mirrored_glyph(c) == Some(m)`.
 ///
-/// # Scope note
-///
-/// The full mirrored-pair catalogue is the informative
-/// `BidiMirroring.txt` data file from the Unicode Character Database
-/// (formal property name `Bidi_Mirroring_Glyph`), which is not yet
-/// vendored under `docs/text/unicode-bidi/`. This round therefore
-/// ships the seed set whose mirror pairing is establishable from the
-/// staged UAX #9 snapshot alone: the six ASCII paired brackets — the
-/// same set [`paired_bracket`] covers — whose open ↔ close pairing
-/// the §3.1.3 BD16 worked examples exercise and whose parenthesis
-/// member the §3.4 L4 prose worked-examples directly ("U+0028 LEFT
-/// PARENTHESIS … appears as '(' when its resolved level is even, and
-/// as the mirrored glyph ')' when its resolved level is odd").
-/// Mirrored characters outside this set (the mathematical operators,
-/// angle brackets, CJK bracket blocks, …) are deferred until the
-/// `BidiMirroring.txt` snapshot lands; callers needing them can run
-/// [`apply_mirroring`]'s trivial per-position loop against their own
-/// wider lookup of the same `char -> Option<char>` shape.
-///
-/// Per the §3.4 L4 backward-compatibility note, U+FD3E ORNATE LEFT
-/// PARENTHESIS and U+FD3F ORNATE RIGHT PARENTHESIS are **not**
-/// mirrored — they return `None` here and always will.
+/// `Bidi_Mirrored=Yes` characters **without** an acceptable mirror
+/// pair (the `BidiMirroring.txt` trailing comment lists them — e.g.
+/// U+2201 COMPLEMENT) return `None`: rendering those mirrored needs
+/// font-level glyph mirroring, which the pair-substitution strategy
+/// cannot express. U+FD3E / U+FD3F ORNATE LEFT/RIGHT PARENTHESIS are
+/// not `Bidi_Mirrored` at all and also return `None`.
 ///
 /// # Examples
 ///
@@ -2350,22 +2158,17 @@ pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual
 /// assert_eq!(mirrored_glyph(']'), Some('['));
 /// assert_eq!(mirrored_glyph('{'), Some('}'));
 /// assert_eq!(mirrored_glyph('}'), Some('{'));
+/// assert_eq!(mirrored_glyph('<'), Some('>'));
+/// assert_eq!(mirrored_glyph('\u{00AB}'), Some('\u{00BB}')); // « ↔ »
+/// assert_eq!(mirrored_glyph('\u{2264}'), Some('\u{2265}')); // ≤ ↔ ≥
 /// assert_eq!(mirrored_glyph('a'), None);
-/// // §3.4 L4 note: the ornate parentheses are not mirrored.
+/// // The ornate parentheses are not mirrored (Bidi_Mirrored=No).
 /// assert_eq!(mirrored_glyph('\u{FD3E}'), None);
 /// assert_eq!(mirrored_glyph('\u{FD3F}'), None);
 /// ```
 #[must_use]
 pub fn mirrored_glyph(c: char) -> Option<char> {
-    match c {
-        '(' => Some(')'),
-        ')' => Some('('),
-        '[' => Some(']'),
-        ']' => Some('['),
-        '{' => Some('}'),
-        '}' => Some('{'),
-        _ => None,
-    }
+    data::mirror_lookup(c)
 }
 
 /// Apply UAX #9 §3.4 rule **L4** in place to a line's logical
@@ -6079,8 +5882,21 @@ mod tests {
             }
             assert!(paired_bracket(c).is_none(), "{c:?} should not pair");
         }
-        // Non-ASCII near-brackets that the ASCII table excludes.
-        for c in ['\u{2329}', '\u{232A}', '\u{3008}', '\u{3009}', '\u{27E6}'] {
+        // Non-ASCII paired brackets resolve through the full
+        // BidiBrackets.txt table (round 283): the angle brackets
+        // (both the deprecated U+2329/U+232A pair and the canonical
+        // U+3008/U+3009 CJK pair) and the mathematical white square
+        // brackets U+27E6/U+27E7.
+        for (open, close) in [
+            ('\u{2329}', '\u{232A}'),
+            ('\u{3008}', '\u{3009}'),
+            ('\u{27E6}', '\u{27E7}'),
+        ] {
+            assert_eq!(paired_bracket(open), Some((close, BracketKind::Open)));
+            assert_eq!(paired_bracket(close), Some((open, BracketKind::Close)));
+        }
+        // Mirrored-but-unpaired (gc=Sm, not Ps/Pe): no bracket entry.
+        for c in ['<', '>', '\u{00AB}', '\u{00BB}'] {
             assert!(paired_bracket(c).is_none(), "{c:?} should not pair");
         }
     }

@@ -50,6 +50,29 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   kerning) + GPOS type 3 (cursive attachment) + GPOS type 4/5/6
   (mark-to-base, mark-to-mark stacking), enough for Latin / Cyrillic
   / Greek / basic CJK / Vietnamese / polytonic Greek.
+- **BiDi Unicode 16.0 UCD data tables (round 283)** — the three UAX
+  #9 property lookups are now data-driven from the Unicode 16.0 UCD
+  snapshots staged under `docs/text/unicode-bidi/` and vendored
+  verbatim into `src/bidi/` (embedded via `include_str!`, parsed
+  once on first lookup into sorted binary-searched range tables).
+  `bidi::bidi_class(c)` covers every assigned code point from
+  `DerivedBidiClass.txt` (2289 ranges) plus the file's `@missing`
+  defaults for unassigned code points — `R` / `AL` in the
+  right-to-left script blocks, `ET` in the Currency Symbols block —
+  replacing the previous hand-mapped block list.
+  `bidi::paired_bracket(c)` carries the full normative
+  `BidiBrackets.txt` table (64 open/close pairs: ASCII, Tibetan gug
+  rtags, square-bracket-with-quill, mathematical, CJK / fullwidth),
+  and the BD16 walker now honours the close-branch "U+3009 and
+  U+232A are treated as equivalent" canonical-equivalence clause.
+  `bidi::mirrored_glyph(c)` carries the full informative
+  `BidiMirroring.txt` table (428 entries — brackets, angle
+  quotation marks, mathematical relations, CJK brackets), so rule
+  L4 mirrors far beyond the previous ASCII seed set. 4 unit + 11
+  integration tests pin the table-size / involution / open-close
+  symmetry invariants, the `@missing` fallbacks, the BD16
+  equivalence pairings, and N0 + L4 end-to-end through the
+  paragraph driver with non-ASCII brackets and mirrors.
 - **GPOS cursive attachment (round 276)** — the shaper's positioning
   pipeline runs a CursivePosFormat1 pass over consecutive non-mark
   glyph pairs: when the first glyph publishes an **exit** anchor and
@@ -316,9 +339,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   resolve_explicit_levels` end-to-end. The X10 isolating-run-
   sequence partition that consumes X1..X9's output landed in round
   220 (`level_runs` + `isolating_run_sequences`); L3 combining-
-  mark reordering landed in round 247. The bracket-pair rule N0
-  (still blocked on `BidiBrackets.txt`) and L4 mirroring remain
-  deferred.
+  mark reordering landed in round 247; the bracket-pair rule N0
+  landed in round 257 and L4 mirroring in round 268, both with
+  full Unicode 16.0 data tables as of round 283.
 - **BiDi X10 isolating-run-sequence partition (round 220)** —
   `bidi::level_runs(&levels) -> Vec<LevelRun>` returns the UAX #9
   §3.1.2 **BD7** partition of the per-character embedding-level
@@ -365,11 +388,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   an end-to-end `X → W → N → I` compose driving the existing
   weak / neutral / implicit-level passes per-sequence. L3
   combining-mark reordering (§3.4) landed in round 247 — see the
-  dedicated entry. **N0 (bracket-pair resolution per §3.1.3) and L4
-  (bidi-mirroring per §4.7) remain deferred** — N0 blocked on
-  `BidiBrackets.txt` (not yet vendored under
-  `docs/text/unicode-bidi/`); L4 blocked on `BidiMirroring.txt`
-  (same gap).
+  dedicated entry. N0 (bracket-pair resolution per §3.1.3) landed
+  in round 257 and L4 (bidi-mirroring) in round 268; both consume
+  the full Unicode 16.0 `BidiBrackets.txt` / `BidiMirroring.txt`
+  data tables as of round 283.
 - **BiDi §3.3.1 P1 multi-paragraph driver (round 233)** —
   `bidi::process_text(text, base_level) -> TextBidi` is the top-
   level entry point for whole-document text. It walks the P1 split
@@ -412,7 +434,7 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   carrier, manual L1 / L2 drive via `reset_trailing_levels` +
   `reorder_line` succeeding per paragraph, and Clone + Eq + Debug
   derive smoke tests on both carrier types. L3 landed in round 247;
-  N0 / L4 remain deferred (same blocking conditions as round 220).
+  N0 in round 257; L4 in round 268.
 - **BiDi §3 whole-paragraph driver (round 227)** —
   `bidi::process_paragraph(text, base_level) -> (ParagraphBidi,
   Vec<usize>)` and the class-driven mirror
@@ -455,14 +477,12 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   reorder_paragraph identity / RTL-reversal pair, per-line
   reorder_line_range on a split paragraph, and the §3.4 spec
   example "car means CAR." resolving to its published visual order.
-  L3 landed in round 247; N0 / L4 remain deferred (same blocking
-  conditions as round 220).
+  L3 landed in round 247; N0 in round 257; L4 in round 268.
 - **BiDi foundation (round 186)** — `bidi::bidi_class(c)` returns the
-  UAX #9 §3.2 normative bidirectional class for every code point
-  scribe needs today (the 12 explicit-format controls in full, ASCII
-  / Latin-1, Hebrew, four core Arabic blocks + Syriac + Thaana +
-  N'Ko + the two Arabic Presentation Forms blocks, Combining
-  Diacritical Marks + Arabic NSM ranges). `bidi::paragraph_level(s)`
+  UAX #9 §3.2 normative bidirectional class (originally a
+  hand-mapped block list; full `DerivedBidiClass.txt`-driven
+  per-code-point coverage as of round 283 — see the dedicated
+  entry). `bidi::paragraph_level(s)`
   implements UAX #9 rules **P1 / P2 / P3** end-to-end: walks the
   text, skips the contents of any `LRI` / `RLI` / `FSI` ... `PDI`
   isolate region (nested arbitrarily deep), finds the first strong
@@ -508,12 +528,12 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   mixed-type CS doesn't collapse), the W5 non-EN-adjacent case (ET
   next to AN stays ET → W6 → ON), the W2-before-W3 ordering, and a
   full Arabic phone-number-style pipeline. `BidiClass::is_neutral_or_isolate()`
-  exposes the §3.3.5 NI alias predicate for the upcoming N-rules.
-  N / I / X / L rules remain deferred.
+  exposes the §3.3.5 NI alias predicate the N-rules consume (N / I
+  / X / L rules have all since landed — see their entries).
 - **BiDi §3.3.5 N0 bracket-pair resolution (round 257)** —
   `bidi::paired_bracket(c)` returns the BD14 / BD15 paired-bracket
-  lookup for the six ASCII brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔
-  `}`) as `Some((paired_char, BracketKind::{Open, Close}))`;
+  lookup (full `BidiBrackets.txt` table as of round 283) as
+  `Some((paired_char, BracketKind::{Open, Close}))`;
   `bidi::bracket_pairs(chars, classes)` runs the **BD16**
   (§3.1.3) stack walk over one isolating run sequence, returning
   the list of `(open_pos, close_pos)` pairs sorted by opener in
@@ -551,21 +571,19 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   every BD16 worked-example line from the §3.1.3 spec table, every
   N0 case (b / c.1 / c.2 / d), the EN / AN projection note, the
   63-stack overflow branch, the non-ON skip gate, the sequential-
-  rewrite invariant, and the trailing-NSM clarification. The
-  wider Unicode `BidiBrackets.txt` table (~60 paired-bracket
-  entries across the Mathematical Operators / CJK Symbols /
-  Ornamental Brackets blocks) is not yet vendored under
-  `docs/text/unicode-bidi/`; the N0 algorithm itself is complete,
-  only the lookup table is partial — callers needing the wider
-  UCS pair set can wrap `bracket_pairs` / `resolve_bracket_pairs`
-  with their own `(char, BracketKind)` lookup of the same shape.
+  rewrite invariant, and the trailing-NSM clarification. Round
+  283 replaced the original six-ASCII-bracket seed table with the
+  full normative Unicode 16.0 `BidiBrackets.txt` table (64 pairs)
+  and added the BD16 U+3009 ≡ U+232A canonical-equivalence
+  comparison — see the dedicated entry.
 - **BiDi §3.4 L4 mirroring (round 268)** — `bidi::mirrored_glyph(c)`
-  returns the `Bidi_Mirroring_Glyph` acceptable-mirror-pair character
-  for the six ASCII paired brackets (`(` ↔ `)`, `[` ↔ `]`, `{` ↔
-  `}`); the lookup is an involution and returns `None` outside the
-  seed set, including the §3.4-excluded backward-compatibility pair
-  U+FD3E / U+FD3F ornate parentheses ("for backward compatibility
-  ... not mirrored"). `bidi::apply_mirroring(chars, levels)` applies
+  returns the `Bidi_Mirroring_Glyph` acceptable-mirror-pair
+  character (full `BidiMirroring.txt` table as of round 283); the
+  lookup is an involution and returns `None` for characters without
+  a mirror pair, including the §3.4-excluded backward-compatibility
+  pair U+FD3E / U+FD3F ornate parentheses ("for backward
+  compatibility ... not mirrored"). `bidi::apply_mirroring(chars,
+  levels)` applies
   rule **L4** in place over a line's logical character sequence:
   every position whose resolved level is odd (resolved
   directionality R, per the §3.2 even-LTR / odd-RTL level
@@ -584,13 +602,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   dispatch, non-mirrored pass-through, double-application restore,
   the length-mismatch panic, and end-to-end compositions through
   `process_paragraph_with_brackets` + L1 → L2 → L3 → L4 on RTL
-  Hebrew lines with brackets and combining marks. The wider
-  `BidiMirroring.txt` pair table (mathematical operators, angle
-  brackets, CJK bracket blocks) is not yet vendored under
-  `docs/text/unicode-bidi/`; the L4 algorithm itself is complete,
-  only the lookup table is partial — callers needing the wider set
-  can run the same per-position loop against their own
-  `char -> Option<char>` lookup.
+  Hebrew lines with brackets and combining marks. Round 283
+  replaced the original six-ASCII-bracket seed table with the full
+  Unicode 16.0 `BidiMirroring.txt` table (428 entries) — see the
+  dedicated entry.
 - **BiDi §3.4 L3 combining-mark reordering (round 247)** —
   `bidi::reorder_combining_marks(orig_classes, levels, &mut visual)`
   applies UAX #9 §3.4 rule **L3** in place to the visual permutation
@@ -624,10 +639,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   logical (post-base) order on both LTR and RTL, so callers using
   scribe's own renderer can skip the L3 step; the L3 entry point is
   for external callers wiring a different mark-attachment policy.
-  The L4 mirroring rule landed in round 268 with the ASCII mirror
-  seed set — see the dedicated entry above; the full
-  `BidiMirroring.txt` table is still not vendored under
-  `docs/text/unicode-bidi/`.
+  The L4 mirroring rule landed in round 268 — see the dedicated
+  entry above; the full `BidiMirroring.txt` table landed in round
+  283.
 - **BiDi line-level reordering L1 + L2 (round 210)** —
   `bidi::reset_trailing_levels(&orig_classes, &mut levels,
   paragraph_level)` runs the UAX #9 §3.4 rule **L1** in place,
@@ -658,9 +672,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   sequence partition) landed in rounds 217 + 220; L3 (combining-
   mark reordering) landed in round 247 — see the entry above.
   The N0 algorithm landed in round 257 and the L4 mirroring rule
-  in round 268 (each with an ASCII seed table); the full
-  `BidiBrackets.txt` / `BidiMirroring.txt` data files remain
-  unvendored alongside the UAX HTML.
+  in round 268; the full Unicode 16.0 `BidiBrackets.txt` /
+  `BidiMirroring.txt` / `DerivedBidiClass.txt` data tables landed
+  in round 283.
 - **BiDi implicit-level resolution I1 + I2 (round 204)** —
   `bidi::resolve_implicit_levels(&classes, embedding_level) ->
   Vec<u8>` runs the UAX #9 §3.3.6 implicit-level pass over one
@@ -705,36 +719,26 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   run, `NSM` / `BN` pass-through across NI boundaries, sos / eos
   driving boundary-spanning runs, idempotence on NI-free slices,
   and the compose-with-W realistic Arabic + numbers pipeline).
-  **N0 (bracket-pair resolution per §3.1.3 + §3.3.5) is deferred**
-  — it requires the Unicode `BidiBrackets.txt` data file to
-  identify opening / closing paired brackets, which is not yet
-  vendored under `docs/`. The N1 / N2 surface is forward-
-  compatible: an N0 implementation lands as a pre-N1 pass that
+  N0 (bracket-pair resolution per §3.1.3 + §3.3.5) landed in
+  round 257 exactly as anticipated here — a pre-N1 pass that
   turns bracket positions into strong types, after which N1 / N2
-  continues to apply unchanged (the spec narrative confirms this
-  in the closing N0 note: "if the enclosed text contains no strong
+  apply unchanged (the spec narrative confirms this in the
+  closing N0 note: "if the enclosed text contains no strong
   types the bracket pairs will both resolve to the same level when
-  resolved individually using rules N1 and N2"). I / X / L rules
-  remain deferred.
+  resolved individually using rules N1 and N2"). The I / X / L
+  rules have all since landed — see their entries.
 
 ## Out of scope
 
 - **Pixel work** — bitmap rasterisation, alpha compositing, synthetic
   bold dilation, stroke dilation. All in
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
-- **Bidi (UAX #9) full `BidiBrackets.txt` + `BidiMirroring.txt`
-  tables** (X1..X9 explicit-level pass landed in round 217; X10
-  isolating-run-sequence partition + sos/eos derivation landed in
-  round 220; L3 combining-mark reordering landed in round 247; the
-  N0 bracket-pair algorithm landed in round 257 and the L4
-  mirroring rule in round 268, each with the six ASCII brackets
-  covered — the wider Unicode `BidiBrackets.txt` table of ~60
-  paired-bracket entries across the Mathematical Operators / CJK
-  Symbols / Ornamental Brackets blocks and the `BidiMirroring.txt`
-  mirrored-pair table are not yet vendored under
-  `docs/text/unicode-bidi/`, so non-ASCII bracket pairs and
-  non-ASCII mirrors are deferred until those data files land),
-  **CFF2 variable charstrings** (the
+- **Bidi (UAX #9) HL1..HL6 higher-level-protocol overrides** (the
+  rule pipeline itself is complete: X1..X9 round 217, X10 round
+  220, W round 191, N0 round 257, N1/N2 round 198, I round 204, L1
+  + L2 round 210, L3 round 247, L4 round 268, full Unicode 16.0
+  data tables round 283 — HL overrides remain caller
+  responsibility), **CFF2 variable charstrings** (the
   `blend` operator in TN5177 v3 — scribe parses the CFF2 INDEX
   walker, but doesn't yet emit variation-blended cubic outlines),
   **TrueType bytecode hinting**, **subpixel LCD filtering**,
