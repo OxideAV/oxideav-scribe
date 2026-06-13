@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — high-level bidirectional layout bridge (round 291)
+
+`layout::reorder_line_visual(text, base_level) -> VisualLine` drives
+the complete UAX #9 §3 + §3.4 pipeline (P → X → W → N0 → N1 / N2 →
+I → L1 → L2 → L3 → L4) over a single display line and returns its
+characters in left-to-right visual order, ready to feed glyph-by-glyph
+into the shaper. This is the first time the `layout::*` API drives the
+bidi engine automatically — previously callers wired the per-character
+permutation into their own renderer.
+
+The `VisualLine` carrier publishes `visual: Vec<char>` (L4-mirrored,
+render-order), the `logical_to_visual` / `visual_to_logical`
+permutation pair (the inverse precomputed for O(1) cursor
+hit-testing), and the resolved `base_level`. `base_level: Option<u8>`
+is the HL1 higher-level-protocol override (`Some(0)` LTR, `Some(1)`
+RTL, `None` lets P2 / P3 resolve from the first strong character). The
+internal composition runs `process_paragraph_classes_with_brackets`
+(bracket-aware N0) followed by `reset_trailing_levels` (L1),
+`reorder_line` (L2), `reorder_combining_marks` (L3) and
+`apply_mirroring` (L4); the full per-rule `bidi::` surface stays public
+for callers needing finer control. 9 unit + 12 integration tests cover
+LTR identity, pure-RTL reversal, embedded-island ordering in both
+directions, L4 bracket mirroring in RTL vs LTR context, digits staying
+LTR in an RTL line, Arabic-letter base resolution, the HL1 override,
+the permutation bijection / inverse-consistency / hit-test round-trip
+invariants, and the §3.4 "car means CAR." worked example.
+
 ### Added — UAX #9 Unicode 16.0 UCD data tables (round 283)
 
 The three bidi property lookups are now data-driven from the Unicode

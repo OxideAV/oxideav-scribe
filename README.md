@@ -295,11 +295,31 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 - **CBDT/CBLC colour bitmaps** — Noto Color Emoji and friends decode to
   `Node::Image` carrying a `VideoFrame`; the resampling to the requested
   size happens in scribe (bilinear, straight-alpha).
-- **Layout** — line measurement + word-wrap. The bidi character
-  pipeline (P → W → N → I → L1 → L2) is available on the public
-  `bidi::` module as of round 210; the high-level `layout::*` API
-  does not yet drive it automatically — callers wire the
-  per-character permutation into their own renderer.
+- **Layout** — line measurement + word-wrap, plus a high-level
+  bidirectional bridge. `layout::reorder_line_visual(text, base_level)
+  -> VisualLine` (round 291) drives the complete UAX #9 pipeline over
+  one display line — §3.2 class assignment → §3 P → X → W → N0 →
+  N1 / N2 → I via `process_paragraph_classes_with_brackets`, then §3.4
+  L1 (trailing reset) → L2 (logical-to-visual permutation) → L3
+  (combining-mark reordering) → L4 (mirroring) — and returns the line's
+  characters in left-to-right visual order ready to feed glyph-by-glyph
+  into the shaper. The `VisualLine` carrier publishes `visual:
+  Vec<char>` (L4-mirrored, render-order), the `logical_to_visual` /
+  `visual_to_logical` permutation pair (the latter precomputed for
+  O(1) cursor hit-testing), and the resolved `base_level`. `base_level:
+  Option<u8>` is the HL1 override (`Some(0)` forces LTR, `Some(1)`
+  forces RTL, `None` lets P2 / P3 resolve from the first strong
+  character). This is the first time the `layout::*` API drives the
+  bidi engine automatically — callers no longer wire the per-character
+  permutation into their own renderer. The full per-rule `bidi::`
+  surface remains public for callers needing finer control. 9 unit + 12
+  integration tests cover the LTR identity, pure-RTL reversal,
+  LTR-with-RTL-island and RTL-with-LTR-island ordering, L4 bracket
+  mirroring in RTL vs LTR context, digits-stay-LTR in an RTL line,
+  Arabic-letter base direction, the HL1 base-level override (both
+  directions), permutation bijection + inverse-consistency invariants,
+  the visual→logical hit-test round-trip, and the §3.4 "car means CAR."
+  worked-example ordering.
 - **BiDi explicit-level / override / isolate stack X1..X9 (round 217)** —
   `bidi::resolve_explicit_levels(classes, paragraph_level) ->
   ExplicitLevels` runs the UAX #9 §3.3.2 explicit-level pass over

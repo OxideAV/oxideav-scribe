@@ -7,6 +7,10 @@
 //! The shaper is invoked once per candidate line so kerning and
 //! ligatures are correctly accounted for in the width budget.
 
+use crate::bidi::{
+    apply_mirroring, bidi_class, process_paragraph_classes_with_brackets, reorder_combining_marks,
+    reorder_line, reset_trailing_levels, BidiClass,
+};
 use crate::face::Face;
 use crate::shaper::{PositionedGlyph, Shaper};
 use crate::Error;
@@ -20,6 +24,161 @@ pub fn run_width(glyphs: &[PositionedGlyph]) -> f32 {
         w += g.x_advance + g.x_offset;
     }
     w
+}
+
+/// The visual-order result of driving the full UAX #9 §3 + §3.4
+/// bidirectional pipeline over one display line.
+///
+/// A renderer that wants correct bidirectional text walks
+/// [`VisualLine::visual`] left-to-right (the natural rendering
+/// direction of the output device), feeding each character to the
+/// shaper / cmap and laying the glyphs out in increasing x. The
+/// per-character permutation [`VisualLine::logical_to_visual`] and its
+/// inverse [`VisualLine::visual_to_logical`] let the caller map a
+/// visual glyph back to its source character (cursor hit-testing,
+/// selection-rectangle building) and vice versa.
+///
+/// `visual` already has rule **L4** mirroring applied — every
+/// character whose resolved level is odd (right-to-left) and that has
+/// a `Bidi_Mirroring_Glyph` pair (a bracket, an angle quotation mark,
+/// a mathematical relation, …) is the mirrored code point, not the
+/// logical one — so the renderer must *not* mirror again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualLine {
+    /// The line's characters in left-to-right visual order, with L4
+    /// mirroring applied. `visual.len()` equals the line's character
+    /// count.
+    pub visual: Vec<char>,
+    /// Permutation entry `k` is the logical index of the character
+    /// that belongs at visual position `k` (the UAX #9 §3.4 L2
+    /// output). `visual[k]` is the L4-mirrored form of the logical
+    /// character at index `logical_to_visual[k]`.
+    pub logical_to_visual: Vec<usize>,
+    /// The inverse permutation: entry `i` is the visual position of
+    /// the character whose logical index is `i`. Equivalent to
+    /// inverting [`Self::logical_to_visual`]; precomputed for
+    /// O(1) logical-to-visual hit-testing.
+    pub visual_to_logical: Vec<usize>,
+    /// The paragraph embedding level resolved by P2 / P3 (or supplied
+    /// by the caller as the HL1 override). `0` for an LTR line, `1`
+    /// for an RTL line.
+    pub base_level: u8,
+}
+
+impl VisualLine {
+    /// Collect [`Self::visual`] into a `String` — the line in the
+    /// order a left-to-right renderer paints it.
+    #[must_use]
+    pub fn to_visual_string(&self) -> String {
+        self.visual.iter().collect()
+    }
+
+    /// Number of characters in the line.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.visual.len()
+    }
+
+    /// Whether the line is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.visual.is_empty()
+    }
+}
+
+/// Drive the complete UAX #9 bidirectional pipeline over a single
+/// **display line** and return its characters in left-to-right visual
+/// order.
+///
+/// This is the high-level bridge the [`crate::bidi`] module's per-rule entry
+/// points compose into: a caller that has already decided where the
+/// paragraph breaks into lines (e.g. via [`wrap_lines`]) passes one
+/// line here and receives a [`VisualLine`] whose `visual` field is
+/// ready to feed glyph-by-glyph into the shaper in rendering order.
+///
+/// The pipeline run is, per line:
+///
+/// 1. **§3.2** class assignment + **§3.3 P → X → W → N0 → N1 / N2 →
+///    I** via [`process_paragraph_classes_with_brackets`] (the
+///    bracket-aware variant, so paired brackets resolve per N0).
+/// 2. **§3.4 L1** trailing-whitespace / separator level reset via
+///    [`reset_trailing_levels`] over the whole line.
+/// 3. **§3.4 L2** the logical-to-visual permutation via
+///    [`reorder_line`].
+/// 4. **§3.4 L3** combining-mark reordering via
+///    [`reorder_combining_marks`], so a base + its marks stay in
+///    `base, mark, …` order after the RTL reversal (the contract a
+///    renderer that paints marks after the base needs).
+/// 5. **§3.4 L4** mirroring via [`apply_mirroring`], applied to the
+///    logical characters at their resolved levels, then projected
+///    through the L2 / L3 permutation into `visual`.
+///
+/// `base_level` is the HL1 higher-level-protocol override: `Some(0)`
+/// forces an LTR line, `Some(1)` forces RTL, and `None` lets P2 / P3
+/// resolve the base from the line's first strong character.
+///
+/// A line should be a single paragraph's worth of text (no `B`
+/// paragraph separator in the middle); callers split on paragraph
+/// separators with [`crate::bidi::split_paragraphs`] before line-breaking.
+/// An embedded trailing `B` is handled by L1 like any other line.
+///
+/// Provenance: composed from the §3 / §3.4 per-rule entry points in
+/// the [`crate::bidi`] module, each of which cites
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`.
+///
+/// # Examples
+///
+/// ```
+/// use oxideav_scribe::layout::reorder_line_visual;
+///
+/// // Pure LTR: visual order equals logical order.
+/// let line = reorder_line_visual("abc", None);
+/// assert_eq!(line.base_level, 0);
+/// assert_eq!(line.to_visual_string(), "abc");
+/// assert_eq!(line.logical_to_visual, vec![0, 1, 2]);
+/// ```
+#[must_use]
+pub fn reorder_line_visual(text: &str, base_level: Option<u8>) -> VisualLine {
+    let chars: Vec<char> = text.chars().collect();
+    let classes: Vec<BidiClass> = chars.iter().copied().map(bidi_class).collect();
+
+    let carrier = process_paragraph_classes_with_brackets(&classes, &chars, base_level);
+
+    // §3.4 L1: reset segment / paragraph separators + trailing
+    // whitespace runs to the paragraph level, using the *original*
+    // classes per the §3.4 normative note. Work on a clone so the
+    // resolved levels used for L4 mirroring stay intact.
+    let mut line_levels = carrier.levels.clone();
+    reset_trailing_levels(&carrier.classes, &mut line_levels, carrier.paragraph_level);
+
+    // §3.4 L2: the logical-to-visual permutation.
+    let mut logical_to_visual = reorder_line(&line_levels);
+
+    // §3.4 L3: keep each base + its combining marks in base-first
+    // order after the RTL reversal.
+    reorder_combining_marks(&carrier.classes, &line_levels, &mut logical_to_visual);
+
+    // §3.4 L4: mirror odd-resolved-level characters in logical order,
+    // then project through the permutation. Mirroring keys off the
+    // resolved (post-I) levels, not the L1-reset levels, so a trailing
+    // mirrored bracket inside reset whitespace still mirrors correctly.
+    let mut mirrored = chars.clone();
+    apply_mirroring(&mut mirrored, &carrier.levels);
+
+    let n = chars.len();
+    let mut visual = Vec::with_capacity(n);
+    let mut visual_to_logical = vec![0usize; n];
+    for (vis_pos, &log_idx) in logical_to_visual.iter().enumerate() {
+        visual.push(mirrored[log_idx]);
+        visual_to_logical[log_idx] = vis_pos;
+    }
+
+    VisualLine {
+        visual,
+        logical_to_visual,
+        visual_to_logical,
+        base_level: carrier.paragraph_level,
+    }
 }
 
 /// Break `text` into lines that fit within `max_width` after shaping.
@@ -177,5 +336,105 @@ mod tests {
         // real fixture.
         // (No fixture in unit tests — run with the integration test
         // harness for the real measure-and-wrap path.)
+    }
+
+    #[test]
+    fn visual_ltr_is_identity() {
+        let line = reorder_line_visual("abc", None);
+        assert_eq!(line.base_level, 0);
+        assert_eq!(line.to_visual_string(), "abc");
+        assert_eq!(line.logical_to_visual, vec![0, 1, 2]);
+        assert_eq!(line.visual_to_logical, vec![0, 1, 2]);
+        assert_eq!(line.len(), 3);
+        assert!(!line.is_empty());
+    }
+
+    #[test]
+    fn visual_empty_line() {
+        let line = reorder_line_visual("", None);
+        assert!(line.is_empty());
+        assert_eq!(line.len(), 0);
+        assert_eq!(line.to_visual_string(), "");
+        assert!(line.logical_to_visual.is_empty());
+        assert!(line.visual_to_logical.is_empty());
+    }
+
+    #[test]
+    fn visual_pure_rtl_reverses() {
+        // Three Hebrew letters: a pure-RTL line resolves to base level
+        // 1 and the visual order is the logical order reversed.
+        let line = reorder_line_visual("\u{05D0}\u{05D1}\u{05D2}", None);
+        assert_eq!(line.base_level, 1);
+        // Visual = logical reversed.
+        assert_eq!(line.logical_to_visual, vec![2, 1, 0]);
+        assert_eq!(line.to_visual_string(), "\u{05D2}\u{05D1}\u{05D0}");
+        // Inverse permutation is consistent with the forward one.
+        for (vis_pos, &log_idx) in line.logical_to_visual.iter().enumerate() {
+            assert_eq!(line.visual_to_logical[log_idx], vis_pos);
+        }
+    }
+
+    #[test]
+    fn visual_permutation_is_a_bijection() {
+        // Mixed Latin + Hebrew + digits + space: whatever the
+        // reordering, the permutation must remain a bijection and the
+        // two permutation vectors must invert each other.
+        let line = reorder_line_visual("ab \u{05D0}\u{05D1}12", None);
+        let n = line.len();
+        let mut seen = vec![false; n];
+        for &log_idx in &line.logical_to_visual {
+            assert!(log_idx < n);
+            assert!(!seen[log_idx], "permutation repeats index {log_idx}");
+            seen[log_idx] = true;
+        }
+        assert!(seen.iter().all(|&b| b));
+        for (vis_pos, &log_idx) in line.logical_to_visual.iter().enumerate() {
+            assert_eq!(line.visual_to_logical[log_idx], vis_pos);
+        }
+    }
+
+    #[test]
+    fn visual_base_level_override() {
+        // Forcing base level 1 (RTL) on an all-Latin line flips it to
+        // RTL: the line as a whole is laid out right-to-left even though
+        // its strong characters are L.
+        let ltr = reorder_line_visual("abc", Some(0));
+        assert_eq!(ltr.base_level, 0);
+        assert_eq!(ltr.to_visual_string(), "abc");
+
+        let rtl = reorder_line_visual("abc", Some(1));
+        assert_eq!(rtl.base_level, 1);
+        // The Latin run is one level-2 LTR island inside the level-1
+        // line, so within the run the characters keep their order.
+        assert_eq!(rtl.to_visual_string(), "abc");
+        // But the low-bit clamp accepts any odd value as RTL.
+        let rtl2 = reorder_line_visual("abc", Some(3));
+        assert_eq!(rtl2.base_level, 1);
+    }
+
+    #[test]
+    fn visual_l4_mirrors_rtl_bracket() {
+        // A parenthesis inside a pure-RTL line resolves to an odd level
+        // and L4 swaps it for its mirror glyph in the visual output.
+        // Logical: he-alef '(' he-bet  ->  the '(' is at an odd level,
+        // so the rendered glyph is the mirrored ')'.
+        let line = reorder_line_visual("\u{05D0}(\u{05D1}", None);
+        assert_eq!(line.base_level, 1);
+        let s = line.to_visual_string();
+        // The line is reversed and the bracket is mirrored: visual order
+        // is bet, mirrored-'(' = ')', alef.
+        assert!(
+            s.contains(')'),
+            "expected mirrored ')' in RTL line, got {s:?}"
+        );
+        assert!(!s.contains('('), "original '(' should have been mirrored");
+    }
+
+    #[test]
+    fn visual_ltr_bracket_not_mirrored() {
+        // The same bracket in an LTR line stays unmirrored (even level).
+        let line = reorder_line_visual("a(b)", None);
+        assert_eq!(line.base_level, 0);
+        assert_eq!(line.to_visual_string(), "a(b)");
     }
 }
