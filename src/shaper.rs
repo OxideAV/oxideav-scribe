@@ -27,7 +27,14 @@
 //!    `Font::lookup_mark_to_base(base, mark)`. The returned anchor
 //!    delta is applied to the mark's `x_offset` / `y_offset` (with
 //!    the mark's own advance subtracted on X so the mark stacks on
-//!    top of the base instead of being placed after it).
+//!    top of the base instead of being placed after it). When the
+//!    walked-back base is a ligature glyph (formed in step 2 from two
+//!    or more components), **mark-to-ligature attachment (GPOS type
+//!    5)** is tried first via `Font::lookup_mark_to_ligature(lig,
+//!    component, mark)`: the mark is associated with a ligature
+//!    component by its trailing ordinal and lands on that component's
+//!    per-class anchor, falling back to mark-to-base if the ligature
+//!    publishes no LookupType-5 anchor for the mark.
 //! 5. **Mark-to-mark stacking (GPOS type 6)**: for each consecutive
 //!    `(mark_prev, mark_new)` pair where both are GDEF marks, call
 //!    `Font::lookup_mark_to_mark(mark_prev, mark_new)`. If the font
@@ -404,17 +411,28 @@ pub fn shape_run_with_font(
 
     // Step 2: ligature substitution. Walk through and let the font
     // collapse runs of input glyphs into single output glyphs.
+    //
+    // `component_counts` runs parallel to `shaped_gids`: it records how
+    // many input glyphs collapsed into each output glyph (1 for an
+    // un-ligated glyph, N for an N-component ligature). The
+    // mark-to-ligature pass (GPOS LookupType 5, step 4) consumes this
+    // to learn each ligature glyph's component count — the spec's
+    // "multiple components (in a virtual sense — not actual glyphs)"
+    // that a following mark must be associated with.
     let mut shaped_gids: Vec<u16> = Vec::with_capacity(raw_glyphs.len());
+    let mut component_counts: Vec<u16> = Vec::with_capacity(raw_glyphs.len());
     let mut i = 0;
     while i < raw_glyphs.len() {
         if let Some((replacement, count)) = font.lookup_ligature(&raw_glyphs[i..]) {
             if count >= 2 {
                 shaped_gids.push(replacement);
+                component_counts.push(count.min(u16::MAX as usize) as u16);
                 i += count;
                 continue;
             }
         }
         shaped_gids.push(raw_glyphs[i]);
+        component_counts.push(1);
         i += 1;
     }
 
@@ -426,7 +444,16 @@ pub fn shape_run_with_font(
     // GSUB LookupTypes 1 / 2 / 3 / 4 / 5 / 6 / 8 per declared type via
     // the general-script feature dispatcher. Coverage misses are
     // silent no-ops.
+    let pre_calt_len = shaped_gids.len();
     shaped_gids = crate::shaping::general::apply_calt(font, &shaped_gids);
+    // `calt` may itself reshape the run (rare contextual ligatures /
+    // splits). When it changes the glyph count the per-glyph component
+    // tally no longer lines up positionally, so fall back to treating
+    // every glyph as single-component — the mark-to-ligature pass then
+    // simply never fires on a calt-mutated run rather than mis-indexing.
+    if shaped_gids.len() != pre_calt_len {
+        component_counts = vec![1u16; shaped_gids.len()];
+    }
 
     // Step 3: kerning. Apply the kerning between each adjacent glyph
     // pair as an x_offset on the right-hand glyph.
@@ -571,7 +598,62 @@ pub fn shape_run_with_font(
             continue;
         }
         let base_gid = out[j].glyph_id;
-        if let Some((dx_units, dy_units)) = font.lookup_mark_to_base(base_gid, mark_gid) {
+
+        // Resolve the anchor delta. A ligature base (component count > 1)
+        // gets the mark-to-ligature path (GPOS LookupType 5) first; a
+        // plain base falls through to mark-to-base (LookupType 4).
+        //
+        // GPOS §MarkLigPos: a ligature glyph carries one anchor *per
+        // component per mark class* — "the appropriate base attachment
+        // point is determined by which ligature component the mark is
+        // associated with." The component association is normally
+        // recovered from the original character string; this shaper's
+        // ligature collapse (step 2) keeps every component's marks
+        // trailing the ligature glyph in source order, so the k-th mark
+        // attached to the ligature targets a component by its ordinal,
+        // with the last component absorbing any overflow. Because a
+        // component may publish a NULL anchor for the mark's class
+        // (`lookup_mark_to_ligature` returns `None`), we probe the
+        // preferred component first and then walk the remaining
+        // components so a mark still lands on whichever component does
+        // define an anchor for its class.
+        let comp_count = component_counts.get(j).copied().unwrap_or(1);
+        let anchor = if comp_count > 1 {
+            // Component association. The spec ties each mark to the
+            // ligature component it followed in the original character
+            // string. This shaper's step-2 ligature collapse keeps the
+            // marks trailing the whole ligature glyph (it never
+            // interleaves a mark into a ligature's component run), so a
+            // trailing mark's source component is the *last* component
+            // by default — the "fi + dot-above" case, where the dot
+            // followed the 'i' (component 1). The probe order therefore
+            // starts at the last component and walks down toward 0, so
+            // a mark still lands on whichever component publishes a
+            // non-NULL anchor for its class (`lookup_mark_to_ligature`
+            // returns `None` for a NULL or out-of-range component
+            // anchor).
+            let last = comp_count - 1;
+            let mut found = None;
+            let mut c = last;
+            loop {
+                if let Some(d) = font.lookup_mark_to_ligature(base_gid, c, mark_gid) {
+                    found = Some(d);
+                    break;
+                }
+                if c == 0 {
+                    break;
+                }
+                c -= 1;
+            }
+            // Mark-to-base fallback if the ligature publishes no LookupType-5
+            // anchor for this mark on any component (some fonts ship a
+            // single mark-to-base anchor covering the ligature glyph).
+            found.or_else(|| font.lookup_mark_to_base(base_gid, mark_gid))
+        } else {
+            font.lookup_mark_to_base(base_gid, mark_gid)
+        };
+
+        if let Some((dx_units, dy_units)) = anchor {
             let dx = dx_units as f32 * scale;
             let dy = dy_units as f32 * scale;
             // The mark's pen lands AFTER the base + any intervening

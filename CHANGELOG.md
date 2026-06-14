@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GPOS LookupType 5 mark-to-ligature attachment (round 304)
+
+The shaper's mark-attachment pass now positions combining marks
+against **ligature** base glyphs via GPOS LookupType 5 (MarkLigPos).
+Per the OpenType GPOS chapter, a ligature carries "multiple components
+(in a virtual sense — not actual glyphs)", each with its own per-class
+attachment anchors, and the component a mark associates with "is
+dependent on the original character string and subsequent ...
+glyph-substitution operations". The shaper recovers that association
+from its own ligature-collapse pass: each output glyph now records how
+many input glyphs collapsed into it (the component count). When a mark
+walks back to a multi-component ligature base, the mark-to-ligature
+path runs first — the trailing mark is associated with the **last**
+component by default (the "fi + dot-above" case, where the dot
+followed the second component), and the probe walks down toward
+component 0 so a mark still lands on whichever component publishes a
+non-NULL class anchor. A ligature that ships no LookupType-5 anchor
+for the mark falls back to mark-to-base; a non-ligature base keeps the
+existing mark-to-base path unchanged. Component tracking is reset to
+all-single-component when `calt` reshapes the run (a length change
+breaks positional alignment), so the type-5 path simply does not fire
+on a calt-mutated run rather than mis-indexing. 6 integration tests
+build a synthetic TTF (GSUB ligature + GDEF mark class + GPOS
+MarkLigPos) and cover last-component attachment, size scaling, the
+NULL/out-of-range-component fallback to component 0, the
+no-ligature-no-type-5 case, the no-GPOS no-op, and that plain
+ligature substitution is undisturbed.
+
 ### Added — GPOS LookupType 1 single adjustment positioning (round 298)
 
 The shaper's positioning pipeline now runs a GPOS LookupType 1

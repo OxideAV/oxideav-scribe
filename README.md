@@ -46,10 +46,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   charstrings decode cubics 1:1. `Face::glyph_node(gid, size_px)`
   bakes the Y-flip + scale into a render-ready `Node::Path` (or
   `Node::Image` for CBDT colour glyphs).
-- **Shaper** — `cmap` + GSUB type 4 (ligatures) + GPOS type 2 (pair
-  kerning) + GPOS type 3 (cursive attachment) + GPOS type 4/5/6
-  (mark-to-base, mark-to-mark stacking), enough for Latin / Cyrillic
-  / Greek / basic CJK / Vietnamese / polytonic Greek.
+- **Shaper** — `cmap` + GSUB type 4 (ligatures) + GPOS type 1 (single
+  adjustment) + GPOS type 2 (pair kerning) + GPOS type 3 (cursive
+  attachment) + GPOS type 4 (mark-to-base) + GPOS type 5
+  (mark-to-ligature) + GPOS type 6 (mark-to-mark stacking), enough for
+  Latin / Cyrillic / Greek / basic CJK / Vietnamese / polytonic Greek.
 - **BiDi Unicode 16.0 UCD data tables (round 283)** — the three UAX
   #9 property lookups are now data-driven from the Unicode 16.0 UCD
   snapshots staged under `docs/text/unicode-bidi/` and vendored
@@ -92,6 +93,33 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   independence, size scaling, additive stacking with the kern
   `x_offset`, the no-GPOS no-op, and the uncovered-glyph
   pass-through.
+- **GPOS mark-to-ligature attachment (round 304)** — the shaper's
+  mark-attachment pass now positions combining marks against
+  **ligature** base glyphs via GPOS LookupType 5 (MarkLigPos). A
+  ligature carries "multiple components (in a virtual sense — not
+  actual glyphs)", each with its own per-class attachment anchors, and
+  the component a mark binds to "is dependent on the original character
+  string and subsequent ... glyph-substitution operations". The shaper
+  recovers that association from its own ligature-collapse pass — every
+  output glyph now records the number of input glyphs that collapsed
+  into it (its component count). When a mark walks back to a
+  multi-component ligature base, the mark-to-ligature path runs first:
+  the trailing mark is associated with the **last** component by
+  default (the "fi + dot-above" case, where the dot followed the
+  second component), and the probe walks down toward component 0 so the
+  mark still lands on whichever component publishes a non-NULL class
+  anchor (a NULL or out-of-range component anchor returns `None` from
+  `lookup_mark_to_ligature`). A ligature shipping no LookupType-5
+  anchor falls back to mark-to-base; a non-ligature base keeps the
+  existing mark-to-base path untouched. Component tracking resets to
+  all-single-component when `calt` reshapes the run (a length change
+  breaks positional alignment), so the type-5 path declines to fire on
+  a calt-mutated run rather than mis-indexing. 6 integration tests
+  build a synthetic TTF (GSUB ligature + GDEF mark class + GPOS
+  MarkLigPos) pinning last-component attachment, size scaling, the
+  NULL/out-of-range fallback to component 0, the no-ligature-no-type-5
+  case, the no-GPOS no-op, and that plain ligature substitution is
+  undisturbed.
 - **GPOS cursive attachment (round 276)** — the shaper's positioning
   pipeline runs a CursivePosFormat1 pass over consecutive non-mark
   glyph pairs: when the first glyph publishes an **exit** anchor and
