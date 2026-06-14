@@ -449,6 +449,54 @@ pub fn shape_run_with_font(
         });
     }
 
+    // Step 3.5 (round 298): single adjustment positioning (GPOS
+    // LookupType 1, SinglePos).
+    //
+    // Per the GPOS spec a SinglePos subtable "is used to adjust the
+    // placement or advance of a single glyph, such as a subscript or
+    // superscript. In addition, a SinglePos subtable is commonly used
+    // to implement lookup data for contextual positioning." Two
+    // sub-table formats exist — Format 1 applies one shared
+    // `ValueRecord` to every glyph the coverage lists, Format 2 a
+    // per-glyph `ValueRecord` array — both already decoded by the
+    // dependency's `gpos_apply_lookup_type_1`, which returns the four
+    // geometric fields (xPlacement / yPlacement / xAdvance / yAdvance)
+    // in TT font units (Y-up), zeroing whichever the on-disk
+    // `valueFormat` mask omits.
+    //
+    // The four fields map onto a positioned glyph as: `xPlacement`
+    // shifts the drawn position right (added to `x_offset`),
+    // `yPlacement` shifts it up in TT Y-up space (subtracted from
+    // `y_offset`, which is raster Y-down), and `xAdvance` widens or
+    // narrows the horizontal advance. `yAdvance` only affects
+    // vertical-layout runs and is ignored on this horizontal pen.
+    //
+    // The pass runs after kerning and before mark attachment so the
+    // mark-to-base advance accumulation in step 4 sees the
+    // SinglePos-adjusted base advances. It is gated on the font
+    // actually publishing a LookupType-1 GPOS lookup (mirroring the
+    // cursive gate in step 6) so plain fonts pay only one
+    // lookup-list scan. Every type-1 lookup is applied to every glyph
+    // in lookup-list order; coverage misses return `None` and leave
+    // the glyph untouched.
+    let single_pos_lookups: Vec<u16> = font
+        .gpos_lookup_list()
+        .iter()
+        .filter(|&&(_, ty, _)| ty == 1)
+        .map(|&(idx, _, _)| idx)
+        .collect();
+    if !single_pos_lookups.is_empty() {
+        for g in out.iter_mut() {
+            for &lookup_index in &single_pos_lookups {
+                if let Some(v) = font.gpos_apply_lookup_type_1(lookup_index, g.glyph_id) {
+                    g.x_offset += f32::from(v.x_placement) * scale;
+                    g.y_offset -= f32::from(v.y_placement) * scale;
+                    g.x_advance += f32::from(v.x_advance) * scale;
+                }
+            }
+        }
+    }
+
     // Step 4 + 5: mark-to-base attachment (GPOS LookupType 4) plus
     // mark-to-mark stacking (GPOS LookupType 6).
     //

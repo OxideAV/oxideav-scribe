@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GPOS LookupType 1 single adjustment positioning (round 298)
+
+The shaper's positioning pipeline now runs a GPOS LookupType 1
+(SinglePos) pass between kerning and mark attachment. Per the OpenType
+GPOS chapter a SinglePos subtable "is used to adjust the placement or
+advance of a single glyph, such as a subscript or superscript"; both
+SinglePosFormat1 (one shared `ValueRecord` for every covered glyph)
+and SinglePosFormat2 (a per-glyph `ValueRecord` array) are honoured.
+The four `ValueRecord` geometric fields map onto a positioned glyph
+as: `xPlacement` adds to `x_offset`, `yPlacement` subtracts from
+`y_offset` (TT Y-up → raster Y-down), and `xAdvance` widens or
+narrows the horizontal advance; `yAdvance` (vertical layout only) is
+ignored on the horizontal pen. The pass is gated on the font
+publishing a LookupType-1 lookup, so plain fonts pay only one
+lookup-list scan, and runs before mark attachment so the
+mark-to-base advance accumulation sees the adjusted base advances.
+Coverage misses leave the glyph untouched. 6 integration tests cover
+Format 1 shared-value application, Format 2 per-glyph independence,
+size scaling, additive stacking with the kern `x_offset`, the
+no-GPOS no-op, and the uncovered-glyph pass-through.
+
 ### Added — high-level bidirectional layout bridge (round 291)
 
 `layout::reorder_line_visual(text, base_level) -> VisualLine` drives

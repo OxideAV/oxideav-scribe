@@ -73,6 +73,25 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   symmetry invariants, the `@missing` fallbacks, the BD16
   equivalence pairings, and N0 + L4 end-to-end through the
   paragraph driver with non-ASCII brackets and mirrors.
+- **GPOS single adjustment positioning (round 298)** — the shaper's
+  positioning pipeline runs a SinglePos (GPOS LookupType 1) pass
+  between kerning and mark attachment. Both SinglePosFormat1 (one
+  shared `ValueRecord` for every covered glyph) and SinglePosFormat2
+  (a per-glyph `ValueRecord` array) are honoured. The four
+  `ValueRecord` geometric fields map onto a positioned glyph as:
+  `xPlacement` adds to `x_offset`, `yPlacement` subtracts from
+  `y_offset` (TT Y-up → raster Y-down), and `xAdvance` widens /
+  narrows the horizontal advance — the subscript / superscript and
+  light-spacing adjustments SinglePos exists for. `yAdvance`
+  (vertical layout only) is ignored on the horizontal pen. The pass
+  is gated on the font publishing a LookupType-1 lookup (one
+  lookup-list scan for plain fonts) and runs before mark attachment
+  so the mark-to-base advance accumulation sees the adjusted base
+  advances; coverage misses leave the glyph untouched. 6 integration
+  tests pin Format 1 shared-value application, Format 2 per-glyph
+  independence, size scaling, additive stacking with the kern
+  `x_offset`, the no-GPOS no-op, and the uncovered-glyph
+  pass-through.
 - **GPOS cursive attachment (round 276)** — the shaper's positioning
   pipeline runs a CursivePosFormat1 pass over consecutive non-mark
   glyph pairs: when the first glyph publishes an **exit** anchor and
