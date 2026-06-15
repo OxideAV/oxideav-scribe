@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.8...v0.1.9) - 2026-06-15
+
+### Other
+
+- refresh to current status, drop per-round changelog cruft
+- GPOS LookupType 5 mark-to-ligature attachment (round 304)
+- wire GPOS LookupType 1 single adjustment positioning (round 298)
+- round 291 — reorder_line_visual high-level bidi bridge
+- UAX #9 lookups data-driven from Unicode 16.0 UCD tables (round 283)
+- GPOS LookupType 3 cursive attachment (round 276)
+- UAX #9 §3.4 L4 bidi mirroring (round 268)
+- UAX #9 §3.3.5 N0 bracket-pair resolution (round 257)
+- drop release-plz.toml — use release-plz defaults across the workspace
+- UAX #9 §3.4 L3 combining-mark reordering (round 247)
+- UAX #9 §3.3.1 P1 multi-paragraph driver (round 233)
+- r227 test-count correction (14 → 19 unit)
+- UAX #9 §3 whole-paragraph driver (round 227)
+- UAX #9 §3.3.3 X10 isolating-run-sequence partition + sos/eos (round 220)
+- UAX #9 §3.3.2 explicit-level / override / isolate stack X1..X9 (round 217)
+- UAX #9 line-level reordering rules L1 + L2 (round 210)
+- UAX #9 implicit-level resolution rules I1 + I2 (round 204)
+
 ### Added — GPOS LookupType 5 mark-to-ligature attachment (round 304)
 
 The shaper's mark-attachment pass now positions combining marks
