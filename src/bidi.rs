@@ -5,8 +5,8 @@
 //! normative `BidiBrackets.txt` table, Unicode 16.0), neutral-type
 //! resolution (rules N1 and N2), implicit-level resolution (rules
 //! I1 / I2), line-level reordering (rules L1 / L2 / L3), and bidi
-//! mirroring (rule L4 — full `BidiMirroring.txt` table, Unicode
-//! 16.0).
+//! mirroring (rule L4 — `Bidi_Mirroring_Glyph` via the `intl`
+//! crate's compiled UCD tables).
 //!
 //! ## Scope
 //!
@@ -21,11 +21,11 @@
 //!   from UAX #9 §3.2 Table 4 (3 Strong, 7 Weak, 4 Neutral, 9
 //!   Explicit Formatting).
 //! - [`bidi_class`] — the full per-code-point `Bidi_Class` lookup,
-//!   data-driven from the Unicode 16.0 `DerivedBidiClass.txt` UCD
-//!   snapshot (vendored in `src/bidi/`, parsed once on first use by
-//!   the private `data` submodule). Covers every assigned code
-//!   point plus the `@missing` defaults for unassigned code points
-//!   in the right-to-left script blocks (`R` / `AL`) and the
+//!   delegated to the `intl` crate's compiled UCD tables by the
+//!   private `data` submodule. Covers every assigned code
+//!   point plus the UAX #9 §3.2 `@missing` defaults for unassigned
+//!   code points in the right-to-left script blocks (`R` / `AL`)
+//!   and the
 //!   Currency Symbols block (`ET`), with the file's global
 //!   Left_To_Right default for everything else.
 //! - [`paragraph_level`] — the **P1 + P2 + P3** rules: walk the
@@ -167,12 +167,14 @@
 //!
 //! ## Provenance
 //!
-//! All material in this module is sourced exclusively from
+//! The algorithm rules in this module are sourced exclusively from
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html` (UAX #9
-//! Revision 50, Unicode 16.0, fetched 2026-05-29) and the three
-//! Unicode 16.0 UCD data files staged alongside it
-//! (`DerivedBidiClass.txt`, `BidiBrackets.txt`, `BidiMirroring.txt` —
-//! vendored verbatim in `src/bidi/`, round 283).
+//! Revision 50, Unicode 16.0, fetched 2026-05-29). The
+//! `Bidi_Class` and `Bidi_Mirroring_Glyph` property tables are
+//! provided by the `intl` crate (a pure-Rust internationalization
+//! library); only the `Bidi_Paired_Bracket` table (`BidiBrackets.txt`,
+//! staged under `docs/text/unicode-bidi/`) is still vendored in
+//! `src/bidi/`, since `intl` does not expose bracket-pair data.
 
 #![allow(clippy::module_name_repetitions)]
 
@@ -302,17 +304,16 @@ impl BidiClass {
 
 /// Return the [`BidiClass`] of the code point per UAX #9 §3.2.
 ///
-/// Data-driven from the Unicode 16.0 `DerivedBidiClass.txt` UCD
-/// snapshot (UAX #9 §3.2: "For assignments to character types, see
-/// DerivedBidiClass.txt \[DerivedBIDI\] in the \[UCD\]"), vendored in
-/// `src/bidi/` and parsed once on first use. Every assigned code
-/// point gets its listed class; unassigned code points get the
-/// file's `@missing` block defaults — `R` / `AL` in the blocks
-/// reserved for right-to-left scripts, `ET` in the Currency Symbols
-/// block (per §3.2: "Unassigned characters are given strong types
-/// in the algorithm. This is an explicit exception to the general
-/// Unicode conformance requirements with respect to unassigned
-/// characters.") — and everything else falls back to the file's
+/// The per-code-point `Bidi_Class` is provided by the `intl` crate's
+/// compiled UCD tables (UAX #9 §3.2: "For assignments to character
+/// types, see DerivedBidiClass.txt \[DerivedBIDI\] in the \[UCD\]").
+/// Every assigned code point gets its listed class; unassigned code
+/// points get the §3.2 `@missing` block defaults — `R` / `AL` in the
+/// blocks reserved for right-to-left scripts, `ET` in the Currency
+/// Symbols block (per §3.2: "Unassigned characters are given strong
+/// types in the algorithm. This is an explicit exception to the
+/// general Unicode conformance requirements with respect to
+/// unassigned characters.") — and everything else falls back to the
 /// global Left_To_Right default.
 #[must_use]
 pub fn bidi_class(c: char) -> BidiClass {
@@ -2127,12 +2128,11 @@ pub fn reorder_combining_marks(orig_classes: &[BidiClass], levels: &[u8], visual
 /// property), consumed by the UAX #9 §3.4 rule **L4** pass in
 /// [`apply_mirroring`].
 ///
-/// Data-driven from the Unicode 16.0 `BidiMirroring.txt` UCD
-/// snapshot (vendored in `src/bidi/`, parsed once on first use):
-/// 428 entries covering the paired brackets, the angle quotation
-/// marks (`«` ↔ `»`, `‹` ↔ `›`), the mathematical relations and
-/// operators (`<` ↔ `>`, `≤` ↔ `≥`, …), and the CJK / fullwidth
-/// bracket blocks.
+/// The `Bidi_Mirroring_Glyph` property is provided by the `intl`
+/// crate's compiled UCD tables, covering the paired brackets, the
+/// angle quotation marks (`«` ↔ `»`, `‹` ↔ `›`), the mathematical
+/// relations and operators (`<` ↔ `>`, `≤` ↔ `≥`, …), and the CJK /
+/// fullwidth bracket blocks.
 ///
 /// Returns `Some(mirror)` when `c` has an acceptable mirror-pair
 /// character per UAX #9 §7 *Mirroring* ("sometimes pairs of

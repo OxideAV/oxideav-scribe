@@ -148,19 +148,20 @@
 //!   between W7 and N1. The full Unicode `BidiBrackets.txt`
 //!   table (the ~60 paired-bracket entries across the
 //!   Mathematical Operators / CJK Symbols / Ornamental Brackets
-//!   blocks) is not yet vendored under `docs/text/unicode-bidi/`;
-//!   non-ASCII bracket pairs are deferred until the table lands.
+//!   blocks) is vendored under `docs/text/unicode-bidi/` and covers
+//!   every paired-bracket character.
 //!   Round 268 lands the §3.4 **L4 mirroring rule**:
-//!   `bidi::mirrored_glyph(c)` is the `Bidi_Mirroring_Glyph`
-//!   acceptable-mirror-pair lookup for the same six ASCII brackets
-//!   (an involution, `None` outside the seed set including the
-//!   §3.4-excluded ornate parentheses U+FD3E / U+FD3F), and
+//!   `bidi::mirrored_glyph(c)` is the full `Bidi_Mirroring_Glyph`
+//!   acceptable-mirror-pair lookup (an involution, `None` for
+//!   characters without a mirror pair including the §3.4-excluded
+//!   ornate parentheses U+FD3E / U+FD3F), and
 //!   `bidi::apply_mirroring(chars, levels)` rewrites every
 //!   odd-resolved-level (directionality R) position that has a
 //!   mirror pair in place over the line's logical character
-//!   sequence. The wider `BidiMirroring.txt` pair table
-//!   (mathematical operators, angle brackets, CJK bracket blocks)
-//!   is deferred until that data file is vendored.
+//!   sequence. As of round 319 the `Bidi_Mirroring_Glyph` table
+//!   (paired brackets, mathematical operators, angle brackets, CJK
+//!   bracket blocks) is provided by the `intl` crate's compiled
+//!   UCD tables.
 //!
 //! See `README.md` for a tour and the deferral list.
 

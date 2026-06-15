@@ -154,9 +154,9 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `reorder_line_range(start..end)` helpers.
 - **Per-rule UAX #9 surface** — the complete rule pipeline is also
   exposed as individual public functions for callers needing finer
-  control: `bidi_class` (full Unicode 16.0 `DerivedBidiClass.txt`
-  coverage, data-driven from the UCD snapshots under
-  `docs/text/unicode-bidi/`), `paragraph_level` / `split_paragraphs`
+  control: `bidi_class` (full `Bidi_Class` coverage via the `intl`
+  crate's compiled UCD tables, plus the UAX #9 §3.2 unassigned-block
+  defaults), `paragraph_level` / `split_paragraphs`
   (P1/P2/P3), `resolve_explicit_levels` (X1..X9 stack), `level_runs` /
   `isolating_run_sequences` (X10 BD7/BD13 partition + sos/eos),
   `resolve_weak_types` (W1..W7), `paired_bracket` / `bracket_pairs` /
@@ -164,7 +164,7 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `resolve_neutral_types` (N1/N2), `resolve_implicit_levels` (I1/I2),
   `reset_trailing_levels` / `reorder_line` (L1/L2),
   `reorder_combining_marks` (L3), and `mirrored_glyph` /
-  `apply_mirroring` (L4, full `BidiMirroring.txt`).
+  `apply_mirroring` (L4, `Bidi_Mirroring_Glyph` via the `intl` crate).
 
 ## Out of scope
 

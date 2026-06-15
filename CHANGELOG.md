@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — UCD `Bidi_Class` / `Bidi_Mirroring_Glyph` now sourced from the `intl` crate (round 319)
+
+The UAX #9 engine's `Bidi_Class` and `Bidi_Mirroring_Glyph` property
+lookups are now delegated to the Karpelès Lab `intl` crate (a pure-Rust
+internationalization library) instead of parsing the vendored
+`DerivedBidiClass.txt` /
+`BidiMirroring.txt` snapshots at runtime. `intl` ships the UCD tables as
+compiled const-fn lookups, so the per-call `OnceLock` file-parse on
+first use is gone. The §3.2 `@missing` defaults for unassigned code
+points (strong `R` / `AL` in the right-to-left script blocks, `ET` in
+the Currency Symbols block) are overlaid locally from the fixed
+published block list, since `intl` returns `L` for unassigned slots.
+This makes the lookup byte-for-byte identical to the previous parser
+for every assigned code point (verified exhaustively against the 16.0
+`DerivedBidiClass.txt` / `BidiMirroring.txt` snapshots — zero diffs),
+while restoring the §3.2 unassigned-block defaults. The
+`Bidi_Paired_Bracket` table (`BidiBrackets.txt`) stays vendored because
+`intl` does not expose bracket-pair data. The two now-dead UCD `.txt`
+files were removed from `src/bidi/`.
+
+### Fixed — pair kerning now adjusts the first glyph's advance (round 319)
+
+GPOS PairPos (LookupType 2) / legacy `kern` pair adjustments are, per
+OFF §6.4 (ISO/IEC 14496-22:2019), a change to the **xAdvance of the
+first glyph in the pair** — the spec's worked Format 2 example states a
+pair is "kerned by reducing the XAdvance of the first glyph." The shaper
+previously applied the kern as an `x_offset` on the *right* glyph, which
+moved only that one glyph and leaked the adjustment: every glyph
+downstream of a kerned pair was placed from the unkerned advance, so the
+kern never propagated past the immediate pair and `layout::run_width`
+over-counted. The kern is now applied to the left glyph's `x_advance`,
+so the pen accumulates it and the whole run shifts correctly. Two
+`dejavu_render` tests cover the propagation (a regression guard
+asserting the left glyph's advance shrinks and `x_offset` stays 0 for
+pure kerning) and the AVATAR run width against per-letter un-kerned
+baselines.
+
 ## [0.1.9](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.8...v0.1.9) - 2026-06-15
 
 ### Other

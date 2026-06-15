@@ -19,9 +19,13 @@
 //!    array, ask `Font::lookup_ligature(&glyphs[i..])`. If it returns
 //!    `Some((replacement, n))`, replace `n` glyphs starting at `i`
 //!    with the single replacement and advance the cursor.
-//! 3. **Kerning (GPOS type 2 + legacy `kern`)**: for each adjacent
-//!    pair, call `Font::lookup_kerning(left, right)` and apply the
-//!    result as an additional `x_offset` on the right-hand glyph.
+//! 3. **Kerning (GPOS type 2 PairPos + legacy `kern`)**: for each
+//!    adjacent pair, call `Font::lookup_kerning(left, right)` and apply
+//!    the result to the **left glyph's `x_advance`**. Per OFF §6.4 a
+//!    pair adjustment changes the xAdvance of the *first* glyph in the
+//!    pair, so the pen accumulates the kern and every glyph downstream
+//!    shifts with it (applying it as an `x_offset` on the right glyph
+//!    would move only that glyph and leak the adjustment).
 //! 4. **Mark-to-base attachment (GPOS type 4)**: for each (base, mark)
 //!    pair where `mark` is classified as a mark by GDEF, call
 //!    `Font::lookup_mark_to_base(base, mark)`. The returned anchor
@@ -101,7 +105,9 @@ pub struct PositionedGlyph {
     /// substitution).
     pub glyph_id: u16,
     /// Horizontal offset to apply on top of the cumulative pen
-    /// advance — typically a kerning adjustment, otherwise 0.
+    /// advance — a mark-attachment / SinglePos placement delta, or 0.
+    /// Pair kerning is *not* carried here: per OFF §6.4 it adjusts the
+    /// first glyph's [`Self::x_advance`], so the pen accumulates it.
     pub x_offset: f32,
     /// Vertical offset (round-1 always 0; reserved for future
     /// mark-to-base attachment).
@@ -455,25 +461,43 @@ pub fn shape_run_with_font(
         component_counts = vec![1u16; shaped_gids.len()];
     }
 
-    // Step 3: kerning. Apply the kerning between each adjacent glyph
-    // pair as an x_offset on the right-hand glyph.
+    // Step 3: kerning. A GPOS PairPos (LookupType 2) / legacy `kern`
+    // pair adjustment is, per OFF §6.4 (ISO/IEC 14496-22:2019), a
+    // change to the **xAdvance of the first glyph in the pair** — the
+    // spec's worked Format 2 example states the pair is "kerned by
+    // reducing the XAdvance of the first glyph by 50 design units."
+    //
+    // The dependency's `lookup_kerning` already resolves a `(left,
+    // right)` pair to that single xAdvance delta (it tries GPOS PairPos
+    // — both Format 1 and Format 2 — first, then falls back to the
+    // legacy `kern` table). We apply the delta to the **left** glyph's
+    // `x_advance` so the pen accumulates correctly and every glyph
+    // downstream of the kerned pair shifts with it. Applying the kern
+    // as an `x_offset` on the right glyph instead would move only that
+    // one glyph and leak the adjustment — the next glyph would be
+    // placed from the unkerned advance, so the kern never propagates
+    // past the immediate pair and the run width (`layout::run_width`)
+    // would be wrong.
     let mut out: Vec<PositionedGlyph> = Vec::with_capacity(shaped_gids.len());
-    for (idx, &gid) in shaped_gids.iter().enumerate() {
+    for &gid in shaped_gids.iter() {
         let advance_units = font.glyph_advance(gid) as f32;
         let x_advance = advance_units * scale;
-        let mut x_offset = 0.0_f32;
-        if idx > 0 {
-            let prev = shaped_gids[idx - 1];
-            let kern_units = font.lookup_kerning(prev, gid) as f32;
-            x_offset = kern_units * scale;
-        }
         out.push(PositionedGlyph {
             glyph_id: gid,
-            x_offset,
+            x_offset: 0.0,
             y_offset: 0.0,
             x_advance,
             face_idx,
         });
+    }
+    for idx in 1..shaped_gids.len() {
+        let prev = shaped_gids[idx - 1];
+        let gid = shaped_gids[idx];
+        let kern_units = font.lookup_kerning(prev, gid) as f32;
+        if kern_units != 0.0 {
+            // xAdvance of the first (left) glyph of the pair.
+            out[idx - 1].x_advance += kern_units * scale;
+        }
     }
 
     // Step 3.5 (round 298): single adjustment positioning (GPOS

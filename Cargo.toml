@@ -26,6 +26,15 @@ oxideav-otf = "0.1"
 # decode them to RGBA via the sibling oxideav-png crate. NO external
 # `png` / `image` crate per workspace policy.
 oxideav-png = "0.1"
+# Unicode Character Database property lookups for the UAX #9 bidi
+# engine. Karpelès Lab's pure-Rust internationalization library
+# provides `Bidi_Class` (`unicode::bidi::bidi_class`) and
+# `Bidi_Mirroring_Glyph` (`unicode::bidi_mirror`) from compiled
+# const-fn tables, replacing the previously-vendored
+# `DerivedBidiClass.txt` / `BidiMirroring.txt` runtime parsers. Only
+# the `bidi` property tables over the full U+0000..=U+10FFFF range are
+# pulled in.
+intl = { version = "0.4", default-features = false, features = ["bidi", "full"] }
 
 [dev-dependencies]
 # round5_cjk_fallback / round5_emoji integration tests fetch large

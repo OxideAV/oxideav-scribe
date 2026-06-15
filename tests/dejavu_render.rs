@@ -66,15 +66,69 @@ fn shaper_kerning_avatar_shrinks() {
     let glyphs = Shaper::shape(&face, "AVATAR", 32.0).expect("shape ok");
     assert_eq!(glyphs.len(), 6);
 
-    // No-kerning baseline: sum of plain advances.
-    let baseline_sum: f32 = glyphs.iter().map(|g| g.x_advance).sum();
+    // The kerned run width = sum of the (kern-adjusted) advances. Per
+    // OFF §6.4 a pair kern reduces the *first* glyph's xAdvance, so the
+    // kern is baked into the advances here, not into x_offset.
     let with_kerning: f32 = glyphs.iter().map(|g| g.x_advance + g.x_offset).sum();
+
+    // The un-kerned baseline is each letter shaped on its own (a
+    // single-glyph run has no adjacent pair, so no kerning fires). DejaVu
+    // ships AV / VA / AT / TA negative kerning, so the joined run must be
+    // measurably narrower than the letters laid out without kerning.
+    let baseline_sum: f32 = "AVATAR"
+        .chars()
+        .map(|c| {
+            let g = Shaper::shape(&face, &c.to_string(), 32.0).expect("shape ok");
+            g.iter().map(|g| g.x_advance + g.x_offset).sum::<f32>()
+        })
+        .sum();
+
     let savings = baseline_sum - with_kerning;
-    // DejaVu ships AV (and AT) negative kerning. Even at 32 px the
-    // total should be measurably shorter — be generous on the bound.
+    // Even at 32 px the joined run should be measurably shorter.
     assert!(
         savings > 1.0,
         "expected >1 px kerning savings, got {savings} (baseline {baseline_sum}, kerned {with_kerning})"
+    );
+}
+
+#[test]
+fn shaper_kerning_propagates_to_downstream_glyphs() {
+    // Regression guard for the OFF §6.4 pair-kern fix: a pair kern
+    // adjusts the FIRST glyph's advance, so every glyph downstream of the
+    // kerned pair shifts left with it. The previous offset-on-the-right
+    // behaviour moved only the immediately-following glyph and leaked the
+    // adjustment, leaving the rest of the run unkerned.
+    let face = load_face();
+
+    // "AV" kerns negative in DejaVu. In "AVA", the trailing 'A' sits one
+    // full V-advance past the 'V'. We verify the kern lands on the pen by
+    // comparing the run's total advance against the same glyphs with no
+    // kerning (each shaped alone).
+    let run = Shaper::shape(&face, "AV", 32.0).expect("shape ok");
+    let joined: f32 = run.iter().map(|g| g.x_advance + g.x_offset).sum();
+    let alone: f32 = "AV"
+        .chars()
+        .map(|c| {
+            Shaper::shape(&face, &c.to_string(), 32.0)
+                .expect("shape ok")
+                .iter()
+                .map(|g| g.x_advance + g.x_offset)
+                .sum::<f32>()
+        })
+        .sum();
+    assert!(joined < alone, "AV must kern tighter: {joined} vs {alone}");
+
+    // The kern is carried on the LEFT glyph's advance — x_offset stays 0
+    // for pure kerning (no mark attachment / SinglePos in this run).
+    for g in &run {
+        assert_eq!(g.x_offset, 0.0, "pair kern must not live in x_offset");
+    }
+    // The left 'A' advance is reduced below its standalone advance.
+    let a_alone = Shaper::shape(&face, "A", 32.0).expect("shape ok")[0].x_advance;
+    assert!(
+        run[0].x_advance < a_alone,
+        "left glyph advance {} should be reduced from standalone {a_alone}",
+        run[0].x_advance
     );
 }
 

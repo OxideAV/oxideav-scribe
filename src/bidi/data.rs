@@ -1,223 +1,133 @@
-//! Unicode Character Database data tables backing the UAX #9
-//! property lookups — `Bidi_Class` ([`class_lookup`], from
-//! `DerivedBidiClass.txt`), `Bidi_Mirroring_Glyph` ([`mirror_lookup`],
-//! from `BidiMirroring.txt`), and `Bidi_Paired_Bracket` /
-//! `Bidi_Paired_Bracket_Type` ([`bracket_lookup`], from
-//! `BidiBrackets.txt`).
+//! Unicode Character Database property lookups backing the UAX #9
+//! engine — `Bidi_Class` ([`class_lookup`]), `Bidi_Mirroring_Glyph`
+//! ([`mirror_lookup`]), and `Bidi_Paired_Bracket` /
+//! `Bidi_Paired_Bracket_Type` ([`bracket_lookup`]).
 //!
-//! The three data files are the Unicode **16.0** UCD snapshots staged
-//! under `docs/text/unicode-bidi/` (the same Unicode version as the
-//! pinned UAX #9 Revision 50 spec snapshot), vendored verbatim into
-//! this directory with their copyright / terms-of-use headers intact.
-//! Each is embedded via `include_str!` and parsed exactly once, on
-//! first lookup, into a sorted range table behind a [`OnceLock`];
-//! every subsequent lookup is a binary search.
+//! ## Provenance
 //!
-//! ## File formats (UAX #44 conventions)
+//! `Bidi_Class` and `Bidi_Mirroring_Glyph` are delegated to the
+//! Karpelès Lab `intl` crate (a pure-Rust internationalization
+//! library), which compiles the UCD property tables into const-fn
+//! lookups. We map its `unicode::bidi::BidiClass` enum onto our own
+//! [`BidiClass`] and its `unicode::bidi_mirror` onto [`mirror_lookup`].
+//! This replaces the per-call `DerivedBidiClass.txt` /
+//! `BidiMirroring.txt` runtime parsers that previously lived here.
 //!
-//! - `DerivedBidiClass.txt` — `<cp>[..<cp>] ; <short-class> # comment`
-//!   lines list the Bidi_Class of every **assigned** code point.
-//!   `# @missing: <cp>..<cp>; <Long_Class_Name>` header lines give
-//!   the defaults for **unassigned** code points: `Right_To_Left` /
-//!   `Arabic_Letter` for the blocks reserved for right-to-left
-//!   scripts, `European_Terminator` for the Currency Symbols block,
-//!   and the global `0000..10FFFF; Left_To_Right` fallback for
-//!   everything else ("All code points not explicitly listed for
-//!   Bidi_Class have the value Left_To_Right (L)").
-//! - `BidiMirroring.txt` — `<cp>; <mirror-cp> # name` lines map each
-//!   `Bidi_Mirrored=Yes` character with an acceptable mirror pair to
-//!   that pair (UAX #9 §7 *Mirroring*; consumed by rule L4). The
-//!   mapping is an involution: both directions are listed.
-//! - `BidiBrackets.txt` — `<cp>; <paired-cp>; o|c # name` lines give
-//!   the normative Bidi_Paired_Bracket (the matching bracket) and
-//!   Bidi_Paired_Bracket_Type (`o` = Open per BD14, `c` = Close per
-//!   BD15) of every paired-bracket character (consumed by BD16 / N0).
+//! `Bidi_Paired_Bracket` is not exposed by `intl`, so the
+//! `BidiBrackets.txt` snapshot staged under `docs/text/unicode-bidi/`
+//! is still vendored next to this file and parsed once into a sorted
+//! table behind a [`OnceLock`].
+//!
+//! ## `BidiBrackets.txt` format (UAX #44 conventions)
+//!
+//! `<cp>; <paired-cp>; o|c # name` lines give the normative
+//! Bidi_Paired_Bracket (the matching bracket) and
+//! Bidi_Paired_Bracket_Type (`o` = Open per BD14, `c` = Close per
+//! BD15) of every paired-bracket character (consumed by BD16 / N0).
 
 use std::sync::OnceLock;
 
+use intl::unicode::bidi::BidiClass as IntlBidiClass;
+
 use super::{BidiClass, BracketKind};
 
-const DERIVED_BIDI_CLASS: &str = include_str!("DerivedBidiClass.txt");
-const BIDI_MIRRORING: &str = include_str!("BidiMirroring.txt");
 const BIDI_BRACKETS: &str = include_str!("BidiBrackets.txt");
 
-/// Parsed `DerivedBidiClass.txt`: explicit per-code-point ranges plus
-/// the `@missing` defaults for unassigned code points.
-struct ClassTable {
-    /// `(first, last, class)` for every data line, sorted by `first`,
-    /// pairwise disjoint.
-    explicit: Vec<(u32, u32, BidiClass)>,
-    /// `(first, last, class)` for every block-specific `@missing`
-    /// line (the global `0000..10FFFF; Left_To_Right` line is folded
-    /// into the final `L` fallback instead), sorted by `first`,
-    /// pairwise disjoint.
-    missing: Vec<(u32, u32, BidiClass)>,
-}
-
-/// Map a short Bidi_Class alias (data-line field) to [`BidiClass`].
-fn class_from_short(s: &str) -> Option<BidiClass> {
-    Some(match s {
-        "L" => BidiClass::L,
-        "R" => BidiClass::R,
-        "AL" => BidiClass::AL,
-        "EN" => BidiClass::EN,
-        "ES" => BidiClass::ES,
-        "ET" => BidiClass::ET,
-        "AN" => BidiClass::AN,
-        "CS" => BidiClass::CS,
-        "NSM" => BidiClass::NSM,
-        "BN" => BidiClass::BN,
-        "B" => BidiClass::B,
-        "S" => BidiClass::S,
-        "WS" => BidiClass::WS,
-        "ON" => BidiClass::ON,
-        "LRE" => BidiClass::LRE,
-        "LRO" => BidiClass::LRO,
-        "RLE" => BidiClass::RLE,
-        "RLO" => BidiClass::RLO,
-        "PDF" => BidiClass::PDF,
-        "LRI" => BidiClass::LRI,
-        "RLI" => BidiClass::RLI,
-        "FSI" => BidiClass::FSI,
-        "PDI" => BidiClass::PDI,
-        _ => return None,
-    })
-}
-
-/// Map a long Bidi_Class property-value name (`@missing` field) to
-/// [`BidiClass`]. Only the values that actually occur in the Unicode
-/// 16.0 `@missing` lines are mapped.
-fn class_from_long(s: &str) -> Option<BidiClass> {
-    Some(match s {
-        "Left_To_Right" => BidiClass::L,
-        "Right_To_Left" => BidiClass::R,
-        "Arabic_Letter" => BidiClass::AL,
-        "European_Terminator" => BidiClass::ET,
-        "Boundary_Neutral" => BidiClass::BN,
-        _ => return None,
-    })
-}
-
-/// Parse a UAX #44 `<cp>` or `<cp>..<cp>` range field.
-fn parse_range(field: &str) -> Option<(u32, u32)> {
-    let field = field.trim();
-    if let Some((lo, hi)) = field.split_once("..") {
-        let lo = u32::from_str_radix(lo.trim(), 16).ok()?;
-        let hi = u32::from_str_radix(hi.trim(), 16).ok()?;
-        Some((lo, hi))
-    } else {
-        let cp = u32::from_str_radix(field, 16).ok()?;
-        Some((cp, cp))
+/// Map `intl`'s `Bidi_Class` enum onto this crate's [`BidiClass`].
+/// Both enumerate the 23 UAX #9 §3.2 Table 4 classes; this is a pure
+/// rename with no behavioural change.
+fn from_intl(c: IntlBidiClass) -> BidiClass {
+    match c {
+        IntlBidiClass::L => BidiClass::L,
+        IntlBidiClass::R => BidiClass::R,
+        IntlBidiClass::AL => BidiClass::AL,
+        IntlBidiClass::EN => BidiClass::EN,
+        IntlBidiClass::ES => BidiClass::ES,
+        IntlBidiClass::ET => BidiClass::ET,
+        IntlBidiClass::AN => BidiClass::AN,
+        IntlBidiClass::CS => BidiClass::CS,
+        IntlBidiClass::NSM => BidiClass::NSM,
+        IntlBidiClass::BN => BidiClass::BN,
+        IntlBidiClass::B => BidiClass::B,
+        IntlBidiClass::S => BidiClass::S,
+        IntlBidiClass::WS => BidiClass::WS,
+        IntlBidiClass::ON => BidiClass::ON,
+        IntlBidiClass::LRE => BidiClass::LRE,
+        IntlBidiClass::LRO => BidiClass::LRO,
+        IntlBidiClass::RLE => BidiClass::RLE,
+        IntlBidiClass::RLO => BidiClass::RLO,
+        IntlBidiClass::PDF => BidiClass::PDF,
+        IntlBidiClass::LRI => BidiClass::LRI,
+        IntlBidiClass::RLI => BidiClass::RLI,
+        IntlBidiClass::FSI => BidiClass::FSI,
+        IntlBidiClass::PDI => BidiClass::PDI,
     }
 }
 
-fn class_table() -> &'static ClassTable {
-    static TABLE: OnceLock<ClassTable> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut explicit = Vec::with_capacity(2304);
-        let mut missing = Vec::new();
-        for line in DERIVED_BIDI_CLASS.lines() {
-            // `@missing` defaults live inside comment lines:
-            //   # @missing: 0590..05FF; Right_To_Left
-            if let Some(rest) = line.trim_start().strip_prefix("# @missing:") {
-                let mut fields = rest.split(';');
-                let range = fields.next().and_then(parse_range);
-                let class = fields.next().and_then(|f| class_from_long(f.trim()));
-                let (Some((lo, hi)), Some(class)) = (range, class) else {
-                    panic!("DerivedBidiClass.txt: malformed @missing line: {line:?}");
-                };
-                // The global default ("All code points not explicitly
-                // listed for Bidi_Class have the value Left_To_Right")
-                // is the final fallback in `class_lookup`, not a
-                // searched range.
-                if (lo, hi) == (0, 0x0010_FFFF) {
-                    assert_eq!(class, BidiClass::L, "global @missing default must be L");
-                    continue;
-                }
-                missing.push((lo, hi, class));
-                continue;
-            }
-            // Ordinary data line: strip the trailing comment, skip
-            // blanks.
-            let data = line.split('#').next().unwrap_or("").trim();
-            if data.is_empty() {
-                continue;
-            }
-            let mut fields = data.split(';');
-            let range = fields.next().and_then(parse_range);
-            let class = fields.next().and_then(|f| class_from_short(f.trim()));
-            let (Some((lo, hi)), Some(class)) = (range, class) else {
-                panic!("DerivedBidiClass.txt: malformed data line: {line:?}");
-            };
-            explicit.push((lo, hi, class));
-        }
-        // The file groups data lines by class value, so the ranges
-        // are only sorted within each group — sort globally for the
-        // binary search. Ranges from different groups are disjoint
-        // (each code point has exactly one Bidi_Class); the
-        // module-level tests assert this invariant.
-        explicit.sort_unstable_by_key(|&(lo, _, _)| lo);
-        missing.sort_unstable_by_key(|&(lo, _, _)| lo);
-        ClassTable { explicit, missing }
-    })
-}
+/// UAX #9 §3.2 `Bidi_Class` `@missing` block defaults for **unassigned**
+/// code points, as published in the Unicode `DerivedBidiClass.txt`
+/// header. The algorithm assigns strong types to unassigned code
+/// points "in blocks reserved for right-to-left scripts" (`R` / `AL`)
+/// and `ET` to the Currency Symbols block — "an explicit exception to
+/// the general Unicode conformance requirements with respect to
+/// unassigned characters." Every code point outside these ranges
+/// defaults to `L` (the global `0000..10FFFF; Left_To_Right` line).
+///
+/// `intl`'s `bidi_class` returns the **assigned** class for assigned
+/// code points but `L` for unassigned ones, so this overlay is applied
+/// only when `intl` reports `L` and `cp` falls inside one of these
+/// blocks — restoring the §3.2 default the previous
+/// `DerivedBidiClass.txt` parser produced. (No assigned code point in
+/// these RTL / Currency blocks has `Bidi_Class = L`, so overlaying on
+/// an `L` result never overrides a real assignment.)
+const MISSING_BLOCKS: &[(u32, u32, BidiClass)] = &[
+    (0x0590, 0x05FF, BidiClass::R),
+    (0x0600, 0x07BF, BidiClass::AL),
+    (0x07C0, 0x085F, BidiClass::R),
+    (0x0860, 0x08FF, BidiClass::AL),
+    (0x20A0, 0x20CF, BidiClass::ET),
+    (0xFB1D, 0xFB4F, BidiClass::R),
+    (0xFB50, 0xFDCF, BidiClass::AL),
+    (0xFDF0, 0xFDFF, BidiClass::AL),
+    (0xFE70, 0xFEFF, BidiClass::AL),
+    (0x1_0800, 0x1_0CFF, BidiClass::R),
+    (0x1_0D00, 0x1_0D3F, BidiClass::AL),
+    (0x1_0D40, 0x1_0EBF, BidiClass::R),
+    (0x1_0EC0, 0x1_0EFF, BidiClass::AL),
+    (0x1_0F00, 0x1_0F2F, BidiClass::R),
+    (0x1_0F30, 0x1_0F6F, BidiClass::AL),
+    (0x1_0F70, 0x1_0FFF, BidiClass::R),
+    (0x1_E800, 0x1_EC6F, BidiClass::R),
+    (0x1_EC70, 0x1_ECBF, BidiClass::AL),
+    (0x1_ECC0, 0x1_ECFF, BidiClass::R),
+    (0x1_ED00, 0x1_ED4F, BidiClass::AL),
+    (0x1_ED50, 0x1_EDFF, BidiClass::R),
+    (0x1_EE00, 0x1_EEFF, BidiClass::AL),
+    (0x1_EF00, 0x1_EFFF, BidiClass::R),
+];
 
-/// Binary-search a sorted disjoint `(first, last, value)` range table.
-fn range_search<T: Copy>(table: &[(u32, u32, T)], cp: u32) -> Option<T> {
-    let idx = table.partition_point(|&(lo, _, _)| lo <= cp);
-    let (lo, hi, value) = *table.get(idx.checked_sub(1)?)?;
-    debug_assert!(lo <= cp);
-    (cp <= hi).then_some(value)
-}
-
-/// `Bidi_Class` of `cp` per `DerivedBidiClass.txt` (Unicode 16.0):
-/// explicit assignment if listed, the block-specific `@missing`
-/// default for unassigned code points in right-to-left script blocks
-/// / the Currency Symbols block, and `L` otherwise.
+/// `Bidi_Class` of `cp`. Assigned code points are resolved by `intl`'s
+/// compiled UCD tables; unassigned code points get the UAX #9 §3.2
+/// `@missing` block default ([`MISSING_BLOCKS`]) when they fall in a
+/// right-to-left script block or the Currency Symbols block, and `L`
+/// otherwise — matching the previous `DerivedBidiClass.txt` parser.
 pub(super) fn class_lookup(cp: u32) -> BidiClass {
-    let table = class_table();
-    range_search(&table.explicit, cp)
-        .or_else(|| range_search(&table.missing, cp))
-        .unwrap_or(BidiClass::L)
-}
-
-fn mirror_table() -> &'static Vec<(u32, u32)> {
-    static TABLE: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut entries = Vec::with_capacity(428);
-        for line in BIDI_MIRRORING.lines() {
-            let data = line.split('#').next().unwrap_or("").trim();
-            if data.is_empty() {
-                continue;
+    let class = from_intl(intl::unicode::bidi::bidi_class_u32(cp));
+    if class == BidiClass::L {
+        for &(lo, hi, default) in MISSING_BLOCKS {
+            if cp >= lo && cp <= hi {
+                return default;
             }
-            let mut fields = data.split(';');
-            let (Some(cp), Some(mirror)) = (
-                fields
-                    .next()
-                    .and_then(|f| u32::from_str_radix(f.trim(), 16).ok()),
-                fields
-                    .next()
-                    .and_then(|f| u32::from_str_radix(f.trim(), 16).ok()),
-            ) else {
-                panic!("BidiMirroring.txt: malformed data line: {line:?}");
-            };
-            entries.push((cp, mirror));
         }
-        entries.sort_unstable_by_key(|&(cp, _)| cp);
-        entries
-    })
+    }
+    class
 }
 
-/// `Bidi_Mirroring_Glyph` of `c` per `BidiMirroring.txt` (Unicode
-/// 16.0) — the acceptable mirror-pair character, or `None` when the
-/// character has no mirror pair (including every `Bidi_Mirrored=No`
-/// character, e.g. the U+FD3E / U+FD3F ornate parentheses).
+/// `Bidi_Mirroring_Glyph` of `c` via `intl`'s compiled UCD tables —
+/// the acceptable mirror-pair character, or `None` when the character
+/// has no mirror pair (consumed by rule L4).
 pub(super) fn mirror_lookup(c: char) -> Option<char> {
-    let table = mirror_table();
-    let idx = table
-        .binary_search_by_key(&(c as u32), |&(cp, _)| cp)
-        .ok()?;
-    char::from_u32(table[idx].1)
+    intl::unicode::bidi_mirror(c)
 }
 
 fn bracket_table() -> &'static Vec<(u32, u32, BracketKind)> {
@@ -270,39 +180,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn class_table_is_sorted_and_disjoint() {
-        let table = class_table();
-        // Unicode 16.0 DerivedBidiClass.txt carries 2289 data lines
-        // and 24 @missing lines, of which one is the global L
-        // default (folded into the fallback) and 23 are
-        // block-specific.
-        assert_eq!(table.explicit.len(), 2289);
-        assert_eq!(table.missing.len(), 23);
-        for pair in table.explicit.windows(2) {
-            let (lo_a, hi_a, _) = pair[0];
-            let (lo_b, _, _) = pair[1];
-            assert!(lo_a <= hi_a, "inverted range at U+{lo_a:04X}");
-            assert!(hi_a < lo_b, "overlap at U+{lo_b:04X}");
-        }
-        for pair in table.missing.windows(2) {
-            let (lo_a, hi_a, _) = pair[0];
-            let (lo_b, _, _) = pair[1];
-            assert!(lo_a <= hi_a, "inverted @missing range at U+{lo_a:04X}");
-            assert!(hi_a < lo_b, "@missing overlap at U+{lo_b:04X}");
-        }
+    fn class_lookup_matches_known_assignments() {
+        // Spot-check representative code points across the UAX #9
+        // §3.2 Table 4 classes — these assignments are stable across
+        // Unicode versions, so they pin the `intl` delegation.
+        assert_eq!(class_lookup('A' as u32), BidiClass::L);
+        assert_eq!(class_lookup('\u{05D0}' as u32), BidiClass::R); // Hebrew alef
+        assert_eq!(class_lookup('\u{0627}' as u32), BidiClass::AL); // Arabic alef
+        assert_eq!(class_lookup('5' as u32), BidiClass::EN);
+        assert_eq!(class_lookup('\u{0660}' as u32), BidiClass::AN); // Arabic-Indic 0
+        assert_eq!(class_lookup('\u{0300}' as u32), BidiClass::NSM); // combining grave
+        assert_eq!(class_lookup(' ' as u32), BidiClass::WS);
+        assert_eq!(class_lookup('(' as u32), BidiClass::ON);
+        assert_eq!(class_lookup('\u{202A}' as u32), BidiClass::LRE);
+        assert_eq!(class_lookup('\u{2067}' as u32), BidiClass::RLI);
+        assert_eq!(class_lookup('\u{2069}' as u32), BidiClass::PDI);
+        // Unassigned code point inside the Hebrew block defaults to R
+        // per the §3.2 @missing rule.
+        assert_eq!(class_lookup(0x05EB), BidiClass::R);
     }
 
     #[test]
-    fn mirror_table_is_a_full_involution() {
-        // Unicode 16.0 BidiMirroring.txt carries 428 data lines, and
-        // every mapping is listed in both directions.
-        let table = mirror_table();
-        assert_eq!(table.len(), 428);
-        for &(cp, mirror) in table {
+    fn mirror_lookup_is_an_involution_for_brackets() {
+        // Every paired bracket has a mirror, and mirroring is an
+        // involution; verify via the bracket table (which `intl` does
+        // not supply) so the two property sources stay consistent.
+        for &(cp, paired, _) in bracket_table() {
             let c = char::from_u32(cp).expect("valid scalar");
-            let m = char::from_u32(mirror).expect("valid scalar");
-            assert_eq!(mirror_lookup(m), Some(c), "U+{cp:04X} not an involution");
-            assert_eq!(mirror_lookup(c), Some(m));
+            let p = char::from_u32(paired).expect("valid scalar");
+            assert_eq!(mirror_lookup(c), Some(p), "U+{cp:04X} bmg");
+            assert_eq!(mirror_lookup(p), Some(c), "U+{cp:04X} not an involution");
         }
     }
 

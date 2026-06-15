@@ -1,7 +1,10 @@
-//! Round 283 — UAX #9 data-driven property lookups from the Unicode
-//! 16.0 UCD data files (`DerivedBidiClass.txt`, `BidiBrackets.txt`,
-//! `BidiMirroring.txt`) staged under `docs/text/unicode-bidi/` and
-//! vendored into `src/bidi/`.
+//! Round 283 — UAX #9 data-driven property lookups. As of round 319
+//! `Bidi_Class` and `Bidi_Mirroring_Glyph` are provided by the `intl`
+//! crate's compiled UCD tables; `Bidi_Paired_Bracket` is still read
+//! from the `BidiBrackets.txt` snapshot under
+//! `docs/text/unicode-bidi/`, vendored into `src/bidi/`. These tests
+//! assert the property *behaviour* (specific code-point → class /
+//! mirror / bracket), which is unchanged by the data-source switch.
 //!
 //! Exercises the three public lookups through the crate root —
 //! [`oxideav_scribe::bidi_class`] (full per-code-point `Bidi_Class`
