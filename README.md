@@ -48,6 +48,13 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   charstrings decode cubics 1:1. `Face::glyph_node(gid, size_px)` bakes
   the Y-flip + scale into a render-ready `Node::Path` (or `Node::Image`
   for CBDT colour glyphs).
+- **PostScript glyph names** — `Face::glyph_name(gid)` (and the lower
+  level `Face::post()` / `crate::post::PostTable`) resolve a glyph ID to
+  its `post`-table PostScript name. The 258 standard Macintosh names are
+  carried as `STANDARD_MAC_GLYPH_NAMES`; the parser handles `post`
+  formats 1.0 (implied standard ordering), 2.0 (per-glyph standard +
+  custom Pascal strings), and the deprecated 2.5 (signed delta into the
+  standard set). Format 3.0 reports no names.
 - **Vector text API** — `Shaper::shape_to_paths` returns one
   `(face_idx, Node, Transform2D)` per visible glyph. Each node is
   wrapped in an `oxideav_core::Group { cache_key: Some(_), .. }` so the

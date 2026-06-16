@@ -533,6 +533,27 @@ impl Face {
         crate::variations::Cff2Table::parse(bytes)
     }
 
+    /// Parse and return the `post` (PostScript) table, if present.
+    /// Returns `None` for fonts that ship no `post` table, or whose
+    /// `post` table is too short to parse. A format-3.0 `post` parses
+    /// successfully but supplies no glyph names — see
+    /// [`crate::post::PostTable::has_names`].
+    pub fn post(&self) -> Option<crate::post::PostTable> {
+        let offset = match self.kind {
+            FaceKind::Ttf => self.subfont_offset(),
+            FaceKind::Otf => 0,
+        };
+        let bytes = crate::variations::find_table(&self.bytes, b"post", offset)?;
+        crate::post::PostTable::parse(bytes)
+    }
+
+    /// Resolve a glyph ID to its PostScript name via the `post` table.
+    /// Returns `None` when the font has no `post` table, the table
+    /// supplies no names (format 3.0), or the glyph ID is unnamed.
+    pub fn glyph_name(&self, gid: u16) -> Option<String> {
+        self.post()?.glyph_name(gid).map(|s| s.to_string())
+    }
+
     /// Apply MVAR + the current variation coords (set via
     /// [`Self::set_variation_coords`]) to compute a metric delta in
     /// font units for `tag`. Returns `0.0` when the font has no MVAR,

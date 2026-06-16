@@ -174,6 +174,7 @@ pub mod color_glyph;
 pub mod face;
 pub mod face_chain;
 pub mod layout;
+pub mod post;
 pub mod shaper;
 pub mod shaping;
 pub mod style;
@@ -194,6 +195,7 @@ pub use face::{Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{reorder_line_visual, run_width, wrap_lines, VisualLine};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
+pub use post::{standard_mac_glyph_name, PostTable, STANDARD_MAC_GLYPH_NAMES};
 pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
 pub use shaping::{
     bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,

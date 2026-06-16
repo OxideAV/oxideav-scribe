@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `post` (PostScript) table glyph-name resolution (round 324)
+
+A new `post` module resolves a glyph ID to its PostScript glyph name.
+It carries the 258 standard Macintosh glyph names in canonical ordering
+(`STANDARD_MAC_GLYPH_NAMES` / `standard_mac_glyph_name`) and parses the
+three name-bearing `post` table layouts: format 1.0 (the implied
+standard ordering), format 2.0 (`glyphNameIndex` selecting either a
+standard name `< 258` or a custom Pascal string `>= 258`), and the
+deprecated format 2.5 (a signed per-glyph delta into the standard
+ordering). Format 3.0 (no names) parses but reports `has_names() ==
+false`. `Face::post()` returns the parsed table for the active subfont
+(TTC-aware), and `Face::glyph_name(gid)` is a one-shot convenience.
+Validated against the real DejaVuSans `post` table (`A` → "A",
+`a` → "a", space → "space", GID 0 → ".notdef") plus synthetic
+format-1.0/2.0/2.5/3.0 fixtures.
+
 ### Changed — UCD `Bidi_Class` / `Bidi_Mirroring_Glyph` now sourced from the `intl` crate (round 319)
 
 The UAX #9 engine's `Bidi_Class` and `Bidi_Mirroring_Glyph` property
