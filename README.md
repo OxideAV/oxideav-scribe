@@ -87,9 +87,12 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   stacking (type 6). Together this is enough for Latin / Cyrillic /
   Greek / basic CJK / Vietnamese / polytonic Greek.
 - **Feature-tag introspection** — `Face::gsub_features_for_script` /
-  `has_gsub_feature` report the feature tags the active face publishes
-  under an OpenType script tag, for higher-level APIs that gate on
-  feature presence. (A GPOS introspection mirror is a follow-up.)
+  `has_gsub_feature` report the substitution feature tags the active face
+  publishes under an OpenType script tag; `Face::gpos_features_for_script`
+  / `has_gpos_feature` are the positioning-table mirror, surfacing the
+  GPOS features (`kern`, `mark`, `mkmk`, `curs`, `cpsp`, …) that never
+  appear in the GSUB list. Both feed higher-level APIs that gate on
+  feature presence.
 - **Explicit-script + alternate-index shaping** —
   `shape_text_with_script` resolves features against one named script
   tag (no priority walk, avoiding cross-script collisions like `liga`

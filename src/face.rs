@@ -698,6 +698,80 @@ impl Face {
             .contains(&feature_tag)
     }
 
+    /// List the GPOS feature tags this face publishes under `script_tag`
+    /// (and, optionally, `lang_tag`). The positioning-table mirror of
+    /// [`Self::gsub_features_for_script`]: it walks the same OpenType
+    /// Layout ScriptList / FeatureList / LangSys substructure, but over
+    /// the GPOS table, returning the four-byte feature identifiers in the
+    /// order the active LangSys declares them — the required feature, if
+    /// any, comes first. These are the positioning features (`kern`,
+    /// `mark`, `mkmk`, `curs`, `cpsp`, …) a higher-level API gates on
+    /// when deciding which adjustments to enable.
+    ///
+    /// Duplicates are preserved, matching the GSUB accessor's contract
+    /// (a tag can appear in both the default LangSys and a script-specific
+    /// override that fell through to default).
+    ///
+    /// The companion `oxideav-ttf` API also exposes the per-feature
+    /// lookup-index list; this accessor surfaces only the tag set, which
+    /// is what callers picking which positioning features to enable
+    /// typically need. For the lookup-index detail, drop down via
+    /// [`Self::with_font`] and call
+    /// [`oxideav_ttf::Font::gpos_features_for_script`] directly.
+    ///
+    /// Returns `Vec::new()` when:
+    /// - the face has no GPOS table,
+    /// - the requested script tag isn't in the ScriptList,
+    /// - `lang_tag` is `Some(_)` and the LangSys isn't in the script,
+    ///   and the script has no default LangSys.
+    ///
+    /// OTF (CFF-flavour) faces fall through to the empty vec for the same
+    /// reason [`Self::gsub_features_for_script`] does: this accessor uses
+    /// the TTF path and the kind check inside [`Self::with_font`] rejects
+    /// OTF.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Which positioning features does this font publish for Latin?
+    /// let tags = face.gpos_features_for_script(*b"latn", None);
+    /// for tag in &tags {
+    ///     println!("{}", std::str::from_utf8(tag).unwrap_or("????"));
+    /// }
+    /// # }
+    /// ```
+    pub fn gpos_features_for_script(
+        &self,
+        script_tag: [u8; 4],
+        lang_tag: Option<[u8; 4]>,
+    ) -> Vec<[u8; 4]> {
+        self.with_font(|font| {
+            font.gpos_features_for_script(script_tag, lang_tag)
+                .into_iter()
+                .map(|f| f.tag)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// `true` when this face publishes `feature_tag` (a positioning
+    /// feature) for `script_tag` under the default LangSys. The GPOS
+    /// mirror of [`Self::has_gsub_feature`]: a convenience predicate over
+    /// [`Self::gpos_features_for_script`] for callers that just need to
+    /// gate behaviour on positioning-feature presence without iterating
+    /// the full list.
+    ///
+    /// Cheap for the typical hit-or-miss check — internally this re-runs
+    /// the script-walk every call (the same cost as
+    /// `gpos_features_for_script(...).contains(...)`); cache the full tag
+    /// vec if you query many tags against the same script.
+    pub fn has_gpos_feature(&self, script_tag: [u8; 4], feature_tag: [u8; 4]) -> bool {
+        self.gpos_features_for_script(script_tag, None)
+            .contains(&feature_tag)
+    }
+
     /// Shape `text` with the caller-specified GSUB feature tags applied
     /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
     ///
