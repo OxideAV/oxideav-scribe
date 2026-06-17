@@ -7,23 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — GPOS feature-tag introspection mirror (round 329)
-
-`Face::gpos_features_for_script(script_tag, lang_tag)` lists the GPOS
-(positioning) feature tags the active face publishes under an OpenType
-script tag, and `Face::has_gpos_feature(script_tag, feature_tag)` is the
-convenience predicate over it. These are the positioning-table mirror of
-the round-88 `gsub_features_for_script` / `has_gsub_feature` pair and
-surface the features (`kern`, `mark`, `mkmk`, `curs`, `cpsp`, …) that
-live in GPOS and therefore never appear in the GSUB feature list. The
-accessor passes through `oxideav-ttf`'s `gpos_features_for_script`,
-mapping each `GposFeature` to its four-byte tag, and returns an empty vec
-for faces with no GPOS table, unknown script tags, or unresolved
-LangSys. Validated against DejaVu Sans (`latn` → `kern` / `mark` /
-`mkmk`; `DFLT` → `kern`) and Inter Variable (`latn` → `cpsp` / `kern` /
-`mark` / `mkmk`), including cross-checks that `kern` / `cpsp` surface
-only through the GPOS accessor and never the GSUB one.
-
 ### Added — `post` (PostScript) table glyph-name resolution (round 324)
 
 A new `post` module resolves a glyph ID to its PostScript glyph name.
