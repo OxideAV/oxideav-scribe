@@ -62,10 +62,9 @@
 //!   fonts for Indic scripts* (Bengali / Tamil / Telugu / Gujarati /
 //!   Gurmukhi / Kannada / Malayalam / Oriya).
 //!
-//! No HarfBuzz / FreeType / pango / ICU layout source consulted. The
-//! algorithms are clean-room implementations derived from the Unicode +
-//! OpenType specs above plus the per-script `Shaping` informative
-//! examples in the OpenType layout doc.
+//! The algorithms are clean-room implementations derived from the
+//! Unicode + OpenType specs above plus the per-script `Shaping`
+//! informative examples in the OpenType layout doc.
 
 #![allow(clippy::manual_range_contains)]
 

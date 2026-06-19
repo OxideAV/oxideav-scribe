@@ -8,8 +8,8 @@
 //! Provenance: every input is constructed by hand from the rule
 //! examples in UAX #9 Revision 50 / Unicode 16.0 §3.3.4 (the dated
 //! snapshot at `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
-//! No external library source — HarfBuzz, ICU, FreeType, rustybuzz,
-//! the `unicode-bidi` crate, etc. — was consulted at any point.
+//! No external library source was consulted at any point — every
+//! expectation derives from the UAX #9 rule examples cited above.
 
 use oxideav_scribe::{resolve_weak_types, BidiClass};
 

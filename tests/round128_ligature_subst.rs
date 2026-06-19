@@ -36,12 +36,10 @@
 //!
 //! The synthetic-font builder lives entirely in this test file. No
 //! external library was consulted; every byte layout follows the
-//! Microsoft Typography OpenType spec ("OpenType Specification
-//! 1.9.1" chapter 5 + chapter 6 §6.2.4 + the "GSUB Header" /
-//! "Coverage Table Formats" / "Class Definition Table" common-table
-//! sections, transcribed from the published tables). No HarfBuzz /
-//! FreeType / Pango / Skia source consulted; no WebSearch /
-//! WebFetch invoked during this round.
+//! OpenType GSUB + common-table-format chapters (chapter 5 + chapter 6
+//! §6.2.4 + the "GSUB Header" / "Coverage Table Formats" / "Class
+//! Definition Table" common-table sections) transcribed from the
+//! published spec tables.
 
 use oxideav_scribe::Face;
 

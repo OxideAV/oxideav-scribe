@@ -81,10 +81,10 @@ impl Default for Style {
     }
 }
 
-/// Synthetic-italic shear angle in degrees. `tan(12°) ≈ 0.213`, which
-/// matches the slant the major desktop renderers (Quartz, GDI+,
-/// FreeType) apply when the font lacks an italic variant. Mirrors
-/// historical Type-1 Oblique fonts which ship with `italicAngle = -12`.
+/// Synthetic-italic shear angle in degrees. `tan(12°) ≈ 0.213`, the
+/// conventional slant applied as a synthetic oblique when the font
+/// lacks an italic variant. Mirrors historical Type-1 Oblique fonts
+/// which ship with `italicAngle = -12`.
 pub const DEFAULT_SYNTHETIC_ITALIC_DEG: f32 = 12.0;
 
 /// Threshold (in degrees) under which the font's own `italicAngle` is

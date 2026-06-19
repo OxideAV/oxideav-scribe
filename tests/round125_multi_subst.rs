@@ -24,10 +24,9 @@
 //!
 //! The synthetic-font builder lives entirely in this test file. No
 //! external library was consulted; every byte layout follows the
-//! Microsoft Typography OpenType spec ("OpenType Specification 1.9.1"
-//! chapter 5 + chapter 6 §6.2.2 + the "GSUB Header" / "Coverage Table
-//! Formats" common-table sections, transcribed from the published
-//! tables, no HarfBuzz / FreeType / Pango / Skia source).
+//! OpenType GSUB + common-table-format chapters (chapter 5 + chapter 6
+//! §6.2.2 + the "GSUB Header" / "Coverage Table Formats" common-table
+//! sections) transcribed from the published spec tables.
 //!
 //! ## What this exercises
 //!

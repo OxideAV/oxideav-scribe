@@ -14,9 +14,8 @@
 //! - Microsoft OpenType Layout — Arabic shaping (the `isol` / `init` /
 //!   `medi` / `fina` feature contract).
 //!
-//! No HarfBuzz / FreeType / pango / ICU layout source consulted — this
-//! is a clean-room implementation of the algorithm described in the
-//! Unicode + OpenType specs.
+//! A clean-room implementation of the algorithm described in the
+//! Unicode + OpenType specs above.
 //!
 //! ## Algorithm
 //!

@@ -58,12 +58,11 @@
 //! (`dev2` / `deva` / `arab`) and is dispatched from the per-script
 //! pipelines in [`crate::face_chain`] before this pass runs.
 //!
-//! Source: docs/document/pdf/PDF32000-2008.html (text rendering chapter
-//! for font substitution semantics) — there is no project-vendored
-//! OpenType spec, so this module's feature ordering follows the
-//! Microsoft Typography "Registered features" published rules
-//! transcribed from public OpenType registry documentation. No HarfBuzz
-//! / FreeType / ICU source was read.
+//! Source: the project-vendored OpenType GSUB chapter
+//! (`docs/text/opentype/otspec-gsub.html`) and the common-layout-tables
+//! chapter (`docs/text/opentype/otspec-chapter2-common-layout-tables.html`)
+//! for the required-feature / feature-ordering semantics, plus the
+//! registered-feature catalogue under `docs/text/opentype/registries/`.
 
 use oxideav_ttf::Font;
 

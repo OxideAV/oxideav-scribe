@@ -99,8 +99,8 @@ impl RgbaBitmap {
     /// the requested raster size. Edge sampling clamps at the source
     /// borders so we never read outside the bitmap. Interpolation is
     /// performed in **straight-alpha space** independently per channel
-    /// — the simpler model that matches what FreeType's bitmap-strike
-    /// scaling does. Premultiplied interpolation produces sharper
+    /// — the simpler model commonly used for bitmap-strike scaling.
+    /// Premultiplied interpolation produces sharper
     /// alpha-edge silhouettes but requires un-premultiplying afterwards
     /// to keep downstream consumers happy; for emoji glyphs at typical
     /// body-text sizes the visual difference is imperceptible.
@@ -449,7 +449,7 @@ struct PngPalette {
 
 impl PngPalette {
     /// Look up an index. Out-of-range indices return transparent black
-    /// (matching what FreeType + libpng do for malformed palettes).
+    /// (the conventional safe default for a malformed palette index).
     fn lookup(&self, idx: u8) -> [u8; 4] {
         self.entries
             .get(idx as usize)
