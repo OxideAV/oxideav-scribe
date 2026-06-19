@@ -83,9 +83,14 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   returns small-caps where the font ships them.
 - **GPOS positioning** — single adjustment (type 1), pair kerning
   (type 2), cursive attachment (type 3, flag-clear semantics),
-  mark-to-base (type 4), mark-to-ligature (type 5), and mark-to-mark
-  stacking (type 6). Together this is enough for Latin / Cyrillic /
-  Greek / basic CJK / Vietnamese / polytonic Greek.
+  mark-to-base (type 4), mark-to-ligature (type 5), mark-to-mark
+  stacking (type 6), and contextual / chained-contextual positioning
+  (types 7 / 8). The contextual pass runs last so its nested per-glyph
+  adjustments layer on the post-kern / post-mark / post-cursive
+  geometry; it accumulates the `PosRecord` deltas the GPOS lookup
+  dispatches and is gated so plain Latin faces pay one lookup-list scan.
+  Together this is enough for Latin / Cyrillic / Greek / basic CJK /
+  Vietnamese / polytonic Greek.
 - **Feature-tag introspection** — `Face::gsub_features_for_script` /
   `has_gsub_feature` report the feature tags the active face publishes
   under an OpenType script tag, for higher-level APIs that gate on

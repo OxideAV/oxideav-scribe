@@ -39,6 +39,7 @@
 
 pub mod arabic;
 pub mod arabic_pf;
+pub mod contextual_pos;
 pub mod feature_subst;
 pub mod general;
 pub mod indic;

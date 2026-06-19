@@ -1,13 +1,14 @@
 //! Text shaper: cmap → ligature substitution → pair kerning →
 //! mark-to-base attachment → mark-to-mark stacking → cursive
-//! attachment.
+//! attachment → contextual / chained-contextual positioning.
 //!
-//! This is a deliberately small subset of an OpenType shaper — enough
-//! to render Latin (incl. extended diacritics) / Cyrillic / Greek
-//! (incl. polytonic) / basic CJK with the ligatures, kerning and
-//! diacritic attachment that production fonts ship. Bidi (UAX #9),
-//! Arabic joining, Indic conjunct formation, and the more elaborate
-//! contextual GSUB/GPOS lookups are explicitly deferred.
+//! This covers the core of an OpenType positioning pass — enough to
+//! render Latin (incl. extended diacritics) / Cyrillic / Greek (incl.
+//! polytonic) / basic CJK with the ligatures, kerning, diacritic
+//! attachment, and context-sensitive position adjustments that
+//! production fonts ship. Bidi (UAX #9), Arabic joining, and Indic
+//! conjunct formation are layered above this run-level pass by
+//! [`crate::FaceChain`] and [`crate::shaping`].
 //!
 //! ## Pipeline
 //!
@@ -59,6 +60,16 @@
 //!    Marks attached to the second glyph follow it vertically.
 //!    Cross-stream adjustments accumulate down a connected chain —
 //!    the cascading-baseline behaviour cursive scripts need.
+//! 7. **Contextual + chained-contextual positioning (GPOS types 7 +
+//!    8)**: recognise an input context (a glyph sequence, optionally
+//!    bracketed by backtrack / lookahead in the chained variant) and
+//!    apply the nested per-glyph positioning adjustments the rule
+//!    dispatches. The dependency resolves the sub-table match and the
+//!    `SequenceLookupRecord` recursion into absolute per-glyph
+//!    `PosRecord` deltas; this pass accumulates them onto the already-
+//!    positioned run (see [`crate::shaping::contextual_pos`]). Runs last
+//!    so the contextual rules see the post-kern / post-mark / post-
+//!    cursive geometry.
 //!
 //! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
 
@@ -781,6 +792,23 @@ pub fn shape_run_with_font(
             prev_base = Some(i);
         }
     }
+
+    // Step 7: contextual (GPOS LookupType 7) + chained-contextual (GPOS
+    // LookupType 8) positioning.
+    //
+    // These recognise an input context — a glyph sequence, optionally
+    // bracketed by backtrack / lookahead windows in the chained variant
+    // — and dispatch nested per-glyph positioning adjustments. The
+    // dependency resolves the sub-table match + the nested
+    // `SequenceLookupRecord` recursion into absolute per-glyph
+    // `PosRecord` deltas; this pass accumulates those deltas onto the
+    // run. It runs last so the contextual rules see the post-kern,
+    // post-SinglePos, post-mark, post-cursive geometry — matching the
+    // §6 rule that the contextual lookups' nested actions are ordinary
+    // positioning adjustments layered on the already-positioned run.
+    // Gated internally on the font publishing at least one type-7/8
+    // GPOS lookup, so plain Latin faces pay a single lookup-list scan.
+    crate::shaping::contextual_pos::apply_contextual_pos(font, &mut out, scale);
 
     out
 }

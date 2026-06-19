@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GPOS contextual + chained-contextual positioning (round 343)
+
+The run-level positioning pass now applies GPOS **LookupType 7
+(Contextual Positioning)** and **LookupType 8 (Chained Contexts
+Positioning)** — the positioning analogues of the GSUB contextual /
+chained-contextual substitution lookups. A new
+`shaping::contextual_pos` module enumerates the font's type-7/8 GPOS
+lookups in LookupList order, scans every input position, and
+accumulates the per-glyph `PosRecord` deltas the dependency's
+`gpos_apply_lookup_type_7` / `gpos_apply_lookup_type_8` resolve from
+the sub-table match plus the nested `SequenceLookupRecord` recursion.
+Field mapping mirrors the SinglePos (LookupType 1) pass —
+`xPlacement → x_offset`, `yPlacement → -y_offset` (TT Y-up → raster
+Y-down), `xAdvance → x_advance`; `yAdvance` is vertical-layout only and
+ignored. Records are additive (multiple records may stack on one
+glyph). The pass runs last (step 7), so contextual rules see the
+post-kern / post-mark / post-cursive geometry, and is gated on the font
+publishing at least one type-7/8 lookup so plain Latin faces pay a
+single lookup-list scan. Validated by synthetic-`PosRecord` field-map
+unit tests (Y-flip, additive stacking, out-of-range guard,
+`yAdvance`-ignored) plus integration tests proving the pass is wired
+into `shape` / `shape_to_paths` and is a transparent identity for the
+fixtures (which ship no contextual-positioning lookups). This closes
+the "more elaborate contextual GSUB/GPOS lookups are explicitly
+deferred" caveat on the GPOS side.
+
 ### Added — `post` (PostScript) table glyph-name resolution (round 324)
 
 A new `post` module resolves a glyph ID to its PostScript glyph name.
