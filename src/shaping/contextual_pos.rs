@@ -83,15 +83,13 @@ use oxideav_ttf::Font;
 /// is possible because positioning never changes the glyph ids the next
 /// lookup matches against.
 pub fn apply_contextual_pos(font: &Font<'_>, out: &mut [PositionedGlyph], scale: f32) {
-    if out.len() < 2 {
-        // A contextual context needs at least an input glyph; chained
-        // contexts need surrounding glyphs. A 0- or 1-glyph run can
-        // still in principle match a single-glyph input sequence, but
-        // there is no useful positioning context to establish, and the
-        // common case is the empty / single-glyph run, so short-circuit.
-        if out.is_empty() {
-            return;
-        }
+    // An empty run has nothing to match against. A single-glyph run can
+    // still match a one-glyph input context, so it is NOT short-circuited
+    // here — it flows through the normal path below (where the lookup-list
+    // gate makes it a no-op for the common case of a font with no
+    // contextual-positioning lookups).
+    if out.is_empty() {
+        return;
     }
 
     // Collect the contextual-positioning lookups (effective type 7 or 8
