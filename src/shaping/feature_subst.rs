@@ -78,14 +78,22 @@
 //!   `oxideav-ttf` accessor unwraps ExtensionSubst before reporting
 //!   the lookup type.
 //!
-//! Lookups of the remaining declared types (Context = 5, ChainContext
-//! = 6, ReverseChainContext = 8) are **silently skipped**. The brief
-//! for round 156 is single + multiple + ligature + alternate
-//! substitution — contextual / chained-contextual / reverse-chained
-//! substitution dispatch on the caller-driven surface is left for a
-//! later round (the always-on `ccmp` / `calt` passes in
-//! [`crate::shaping::general`] already cover those types end-to-end
-//! through the broader `apply_one_lookup` walker).
+//! - **LookupType 5 (Contextual)** and **LookupType 6 (Chained
+//!   Contexts)** are applied through `apply_context_lookup`, which
+//!   scans every input position left-to-right and adopts the rewritten
+//!   run the dependency's `gsub_apply_lookup_type_5` /
+//!   `gsub_apply_lookup_type_6` return (nested `SequenceLookupRecord`
+//!   sub-lookups already dispatched). This is the same scan model the
+//!   always-on `ccmp` / `calt` passes in [`crate::shaping::general`]
+//!   use; round 353 brought it to the caller-driven `shape_text`
+//!   surface so e.g. `frac`'s contextual `1/2` collapse, contextual
+//!   `case` punctuation, and stylistic-set chained rules fire when the
+//!   caller requests those features explicitly.
+//! - **LookupType 8 (Reverse Chaining Contextual Single)** is applied
+//!   through `apply_reverse_chain_lookup`, which walks the buffer
+//!   right-to-left per the GSUB chapter's reverse-processing
+//!   requirement so a substitution becomes the lookahead context of an
+//!   earlier (more-leftward) position.
 //!
 //! ## What lookup types the display-toggled catalogue uses
 //!
@@ -107,7 +115,8 @@
 //!   alternate access). Round 156 dispatches both.
 //! - `frac` → digit-to-numerator / denominator routing (LookupType 1
 //!   for the digit reshape; the contextual `1/2` collapse is a
-//!   chained-context Type-6 rule and is silently skipped here).
+//!   chained-context Type-6 rule, now dispatched via
+//!   `apply_context_lookup`).
 //! - `sups` / `subs` → digit → superscript / subscript digit
 //!   (LookupType 1, Format 2 typically).
 //! - `liga` / `dlig` / `rlig` → multi-glyph → single ligature glyph
@@ -211,8 +220,10 @@ use oxideav_ttf::Font;
 /// 2. For each requested feature tag (in caller order), resolve the
 ///    lookup-index list under the script-tag priority and apply
 ///    every LookupType-1 (single), LookupType-2 (multiple),
-///    LookupType-3 (alternate, default `alternateIndex = 0`), and
-///    LookupType-4 (ligature) lookup to the running glyph list.
+///    LookupType-3 (alternate, default `alternateIndex = 0`),
+///    LookupType-4 (ligature), LookupType-5 (contextual),
+///    LookupType-6 (chained-contextual), and LookupType-8 (reverse-
+///    chaining contextual single) lookup to the running glyph list.
 /// 3. Return the final glyph IDs (length may differ from the cmap'd
 ///    input when a LookupType-2 lookup splits or deletes glyphs, or
 ///    when a LookupType-4 lookup collapses N components into one
@@ -486,19 +497,122 @@ fn shape_text_inner(
                         }
                     }
                 }
+                Some(5) => {
+                    // LookupType 5 (Contextual Substitution): match an
+                    // input glyph window (Format 1 sequence rules,
+                    // Format 2 class-based, Format 3 coverage-based) and
+                    // dispatch the rule's nested `SequenceLookupRecord`
+                    // sub-lookups at the matched window. The dependency
+                    // resolves the whole rule (including the recursive
+                    // sub-lookup expansion) and returns the rewritten
+                    // run; this layer only owns the left-to-right scan.
+                    gids = apply_context_lookup(font, lookup_idx, gids, false);
+                }
+                Some(6) => {
+                    // LookupType 6 (Chained Contexts Substitution): as
+                    // type 5 but the match window is bracketed by a
+                    // backtrack (preceding) and lookahead (following)
+                    // coverage sequence. Same scan + nested-record
+                    // dispatch model — `gsub_apply_lookup_type_6`
+                    // returns the rewritten run on a match.
+                    gids = apply_context_lookup(font, lookup_idx, gids, true);
+                }
+                Some(8) => {
+                    // LookupType 8 (Reverse Chaining Contextual Single
+                    // Substitution): one input glyph → one substitute,
+                    // gated on backtrack + lookahead coverage. Per the
+                    // GSUB chapter "in processing a reverse chaining
+                    // substitution, i begins at the logical end of the
+                    // string and moves to the beginning" — we therefore
+                    // walk the buffer right-to-left so an earlier
+                    // substitution can become the lookahead context of a
+                    // later (more-leftward) one, which is the entire
+                    // point of the reverse-processing requirement.
+                    apply_reverse_chain_lookup(font, lookup_idx, &mut gids);
+                }
                 _ => {
                     // Any other declared type is silently skipped —
-                    // the round-89/125/128/156 surface is single +
-                    // multiple + ligature + alternate substitution
-                    // only. Contextual / Chained / Reverse-Chained
-                    // lookups belong to the broader `apply_one_lookup`
-                    // walker in `shaping::general`.
+                    // GPOS lookups referenced by a GSUB feature tag,
+                    // or a future LookupType the dependency doesn't yet
+                    // decode. `oxideav-ttf` returns `None` for a wrong-
+                    // type call, so this arm only fires for types with
+                    // no GSUB entry point at all.
                 }
             }
         }
     }
 
     gids
+}
+
+/// Apply a single GSUB contextual (LookupType 5) or chained-contextual
+/// (LookupType 6) lookup across `gids`, scanning every input position
+/// left-to-right. Returns the rewritten run.
+///
+/// `chained` selects the entry point: `false` → `gsub_apply_lookup_type_5`
+/// (no backtrack / lookahead, input window only), `true` →
+/// `gsub_apply_lookup_type_6` (backtrack + lookahead bracketing).
+///
+/// Both entry points take `(lookup_index, &run, pos)` and return
+/// `Some(rewritten_run)` when a sub-table matches around `pos`, with all
+/// nested `SequenceLookupRecord` sub-lookups already dispatched by the
+/// dependency. On a hit we adopt the rewrite and advance by one position
+/// — re-examining the next slot rather than the just-rewritten one,
+/// matching the `apply_one_lookup` strategy in [`crate::shaping::general`]
+/// and avoiding a self-feeding loop when a rule's output re-satisfies its
+/// own context. Iteration is bounded by `4 * len + 8` as a belt-and-
+/// braces guard against a pathological font whose rewrite grows the run.
+fn apply_context_lookup(
+    font: &Font<'_>,
+    lookup_idx: u16,
+    gids: Vec<u16>,
+    chained: bool,
+) -> Vec<u16> {
+    let mut current = gids;
+    if current.is_empty() {
+        return current;
+    }
+    let mut pos = 0usize;
+    let mut iter_budget = current.len() * 4 + 8;
+    while pos < current.len() && iter_budget > 0 {
+        iter_budget -= 1;
+        let hit = if chained {
+            font.gsub_apply_lookup_type_6(lookup_idx, &current, pos)
+        } else {
+            font.gsub_apply_lookup_type_5(lookup_idx, &current, pos)
+        };
+        if let Some(rewritten) = hit {
+            current = rewritten;
+        }
+        pos += 1;
+    }
+    current
+}
+
+/// Apply a single GSUB reverse-chaining contextual single-substitution
+/// (LookupType 8) lookup across `gids` in place.
+///
+/// The GSUB chapter requires reverse-order processing: "in processing a
+/// reverse chaining substitution, i begins at the logical end of the
+/// string and moves to the beginning." We therefore walk `pos` from the
+/// last glyph back to the first. `gsub_apply_lookup_type_8` answers, per
+/// position, "does the input coverage cover `gids[pos]` and do the
+/// backtrack / lookahead coverages match the surrounding glyphs?" —
+/// returning the single replacement glyph on a hit. Because the lookup
+/// is single-substitution it never changes the run length, so the
+/// right-to-left walk over fixed indices is exact: a substitution made
+/// at a higher index is already in place when a lower index inspects it
+/// as part of its lookahead context, which is the behaviour the
+/// reverse-processing rule exists to guarantee.
+fn apply_reverse_chain_lookup(font: &Font<'_>, lookup_idx: u16, gids: &mut [u16]) {
+    if gids.is_empty() {
+        return;
+    }
+    for pos in (0..gids.len()).rev() {
+        if let Some(rep) = font.gsub_apply_lookup_type_8(lookup_idx, gids, pos) {
+            gids[pos] = rep;
+        }
+    }
 }
 
 /// Resolve `feature_tag` against the broadened script-tag priority
