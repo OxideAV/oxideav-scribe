@@ -73,14 +73,19 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 ### Shaping (GSUB / GPOS)
 
 - **GSUB substitution** — LookupType 1 (single), 2 (multiple), 3
-  (alternate), 4 (ligature) are applied through the caller-driven
-  `Face::shape_text(text, features)` surface; contextual / chained /
-  reverse-chained (types 5 / 6 / 8) flow through `Shaper::shape` /
-  `FaceChain::shape`. The required-feature `ccmp` runs as a pre-ligature
-  pass and `calt` as a post-ligature pass for every Latin / Cyrillic /
-  Greek / DFLT run. Worked examples: `face.shape_text("fi", &[*b"liga"])`
-  returns a single fi-ligature glyph; `face.shape_text("Hi", &[*b"smcp"])`
-  returns small-caps where the font ships them.
+  (alternate), 4 (ligature), 5 (contextual), 6 (chained-contextual), and
+  8 (reverse-chaining contextual single) are all applied through the
+  caller-driven `Face::shape_text(text, features)` surface as well as
+  through the auto-probe `Shaper::shape` / `FaceChain::shape` path. The
+  contextual types dispatch each rule's nested `SequenceLookupRecord`
+  sub-lookups; type 8 is processed right-to-left per the GSUB chapter's
+  reverse-processing requirement. The required-feature `ccmp` runs as a
+  pre-ligature pass and `calt` as a post-ligature pass for every Latin /
+  Cyrillic / Greek / DFLT run. Worked examples:
+  `face.shape_text("fi", &[*b"liga"])` returns a single fi-ligature
+  glyph; `face.shape_text("Hi", &[*b"smcp"])` returns small-caps where
+  the font ships them; a `frac`/`calt` contextual rule the caller
+  requests now fires instead of passing through.
 - **GPOS positioning** — single adjustment (type 1), pair kerning
   (type 2), cursive attachment (type 3, flag-clear semantics),
   mark-to-base (type 4), mark-to-ligature (type 5), mark-to-mark

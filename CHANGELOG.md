@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GSUB contextual / chained / reverse-chained substitution on the caller-driven path (round 353)
+
+`Face::shape_text` and its siblings (`shape_text_with_script`, the
+alternate-index variants — all bodied by
+`shaping::feature_subst::shape_text_inner`) now dispatch GSUB
+**LookupType 5 (Contextual)**, **LookupType 6 (Chained Contexts)**, and
+**LookupType 8 (Reverse Chaining Contextual Single)** when a requested
+feature references them. Previously these were silently skipped on the
+caller-driven surface (only the always-on `ccmp` / `calt` passes covered
+them), so a caller explicitly asking for e.g. `calt` or `frac` through
+`shape_text` got a contextual no-op. Types 5/6 flow through a new
+`apply_context_lookup` left-to-right scan (bounded against a self-feeding
+rewrite); type 8 flows through `apply_reverse_chain_lookup`, which walks
+the buffer right-to-left per the GSUB chapter's reverse-processing
+requirement.
+
+### Fixed — always-on GSUB type-8 reverse-chaining now processes right-to-left (round 353)
+
+`shaping::general::apply_one_lookup` (the always-on `ccmp` / `calt`
+walker behind `Shaper::shape`) dispatched LookupType 8 left-to-right, a
+documented deferral that could fire a rule on a not-yet-substituted
+lookahead glyph. It now uses the same back-to-front walk as the
+caller-driven path.
+
+Validated by `tests/round353_contextual_subst.rs` — synthetic TTFs
+(`SequenceContextFormat3` / `ChainedSequenceContextFormat3` /
+`ReverseChainSingleSubstFormat1`) proving each type fires on its match,
+is inert without its context, and (type 8) processes right-to-left, plus
+real-fixture Inter smoke tests.
+
 ### Added — GPOS contextual + chained-contextual positioning (round 343)
 
 The run-level positioning pass now applies GPOS **LookupType 7
