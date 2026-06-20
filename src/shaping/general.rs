@@ -166,6 +166,28 @@ fn apply_one_lookup(font: &Font<'_>, lookup_idx: u16, ty: u16, gids: &[u16]) -> 
     if current.is_empty() {
         return current;
     }
+
+    // Reverse-chaining contextual single substitution (LookupType 8)
+    // must process the input right-to-left: per the GSUB chapter, "in
+    // processing a reverse chaining substitution, i begins at the
+    // logical end of the string and moves to the beginning." It is a
+    // single-substitution lookup (one glyph → one glyph), so the run
+    // length never changes and a back-to-front walk over fixed indices
+    // is exact — a substitution made at a higher index is in place when
+    // a lower index inspects it as part of its lookahead context, which
+    // is the behaviour the reverse-processing rule exists to guarantee.
+    // The forward `while pos` loop below cannot express this (it would
+    // let an earlier position see a not-yet-substituted lookahead glyph
+    // and fire when it should not), so type 8 is handled here.
+    if ty == 8 {
+        for pos in (0..current.len()).rev() {
+            if let Some(rep) = font.gsub_apply_lookup_type_8(lookup_idx, &current, pos) {
+                current[pos] = rep;
+            }
+        }
+        return current;
+    }
+
     let mut pos = 0usize;
     let mut iter_budget = current.len() * 4 + 8;
     while pos < current.len() && iter_budget > 0 {
@@ -226,18 +248,9 @@ fn apply_one_lookup(font: &Font<'_>, lookup_idx: u16, ty: u16, gids: &[u16]) -> 
                     pos += 1;
                 }
             }
-            8 => {
-                // Reverse-chained context. Spec requires reverse-text
-                // processing — we walk left-to-right here because the
-                // per-position call answers "does the rule fire at
-                // gids[pos]?" symmetrically. A future round can lift
-                // this to true reverse traversal when an
-                // Arabic-terminal-form font ships type-8 ccmp.
-                if let Some(rep) = font.gsub_apply_lookup_type_8(lookup_idx, &current, pos) {
-                    current[pos] = rep;
-                }
-                pos += 1;
-            }
+            // LookupType 8 (reverse-chaining) is handled by the
+            // right-to-left walk above and returns before this loop, so
+            // it never reaches here.
             _ => {
                 pos += 1;
             }
