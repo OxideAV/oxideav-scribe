@@ -472,6 +472,41 @@ pub fn shape_run_with_font(
         component_counts = vec![1u16; shaped_gids.len()];
     }
 
+    // Steps 3..7: GPOS positioning on the now-substituted glyph run.
+    position_run_with_font(font, &shaped_gids, &component_counts, scale, face_idx)
+}
+
+/// Run the full GPOS positioning pass (steps 3..7 of the shaping
+/// pipeline) over an **already-GSUB-substituted** glyph run.
+///
+/// `shaped_gids` is the post-substitution glyph buffer; `component_counts`
+/// runs parallel to it (1 for an un-ligated glyph, N for an N-component
+/// ligature glyph formed by GSUB LookupType 4) so the mark-to-ligature
+/// pass (GPOS LookupType 5) can associate a trailing mark with the right
+/// ligature component. `scale = size_px / units_per_em` converts the
+/// font's design units to raster pixels. `face_idx` tags every output
+/// glyph with the [`crate::FaceChain`] face it came from.
+///
+/// This is the positioning half of [`shape_run_with_font`], split out so
+/// both the always-on pipeline and the caller-driven feature surface
+/// ([`crate::shaping::feature_subst`]) can run the same kerning →
+/// SinglePos → mark-to-base / mark-to-mark / mark-to-ligature → cursive →
+/// contextual-positioning sequence on whatever glyph run their GSUB pass
+/// produced. The ordering matches the module-level pipeline docs: each
+/// later pass sees the geometry the earlier ones established.
+///
+/// When `component_counts` is shorter than `shaped_gids` (e.g. a caller
+/// that doesn't track ligature components), the missing entries default
+/// to single-component — the mark-to-ligature path simply never fires for
+/// those slots, falling back to mark-to-base, which is the correct
+/// graceful degradation.
+pub fn position_run_with_font(
+    font: &oxideav_ttf::Font<'_>,
+    shaped_gids: &[u16],
+    component_counts: &[u16],
+    scale: f32,
+    face_idx: u16,
+) -> Vec<PositionedGlyph> {
     // Step 3: kerning. A GPOS PairPos (LookupType 2) / legacy `kern`
     // pair adjustment is, per OFF §6.4 (ISO/IEC 14496-22:2019), a
     // change to the **xAdvance of the first glyph in the pair** — the

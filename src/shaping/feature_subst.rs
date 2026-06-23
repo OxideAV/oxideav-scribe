@@ -343,6 +343,259 @@ pub fn shape_text_with_script_and_alternates_with_font(
     shape_text_inner(font, text, &features, Some(script_tag), feature_alternates)
 }
 
+/// Round 362 — shape `text` against `font` with the caller-specified
+/// GSUB feature tags applied **and then positioned** through the full
+/// GPOS pass, returning [`PositionedGlyph`]s rather than bare glyph IDs.
+///
+/// Where [`shape_text_with_font`] stops after GSUB substitution and
+/// hands back the post-substitution glyph IDs, this entry point bridges
+/// the substitution half to the positioning half: the substituted run is
+/// fed to [`crate::shaper::position_run_with_font`], which applies pair
+/// kerning, SinglePos (LookupType 1), mark-to-base / mark-to-mark /
+/// mark-to-ligature attachment (LookupTypes 4 / 6 / 5), cursive
+/// attachment (LookupType 3), and contextual / chained-contextual
+/// positioning (LookupTypes 7 / 8). The result is a render-ready run with
+/// per-glyph advances and offsets, exactly as the always-on
+/// [`crate::shaper::shape_run_with_font`] pipeline produces — but with
+/// the caller's optional/discretionary features (`smcp`, `frac`, `sups`,
+/// `onum`, stylistic sets, …) folded into the substitution stage.
+///
+/// `size_px` and the font's `unitsPerEm` set the design-unit→raster-pixel
+/// scale. `face_idx` tags every output glyph (0 for a single-face
+/// caller).
+///
+/// Component-count tracking: when a requested feature dispatches a
+/// LookupType-4 ligature, the collapsed glyph's component count is
+/// recorded so the mark-to-ligature positioning path can associate a
+/// trailing mark with the right ligature component. Length-changing
+/// contextual rewrites (LookupTypes 5 / 6) reset every component count to
+/// 1 — the mark-to-ligature path then simply doesn't fire on that run,
+/// falling back to mark-to-base (the correct graceful degradation; see
+/// [`crate::shaper::position_run_with_font`]).
+///
+/// Empty `text` or `size_px <= 0.0` yields an empty `Vec`. Empty
+/// `features` positions the pure-cmap run — equivalent to the always-on
+/// pipeline minus its `ccmp` / `calt` passes.
+pub fn position_text_with_features_with_font(
+    font: &Font<'_>,
+    text: &str,
+    size_px: f32,
+    features: &[[u8; 4]],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
+    position_text_inner(font, text, size_px, features, None, &[], face_idx)
+}
+
+/// Round 362 — explicit-script-tag mirror of
+/// [`position_text_with_features_with_font`].
+///
+/// Every requested feature is resolved against `script_tag` alone (no
+/// priority walk), then the substituted run is positioned through the
+/// full GPOS pass. Use this when the caller already knows the run's
+/// script (e.g. from a script-segmenter) so a feature published under
+/// two scripts resolves deterministically.
+pub fn position_text_with_script_and_features_with_font(
+    font: &Font<'_>,
+    text: &str,
+    size_px: f32,
+    script_tag: [u8; 4],
+    features: &[[u8; 4]],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
+    position_text_inner(
+        font,
+        text,
+        size_px,
+        features,
+        Some(script_tag),
+        &[],
+        face_idx,
+    )
+}
+
+/// Round 362 — alternate-index-aware mirror of
+/// [`position_text_with_features_with_font`].
+///
+/// `feature_alternates` carries `(feature_tag, alternate_index)` pairs
+/// consumed by Type-3 (Alternate) lookups exactly as in
+/// [`shape_text_with_alternates_with_font`]; the substituted run is then
+/// positioned through the full GPOS pass. The applied feature set is the
+/// union of the tags in `feature_alternates`.
+pub fn position_text_with_alternates_with_font(
+    font: &Font<'_>,
+    text: &str,
+    size_px: f32,
+    feature_alternates: &[([u8; 4], u16)],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
+    let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
+    position_text_inner(
+        font,
+        text,
+        size_px,
+        &features,
+        None,
+        feature_alternates,
+        face_idx,
+    )
+}
+
+/// Internal positioned mirror of [`shape_text_inner`]. Runs the same
+/// per-feature GSUB dispatch while tracking each output glyph's ligature
+/// component count, then positions the substituted run through
+/// [`crate::shaper::position_run_with_font`].
+///
+/// The component-count vector runs parallel to the glyph buffer: 1 for an
+/// un-ligated glyph, N for an N-component ligature collapsed by a
+/// LookupType-4 lookup. Type-1 / Type-3 substitutions are
+/// length-preserving and leave the component count of the slot intact.
+/// Type-2 (multiple) substitution splits one glyph into several, all of
+/// which become single-component. A length-changing Type-5 / Type-6
+/// contextual rewrite cannot be tracked component-wise (the dependency
+/// returns an opaque rewritten run), so the whole component vector resets
+/// to all-1 — matching the `calt`-mutation fallback in
+/// [`crate::shaper::shape_run_with_font`].
+fn position_text_inner(
+    font: &Font<'_>,
+    text: &str,
+    size_px: f32,
+    features: &[[u8; 4]],
+    script_tag: Option<[u8; 4]>,
+    feature_alternates: &[([u8; 4], u16)],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
+    if text.is_empty() || size_px <= 0.0 || !size_px.is_finite() {
+        return Vec::new();
+    }
+    let upem = font.units_per_em().max(1) as f32;
+    let scale = size_px / upem;
+
+    // Step 1: cmap.
+    let mut gids: Vec<u16> = text
+        .chars()
+        .map(|ch| font.glyph_index(ch).unwrap_or(0))
+        .collect();
+    // Parallel ligature-component tally — every cmap glyph is a single
+    // component until a Type-4 ligature collapses several into one.
+    let mut comps: Vec<u16> = vec![1u16; gids.len()];
+
+    if features.is_empty() {
+        return crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx);
+    }
+
+    let lookup_list = font.gsub_lookup_list();
+    let lookup_type_of = |idx: u16| -> Option<u16> {
+        lookup_list
+            .iter()
+            .find(|(i, _, _)| *i == idx)
+            .map(|(_, ty, _)| *ty)
+    };
+
+    for feature_tag in features {
+        let lookups = match script_tag {
+            Some(tag) => resolve_feature_lookups_single_script(font, tag, feature_tag),
+            None => resolve_feature_lookups(font, feature_tag),
+        };
+        let alt_index: u16 = feature_alternates
+            .iter()
+            .find(|(t, _)| t == feature_tag)
+            .map(|(_, idx)| *idx)
+            .unwrap_or(0);
+        for lookup_idx in lookups {
+            match lookup_type_of(lookup_idx) {
+                Some(1) => {
+                    // Single substitution — length-preserving, leaves
+                    // every slot's component count untouched.
+                    for slot in gids.iter_mut() {
+                        if let Some(rep) = font.gsub_apply_lookup_type_1(lookup_idx, *slot) {
+                            *slot = rep;
+                        }
+                    }
+                }
+                Some(2) => {
+                    // Multiple substitution — one glyph splits into N;
+                    // each output glyph is single-component.
+                    let mut pos = 0usize;
+                    while pos < gids.len() {
+                        if let Some(seq) = font.gsub_apply_lookup_type_2(lookup_idx, gids[pos]) {
+                            let new_len = seq.len();
+                            gids.splice(pos..pos + 1, seq);
+                            comps.splice(pos..pos + 1, vec![1u16; new_len]);
+                            pos += new_len;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                }
+                Some(3) => {
+                    // Alternate substitution — length-preserving.
+                    for slot in gids.iter_mut() {
+                        if let Some(rep) =
+                            font.gsub_apply_lookup_type_3(lookup_idx, *slot, alt_index)
+                        {
+                            *slot = rep;
+                        }
+                    }
+                }
+                Some(4) => {
+                    // Ligature substitution — N components collapse into
+                    // one glyph; record the component count so the
+                    // mark-to-ligature positioning path can target the
+                    // right component.
+                    let mut pos = 0usize;
+                    while pos < gids.len() {
+                        if let Some((replacement, consumed)) =
+                            font.gsub_apply_lookup_type_4(lookup_idx, &gids[pos..])
+                        {
+                            if consumed == 0 {
+                                pos += 1;
+                                continue;
+                            }
+                            gids.splice(pos..pos + consumed, std::iter::once(replacement));
+                            let comp = consumed.min(u16::MAX as usize) as u16;
+                            comps.splice(pos..pos + consumed, std::iter::once(comp));
+                            pos += 1;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                }
+                Some(5) => {
+                    let before = gids.len();
+                    gids = apply_context_lookup(font, lookup_idx, gids, false);
+                    if gids.len() != before {
+                        comps = vec![1u16; gids.len()];
+                    }
+                }
+                Some(6) => {
+                    let before = gids.len();
+                    gids = apply_context_lookup(font, lookup_idx, gids, true);
+                    if gids.len() != before {
+                        comps = vec![1u16; gids.len()];
+                    }
+                }
+                Some(8) => {
+                    // Reverse-chaining single substitution —
+                    // length-preserving.
+                    apply_reverse_chain_lookup(font, lookup_idx, &mut gids);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Belt-and-braces: a malformed font whose contextual rewrites left
+    // the two buffers out of sync shouldn't be able to mis-index the
+    // mark-to-ligature pass — `position_run_with_font` already tolerates
+    // a short `comps` (missing entries default to single-component), but
+    // a length mismatch the other way is normalised here.
+    if comps.len() != gids.len() {
+        comps = vec![1u16; gids.len()];
+    }
+
+    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+}
+
 /// Internal shared body for [`shape_text_with_font`] and
 /// [`shape_text_with_script_with_font`] (and the round-183 alternate-
 /// index variants). When `script_tag` is `Some(tag)`, every feature is
@@ -1281,6 +1534,139 @@ mod tests {
                     );
                 }
             }
+        })
+        .unwrap();
+    }
+
+    // ---- Round 362: positioned caller-feature entry points ----
+
+    /// The positioned path's glyph IDs must equal the GID-only path's
+    /// output: positioning never changes which glyph occupies each
+    /// slot, only its advance / offset. We compare against the
+    /// `shape_text_with_font` reference for `smcp` on Inter.
+    #[test]
+    fn position_smcp_gids_match_substitution_path() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let gids = shape_text_with_font(font, "abc", &[*b"smcp"]);
+            let placed = position_text_with_features_with_font(font, "abc", 32.0, &[*b"smcp"], 0);
+            let placed_gids: Vec<u16> = placed.iter().map(|g| g.glyph_id).collect();
+            assert_eq!(
+                gids, placed_gids,
+                "positioned path must carry the same small-cap GIDs"
+            );
+            // Every visible glyph gets a positive advance from the
+            // font's hmtx — small caps are not zero-width.
+            assert!(
+                placed.iter().all(|g| g.x_advance > 0.0),
+                "small-cap glyphs must have positive advances"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Empty feature list positions the pure-cmap run. The glyph IDs
+    /// must equal the cmap output and the advances must be the font's
+    /// hmtx advances (in pixels).
+    #[test]
+    fn position_empty_features_is_cmap_positioned() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let placed = position_text_with_features_with_font(font, "abc", 24.0, &[], 0);
+            let cmap: Vec<u16> = "abc"
+                .chars()
+                .map(|c| font.glyph_index(c).unwrap_or(0))
+                .collect();
+            let placed_gids: Vec<u16> = placed.iter().map(|g| g.glyph_id).collect();
+            assert_eq!(placed_gids, cmap);
+            assert_eq!(placed.len(), 3);
+            // Non-zero advances for the three letters.
+            assert!(placed.iter().all(|g| g.x_advance > 0.0));
+        })
+        .unwrap();
+    }
+
+    /// A `liga`-collapsed run is positioned as one glyph, and its
+    /// advance comes from the ligature glyph's own hmtx — not the sum
+    /// of the component advances. DejaVu's "fi" → fi-ligature.
+    #[test]
+    fn position_liga_collapses_and_advances_once() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let placed = position_text_with_features_with_font(font, "fi", 40.0, &[*b"liga"], 0);
+            assert_eq!(
+                placed.len(),
+                1,
+                "the positioned `liga` run is a single ligature glyph"
+            );
+            assert!(placed[0].x_advance > 0.0);
+            // The ligature's advance equals the font's hmtx advance for
+            // that gid, scaled — verify against the direct metric.
+            let lig_gid = placed[0].glyph_id;
+            let scale = 40.0 / font.units_per_em().max(1) as f32;
+            let want = font.glyph_advance(lig_gid) as f32 * scale;
+            assert!(
+                (placed[0].x_advance - want).abs() < 1e-3,
+                "ligature advance {} must equal scaled hmtx {want}",
+                placed[0].x_advance
+            );
+        })
+        .unwrap();
+    }
+
+    /// The explicit-script-tag positioned entry point resolves the
+    /// feature against the given script and produces the same GIDs as
+    /// the GID-only script-explicit path.
+    #[test]
+    fn position_script_explicit_matches_substitution() {
+        let bytes = INTER_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("Inter parses");
+        face.with_font(|font| {
+            let gids = shape_text_with_script_with_font(font, "abc", *b"latn", &[*b"smcp"]);
+            let placed = position_text_with_script_and_features_with_font(
+                font,
+                "abc",
+                18.0,
+                *b"latn",
+                &[*b"smcp"],
+                0,
+            );
+            let placed_gids: Vec<u16> = placed.iter().map(|g| g.glyph_id).collect();
+            assert_eq!(gids, placed_gids);
+        })
+        .unwrap();
+    }
+
+    /// `face_idx` is propagated onto every positioned glyph.
+    #[test]
+    fn position_propagates_face_idx() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            let placed = position_text_with_features_with_font(font, "abc", 16.0, &[], 3);
+            assert!(placed.iter().all(|g| g.face_idx == 3));
+        })
+        .unwrap();
+    }
+
+    /// `size_px <= 0` and empty text both yield an empty positioned
+    /// run.
+    #[test]
+    fn position_degenerate_inputs_are_empty() {
+        let bytes = DEJAVU_BYTES.to_vec();
+        let face = crate::Face::from_ttf_bytes(bytes).expect("DejaVu parses");
+        face.with_font(|font| {
+            assert!(position_text_with_features_with_font(font, "", 16.0, &[], 0).is_empty());
+            assert!(position_text_with_features_with_font(font, "abc", 0.0, &[], 0).is_empty());
+            assert!(position_text_with_features_with_font(font, "abc", -4.0, &[], 0).is_empty());
+            assert!(
+                position_text_with_alternates_with_font(font, "abc", 16.0, &[(*b"aalt", 0)], 0)
+                    .len()
+                    <= 3
+            );
         })
         .unwrap();
     }
