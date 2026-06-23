@@ -109,6 +109,19 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   script-tag priority list (Latin / Cyrillic / Greek / DFLT / Arabic /
   Hebrew / Thai / Lao / the Indic v1+v2 scripts / Khmer / Myanmar /
   Hangul / Han / Kana).
+- **Positioned caller-feature shaping** — `Face::position_text(text,
+  size_px, features)` (and the explicit-script `position_text_with_script`
+  mirror, plus `FaceChain::shape_with_features` for multi-face fallback)
+  run the caller's requested optional/discretionary features (`smcp`,
+  `frac`, `sups` / `subs`, `onum` / `lnum` / `pnum` / `tnum`, `zero`,
+  stylistic sets, …) through GSUB substitution **and then** the full GPOS
+  positioning pass, returning render-ready `PositionedGlyph`s with
+  per-glyph advances and offsets. Previously the caller-feature surface
+  stopped at GSUB and handed back bare glyph IDs; the substituted run now
+  gets pair kerning, SinglePos, mark-to-base / mark-to-mark /
+  mark-to-ligature attachment, cursive attachment, and contextual
+  positioning. Ligature component counts are tracked through the Type-4
+  collapse so mark-to-ligature attachment targets the right component.
 
 ### Complex-script shaping
 

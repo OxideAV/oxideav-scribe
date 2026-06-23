@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — positioned caller-feature shaping: GSUB features through the full GPOS pass (round 362)
+
+The caller-driven GSUB feature surface (`Face::shape_text` and friends)
+previously stopped after substitution and returned bare glyph IDs — a
+caller requesting `smcp` / `frac` / `sups` / a stylistic set got the
+reshaped glyphs but no advances, kerning, mark attachment, or contextual
+positioning. The always-on `Shaper::shape` pipeline ran the full GPOS
+pass but only over the hard-coded `ccmp` / `liga` / `calt` set, so the
+two halves never met.
+
+Round 362 bridges them. The GPOS positioning half of `shape_run_with_font`
+is factored into a reusable `shaper::position_run_with_font(font, gids,
+component_counts, scale, face_idx)`, and a positioned caller-feature
+surface is built on top:
+
+- `Face::position_text(text, size_px, features)` and the explicit-script
+  `Face::position_text_with_script` mirror — single-face shaping with
+  caller features, returning `PositionedGlyph`s.
+- `FaceChain::shape_with_features(text, size_px, features)` — multi-face
+  fallback variant; reuses the chain's per-codepoint face assignment plus
+  Arabic-joining / Indic-cluster pre-shaping, then positions each per-face
+  run with the requested features.
+- `shaping::{position_text_with_features_with_font,
+  position_text_with_script_and_features_with_font,
+  position_text_with_alternates_with_font,
+  position_gids_with_features_with_font}` — the lower-level entry points.
+
+The substituted run flows through pair kerning, SinglePos (type 1),
+mark-to-base / mark-to-mark / mark-to-ligature attachment (types 4 / 6 /
+5), cursive attachment (type 3), and contextual / chained-contextual
+positioning (types 7 / 8). Ligature component counts are tracked through
+the Type-4 collapse so mark-to-ligature attachment targets the right
+component; length-changing contextual rewrites reset the tally to
+single-component (graceful mark-to-base fallback). 14 new tests (6 lib +
+8 `round362_positioned_features.rs`).
+
 ### Added — GSUB contextual / chained / reverse-chained substitution on the caller-driven path (round 353)
 
 `Face::shape_text` and its siblings (`shape_text_with_script`, the
