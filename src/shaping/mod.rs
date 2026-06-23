@@ -50,10 +50,10 @@ pub use arabic::{
 };
 pub use arabic_pf::presentation_form;
 pub use feature_subst::{
-    position_text_with_alternates_with_font, position_text_with_features_with_font,
-    position_text_with_script_and_features_with_font, shape_text_with_alternates_with_font,
-    shape_text_with_font, shape_text_with_script_and_alternates_with_font,
-    shape_text_with_script_with_font,
+    position_gids_with_features_with_font, position_text_with_alternates_with_font,
+    position_text_with_features_with_font, position_text_with_script_and_features_with_font,
+    shape_text_with_alternates_with_font, shape_text_with_font,
+    shape_text_with_script_and_alternates_with_font, shape_text_with_script_with_font,
 };
 pub use general::{apply_calt, apply_ccmp};
 pub use indic::{

@@ -175,6 +175,76 @@ impl FaceChain {
         Ok(out)
     }
 
+    /// Shape `text` with full chain fallback **and** the caller-requested
+    /// optional/discretionary OpenType GSUB features applied.
+    ///
+    /// This is the chain-level entry point onto the round-362
+    /// positioned caller-feature surface
+    /// ([`crate::shaping::position_gids_with_features_with_font`]). Where
+    /// [`Self::shape`] applies only the always-on features (`ccmp` /
+    /// `liga` / `calt`), this method additionally runs the features the
+    /// caller names — typical entries are `smcp` (small caps), `c2sc`,
+    /// `case`, `frac`, `sups` / `subs`, `numr` / `dnom`, `onum` / `lnum`
+    /// / `pnum` / `tnum` (figure styles), `zero` (slashed zero), `ordn`,
+    /// `salt`, `ss01..ss20` (stylistic sets), `dlig`, `swsh`, and the
+    /// `cv01..cv99` per-character variant family — and then positions the
+    /// substituted run through the full GPOS pass (kerning, SinglePos,
+    /// mark-to-base / mark-to-mark / mark-to-ligature, cursive,
+    /// contextual positioning).
+    ///
+    /// Feature application order is the caller's `features` order. Each
+    /// per-face run is shaped within its own face (GSUB / GPOS lookups
+    /// are face-local), so a fallback face's run gets the same feature
+    /// list resolved against *that* face's script tables — a feature the
+    /// fallback face doesn't publish is a silent no-op for its run.
+    ///
+    /// An empty `features` slice is equivalent to [`Self::shape`]'s
+    /// always-on path *minus* the `ccmp` / `calt` passes: pure cmap +
+    /// GPOS positioning. Callers that want the always-on features AND
+    /// their own should include `ccmp` / `calt` / `liga` explicitly.
+    ///
+    /// The Arabic joining + Indic cluster pre-shaping that
+    /// [`Self::shape`] performs in [`Self::assign_codepoints`] runs here
+    /// too, so a feature-requesting caller still gets correct
+    /// presentation-form / cluster ordering before the GSUB feature pass.
+    pub fn shape_with_features(
+        &self,
+        text: &str,
+        size_px: f32,
+        features: &[[u8; 4]],
+    ) -> Result<Vec<PositionedGlyph>, Error> {
+        if text.is_empty() || size_px <= 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let assigned = self.assign_codepoints(text)?;
+        if assigned.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut out: Vec<PositionedGlyph> = Vec::with_capacity(assigned.len());
+        let mut run_start = 0usize;
+        while run_start < assigned.len() {
+            let face_idx = assigned[run_start].0;
+            let mut run_end = run_start + 1;
+            while run_end < assigned.len() && assigned[run_end].0 == face_idx {
+                run_end += 1;
+            }
+            let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
+            let face = &self.faces[face_idx as usize];
+            let mut run_glyphs = face.with_font(|font| {
+                let upem = font.units_per_em().max(1) as f32;
+                let scale = size_px / upem;
+                crate::shaping::position_gids_with_features_with_font(
+                    font, &gids, scale, features, face_idx,
+                )
+            })?;
+            out.append(&mut run_glyphs);
+            run_start = run_end;
+        }
+        Ok(out)
+    }
+
     /// Per-codepoint face assignment. For every char in `text`, walk
     /// the chain and pick the first face whose `glyph_index` returns a
     /// non-zero glyph id. If none does, fall back to face 0 with glyph

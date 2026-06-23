@@ -942,6 +942,75 @@ impl Face {
         .unwrap_or_default()
     }
 
+    /// Round 362 — shape `text` with the caller-requested GSUB features
+    /// applied **and positioned** through the full GPOS pass, returning
+    /// [`crate::shaper::PositionedGlyph`]s with per-glyph advances and
+    /// offsets.
+    ///
+    /// Where [`Self::shape_text`] stops after GSUB substitution and hands
+    /// back bare glyph IDs, this method bridges the substituted run to the
+    /// positioning pipeline (pair kerning, SinglePos, mark-to-base /
+    /// mark-to-mark / mark-to-ligature attachment, cursive attachment, and
+    /// contextual / chained-contextual positioning). The result is a
+    /// render-ready run — the same shape [`crate::Shaper::shape`]
+    /// produces, but with the caller's optional/discretionary features
+    /// (`smcp` / `frac` / `sups` / `onum` / stylistic sets / …) folded in.
+    ///
+    /// `size_px` and the face's `unitsPerEm` set the design-unit→pixel
+    /// scale; the output `x_advance` / `x_offset` / `y_offset` are in
+    /// raster pixels. Every glyph is tagged `face_idx = 0` (single-face);
+    /// use [`crate::FaceChain::shape_with_features`] for the multi-face
+    /// fallback variant.
+    ///
+    /// Returns an empty vec for OTF (CFF) faces, empty `text`, or
+    /// `size_px <= 0.0` — same constraints as [`Self::shape_text`] plus
+    /// the size guard.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Small caps + slashed zero, positioned at 16px.
+    /// let placed = face.position_text("Hello 0", 16.0, &[*b"smcp", *b"zero"]);
+    /// # let _ = placed;
+    /// # }
+    /// ```
+    pub fn position_text(
+        &self,
+        text: &str,
+        size_px: f32,
+        features: &[[u8; 4]],
+    ) -> Vec<crate::shaper::PositionedGlyph> {
+        self.with_font(|font| {
+            crate::shaping::position_text_with_features_with_font(font, text, size_px, features, 0)
+        })
+        .unwrap_or_default()
+    }
+
+    /// Round 362 — explicit-script-tag mirror of [`Self::position_text`].
+    ///
+    /// Every requested feature is resolved against `script_tag` alone (no
+    /// priority walk), then the substituted run is positioned through the
+    /// full GPOS pass. Use this when the caller already knows the run's
+    /// script so a feature published under two scripts resolves
+    /// deterministically. Same return / degenerate-input contract as
+    /// [`Self::position_text`].
+    pub fn position_text_with_script(
+        &self,
+        text: &str,
+        size_px: f32,
+        script_tag: [u8; 4],
+        features: &[[u8; 4]],
+    ) -> Vec<crate::shaper::PositionedGlyph> {
+        self.with_font(|font| {
+            crate::shaping::position_text_with_script_and_features_with_font(
+                font, text, size_px, script_tag, features, 0,
+            )
+        })
+        .unwrap_or_default()
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.

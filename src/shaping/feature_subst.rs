@@ -471,16 +471,83 @@ fn position_text_inner(
     let scale = size_px / upem;
 
     // Step 1: cmap.
-    let mut gids: Vec<u16> = text
+    let raw_gids: Vec<u16> = text
         .chars()
         .map(|ch| font.glyph_index(ch).unwrap_or(0))
         .collect();
-    // Parallel ligature-component tally — every cmap glyph is a single
+
+    let (gids, comps) = substitute_features_tracking_components(
+        font,
+        &raw_gids,
+        features,
+        script_tag,
+        feature_alternates,
+    );
+
+    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+}
+
+/// Round 362 — position an **already-cmap'd** glyph run through the
+/// caller-requested GSUB features and the full GPOS pass.
+///
+/// This is the pre-cmap'd sibling of
+/// [`position_text_with_features_with_font`], for callers (notably
+/// [`crate::FaceChain`]) that have already done their own
+/// codepoint→glyph mapping — including script-specific pre-shaping such
+/// as Arabic presentation-form translation or Indic cluster reorder —
+/// and want the caller-feature substitution + positioning applied to the
+/// resulting glyph IDs. `scale = size_px / unitsPerEm`.
+///
+/// The same component-count tracking, length-changing-rewrite reset, and
+/// graceful mark-to-base fallback as
+/// [`position_text_with_features_with_font`] apply.
+pub fn position_gids_with_features_with_font(
+    font: &Font<'_>,
+    raw_gids: &[u16],
+    scale: f32,
+    features: &[[u8; 4]],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
+    if raw_gids.is_empty() {
+        return Vec::new();
+    }
+    let (gids, comps) =
+        substitute_features_tracking_components(font, raw_gids, features, None, &[]);
+    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+}
+
+/// Apply the caller-requested GSUB `features` to `raw_gids`, returning
+/// the substituted glyph run alongside a parallel ligature-component
+/// tally for the GPOS mark-to-ligature pass.
+///
+/// The component-count vector runs parallel to the glyph buffer: 1 for an
+/// un-ligated glyph, N for an N-component ligature collapsed by a
+/// LookupType-4 lookup. Type-1 / Type-3 substitutions are
+/// length-preserving and leave the component count of the slot intact.
+/// Type-2 (multiple) substitution splits one glyph into several, all of
+/// which become single-component. A length-changing Type-5 / Type-6
+/// contextual rewrite cannot be tracked component-wise (the dependency
+/// returns an opaque rewritten run), so the whole component vector resets
+/// to all-1 — matching the `calt`-mutation fallback in
+/// [`crate::shaper::shape_run_with_font`].
+///
+/// `script_tag` `Some(tag)` resolves every feature against `tag` alone;
+/// `None` walks the script-tag priority list. `feature_alternates`
+/// provides per-feature Type-3 alternate indices (default 0).
+fn substitute_features_tracking_components(
+    font: &Font<'_>,
+    raw_gids: &[u16],
+    features: &[[u8; 4]],
+    script_tag: Option<[u8; 4]>,
+    feature_alternates: &[([u8; 4], u16)],
+) -> (Vec<u16>, Vec<u16>) {
+    let mut gids: Vec<u16> = raw_gids.to_vec();
+    // Parallel ligature-component tally — every input glyph is a single
     // component until a Type-4 ligature collapses several into one.
     let mut comps: Vec<u16> = vec![1u16; gids.len()];
 
     if features.is_empty() {
-        return crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx);
+        return (gids, comps);
     }
 
     let lookup_list = font.gsub_lookup_list();
@@ -593,7 +660,7 @@ fn position_text_inner(
         comps = vec![1u16; gids.len()];
     }
 
-    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+    (gids, comps)
 }
 
 /// Internal shared body for [`shape_text_with_font`] and
