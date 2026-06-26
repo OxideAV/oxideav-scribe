@@ -87,10 +87,13 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   the font ships them; a `frac`/`calt` contextual rule the caller
   requests now fires instead of passing through.
 - **GPOS positioning** — single adjustment (type 1), pair kerning
-  (type 2), cursive attachment (type 3, flag-clear semantics),
-  mark-to-base (type 4), mark-to-ligature (type 5), mark-to-mark
-  stacking (type 6), and contextual / chained-contextual positioning
-  (types 7 / 8). The contextual pass runs last so its nested per-glyph
+  (type 2), cursive attachment (type 3, both RIGHT_TO_LEFT flag states:
+  flag-clear cascades the cross-stream chain forward from the first
+  glyph, flag-set resolves it backward from the last glyph per the
+  §GPOS cursive note), mark-to-base (type 4), mark-to-ligature
+  (type 5), mark-to-mark stacking (type 6), and contextual /
+  chained-contextual positioning (types 7 / 8). The contextual pass
+  runs last so its nested per-glyph
   adjustments layer on the post-kern / post-mark / post-cursive
   geometry; it accumulates the `PosRecord` deltas the GPOS lookup
   dispatches and is gated so plain Latin faces pay one lookup-list scan.
@@ -205,9 +208,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   itself is complete; HL overrides remain caller responsibility.
 - **CFF2 variable charstrings** — the `blend` operator is not yet
   emitted (the INDEX walker is parsed for table metadata only).
-- **TrueType bytecode hinting**, **subpixel LCD filtering**, and the
-  **GPOS cursive attachment RIGHT_TO_LEFT flag-set variant** (needs
-  lookup-flag exposure in `oxideav-ttf`'s public GPOS API) — deferred.
+- **TrueType bytecode hinting** and **subpixel LCD filtering** —
+  deferred.
 
 ## Test fixtures
 
