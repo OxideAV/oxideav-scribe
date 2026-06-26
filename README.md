@@ -170,7 +170,11 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 
 ### Layout and bidirectional text
 
-- **Line layout** — line measurement + word-wrap.
+- **Line layout** — line measurement + word-wrap. `layout::wrap_lines`
+  breaks logical text to a pixel width; `layout::wrap_and_shape_lines(
+  chain, text, size_px, max_width, base_level)` is the one-call path that
+  wraps **and** shapes each produced line into a `ShapedVisualLine`
+  (bidi-ordered, render-ready), one per display line top-to-bottom.
 - **Bidi-shaped visual line** — `layout::shape_visual_line(chain, text,
   size_px, base_level) -> ShapedVisualLine` is the join between the UAX
   #9 reordering pipeline and the OpenType shaper. It partitions the line

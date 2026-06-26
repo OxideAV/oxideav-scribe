@@ -367,6 +367,48 @@ pub fn wrap_lines(
     Ok(lines)
 }
 
+/// Wrap `text` to `max_width` **and** shape each produced line into
+/// bidi-ordered positioned glyphs — the one-call path from a paragraph
+/// of logical text to render-ready visual lines.
+///
+/// This composes [`wrap_lines`] (the width-constrained break finder,
+/// which measures candidate lines with the primary face's shaper) with
+/// [`shape_visual_line`] (the per-line UAX #9 reorder + shape). Each
+/// returned [`ShapedVisualLine`] is one display line whose `glyphs` a
+/// renderer paints left-to-right, stacking lines top-to-bottom by the
+/// face's line height.
+///
+/// `base_level` is the HL1 override applied to **every** line: `Some(0)`
+/// forces LTR, `Some(1)` forces RTL, `None` lets each line resolve its
+/// own base from its first strong character (P2 / P3). A caller that
+/// wants a single paragraph direction for ragged-wrapped RTL text passes
+/// `Some(1)` so every visual line shares the paragraph's base level
+/// rather than flipping per-line on a line that happens to start with a
+/// Latin word.
+///
+/// Line-breaking itself stays direction-agnostic — breaks are chosen on
+/// the logical text by [`wrap_lines`]'s whitespace / hard-break policy,
+/// then each resulting logical line is reordered. (UAX #14 break-class
+/// line breaking is a separate, larger feature; this entry point uses
+/// the existing whitespace breaker.)
+///
+/// Returns one [`ShapedVisualLine`] per wrapped line, in top-to-bottom
+/// reading order.
+pub fn wrap_and_shape_lines(
+    chain: &FaceChain,
+    text: &str,
+    size_px: f32,
+    max_width: f32,
+    base_level: Option<u8>,
+) -> Result<Vec<ShapedVisualLine>, Error> {
+    let line_strings = wrap_lines(chain.primary(), text, size_px, max_width)?;
+    let mut out = Vec::with_capacity(line_strings.len());
+    for line in &line_strings {
+        out.push(shape_visual_line(chain, line, size_px, base_level)?);
+    }
+    Ok(out)
+}
+
 fn wrap_paragraph(
     face: &Face,
     text: &str,

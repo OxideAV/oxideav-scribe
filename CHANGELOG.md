@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `layout::wrap_and_shape_lines`: wrap + bidi-shape in one call (round 374)
+
+The one-call path from a paragraph of logical text to width-wrapped,
+bidi-ordered, render-ready visual lines. Composes `wrap_lines` (the
+width-constrained break finder) with `shape_visual_line` (per-line
+UAX #9 reorder + shape), returning one `ShapedVisualLine` per display
+line in top-to-bottom reading order. `base_level` is applied to every
+line, so a caller wrapping RTL text passes `Some(1)` to keep every
+visual line on the paragraph's base level rather than flipping per-line
+on a line that starts with a Latin token. Line-breaking stays
+direction-agnostic (the existing whitespace / hard-break policy on the
+logical text); UAX #14 break-class breaking remains a separate future
+feature. Tests: `tests/round374_wrap_and_shape.rs` (composition equals
+wrap + per-line shape, every line fits the width budget, RTL base
+override, hard-newline path).
+
 ### Added — bidi-shaped visual line: `layout::shape_visual_line` (round 374)
 
 The crate had a complete UAX #9 reordering pipeline and a complete
