@@ -87,9 +87,7 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   the font ships them; a `frac`/`calt` contextual rule the caller
   requests now fires instead of passing through.
 - **GPOS positioning** — single adjustment (type 1), pair kerning
-  (type 2, honouring the IGNORE_MARKS LookupFlag so `base + mark + base`
-  kerns base↔base across the mark), cursive attachment (type 3, both
-  RIGHT_TO_LEFT flag states:
+  (type 2), cursive attachment (type 3, both RIGHT_TO_LEFT flag states:
   flag-clear cascades the cross-stream chain forward from the first
   glyph, flag-set resolves it backward from the last glyph per the
   §GPOS cursive note), mark-to-base (type 4), mark-to-ligature
