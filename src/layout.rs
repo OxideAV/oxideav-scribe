@@ -409,6 +409,91 @@ pub fn wrap_and_shape_lines(
     Ok(out)
 }
 
+/// One paragraph's worth of wrapped, bidi-shaped visual lines plus the
+/// base embedding level resolved for that paragraph.
+///
+/// Produced by [`shape_paragraphs`]. A renderer paints the `lines`
+/// top-to-bottom; the shared [`Self::base_level`] is the paragraph's
+/// resolved direction (relevant for aligning ragged lines: an RTL
+/// paragraph is flush-right, an LTR paragraph flush-left).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapedParagraph {
+    /// The paragraph's display lines, top-to-bottom.
+    pub lines: Vec<ShapedVisualLine>,
+    /// The base embedding level P2 / P3 resolved for this paragraph (or
+    /// the caller's HL1 override). `0` = LTR, `1` = RTL.
+    pub base_level: u8,
+}
+
+/// Lay out a full multi-paragraph document: split on **paragraph
+/// separators** (the UAX #9 bidi-class-`B` characters — LF `U+000A`, CR
+/// `U+000D`, CRLF, NEL `U+0085`, and PARAGRAPH SEPARATOR `U+2029`),
+/// resolve **each paragraph's own base direction**, then wrap +
+/// bidi-shape every paragraph to `max_width`.
+///
+/// Note that LINE SEPARATOR `U+2028` is bidi-class `WS` (a *line* break
+/// within a paragraph, not a paragraph break) and so does **not** start
+/// a new paragraph here — it is wrapped like ordinary whitespace.
+///
+/// This is the document-level counterpart to [`wrap_and_shape_lines`].
+/// Where that entry point applies a single `base_level` to every line of
+/// the whole text, `shape_paragraphs` honours UAX #9 P1: each paragraph
+/// is an independent bidirectional unit, so a Hebrew paragraph followed
+/// by an English one each resolve their own direction. Passing
+/// `base_level = None` lets every paragraph auto-resolve from its first
+/// strong character (P2 / P3); `Some(0)` / `Some(1)` forces a uniform
+/// direction across all paragraphs (HL1).
+///
+/// Unlike [`wrap_lines`] / [`wrap_and_shape_lines`] — which split only on
+/// the ASCII `'\n'` — this driver recognises the full B-class separator
+/// set via [`crate::bidi::split_paragraphs`], so a `U+2028` /
+/// `U+2029` / NEL in the source forces a paragraph break too. The
+/// trailing separator is dropped from each paragraph before wrapping (it
+/// is not rendered).
+///
+/// Returns one [`ShapedParagraph`] per source paragraph, in document
+/// order. An empty `text` returns an empty vec.
+pub fn shape_paragraphs(
+    chain: &FaceChain,
+    text: &str,
+    size_px: f32,
+    max_width: f32,
+    base_level: Option<u8>,
+) -> Result<Vec<ShapedParagraph>, Error> {
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for para in crate::bidi::split_paragraphs(text) {
+        // Drop the trailing paragraph separator (the B character P1 keeps
+        // attached) — it is not part of the rendered run. A bare
+        // separator paragraph collapses to an empty line.
+        let body: &str = match para.char_indices().next_back() {
+            Some((i, c)) if crate::bidi::bidi_class(c) == BidiClass::B => &para[..i],
+            _ => para,
+        };
+        // Per-paragraph base level: the caller override wins; otherwise
+        // P2 / P3 resolves this paragraph independently.
+        let resolved = base_level.unwrap_or_else(|| crate::bidi::paragraph_level(body));
+        let lines = wrap_and_shape_lines(chain, body, size_px, max_width, Some(resolved))?;
+        // An empty paragraph (separator-only) still contributes one empty
+        // line so the renderer advances a blank line.
+        let lines = if lines.is_empty() {
+            vec![ShapedVisualLine {
+                glyphs: Vec::new(),
+                base_level: resolved,
+            }]
+        } else {
+            lines
+        };
+        out.push(ShapedParagraph {
+            lines,
+            base_level: resolved,
+        });
+    }
+    Ok(out)
+}
+
 fn wrap_paragraph(
     face: &Face,
     text: &str,

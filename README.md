@@ -170,6 +170,15 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   chain, text, size_px, max_width, base_level)` is the one-call path that
   wraps **and** shapes each produced line into a `ShapedVisualLine`
   (bidi-ordered, render-ready), one per display line top-to-bottom.
+- **Document layout** — `layout::shape_paragraphs(chain, text, size_px,
+  max_width, base_level)` is the multi-paragraph driver: it splits the
+  text on UAX #9 bidi-class-`B` paragraph separators (LF, CR, CRLF, NEL
+  `U+0085`, `U+2029`), resolves **each paragraph's own** base direction
+  (P1 / P2 / P3, unless a uniform `base_level` is forced), and wraps +
+  bidi-shapes every paragraph independently — returning one
+  `ShapedParagraph { lines, base_level }` per source paragraph. (LINE
+  SEPARATOR `U+2028` is class `WS`, a line break within a paragraph, so
+  it does not start a new one.)
 - **Bidi-shaped visual line** — `layout::shape_visual_line(chain, text,
   size_px, base_level) -> ShapedVisualLine` is the join between the UAX
   #9 reordering pipeline and the OpenType shaper. It partitions the line

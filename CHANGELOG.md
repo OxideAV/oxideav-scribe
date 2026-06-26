@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `layout::shape_paragraphs`: multi-paragraph document layout (round 374)
+
+The document-level counterpart to `wrap_and_shape_lines`. It splits the
+text on UAX #9 bidi-class-`B` **paragraph separators** (`bidi::
+split_paragraphs` — LF, CR, CRLF, NEL `U+0085`, `U+2029`), resolves
+**each paragraph's own** base direction (P1 / P2 / P3 via
+`bidi::paragraph_level`, unless the caller forces a uniform
+`base_level`), and wraps + bidi-shapes every paragraph independently —
+returning one `ShapedParagraph { lines, base_level }` per source
+paragraph. This honours UAX #9 P1 (each paragraph is an independent
+bidirectional unit), so a Hebrew paragraph followed by an English one
+each resolve their own direction, and recognises the full B-class
+separator set rather than the ASCII `'\n'` that `wrap_lines` splits on.
+LINE SEPARATOR `U+2028` is bidi-class `WS` (a line break within a
+paragraph), so it does not start a new paragraph. Tests:
+`tests/round374_shape_paragraphs.rs` (newline / U+2029 / NEL splits,
+U+2028 non-split, per-paragraph direction, uniform override, wrap-to
+-width, empty-paragraph blank line, single-paragraph equivalence).
+
 ### Added — `layout::wrap_and_shape_lines`: wrap + bidi-shape in one call (round 374)
 
 The one-call path from a paragraph of logical text to width-wrapped,

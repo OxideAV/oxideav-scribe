@@ -194,8 +194,8 @@ pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{
-    reorder_line_visual, run_width, shape_visual_line, wrap_and_shape_lines, wrap_lines,
-    ShapedVisualLine, VisualLine,
+    reorder_line_visual, run_width, shape_paragraphs, shape_visual_line, wrap_and_shape_lines,
+    wrap_lines, ShapedParagraph, ShapedVisualLine, VisualLine,
 };
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
 pub use post::{standard_mac_glyph_name, PostTable, STANDARD_MAC_GLYPH_NAMES};
