@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — bidi-shaped visual line: `layout::shape_visual_line` (round 374)
+
+The crate had a complete UAX #9 reordering pipeline and a complete
+OpenType shaper, but the two never met: `reorder_line_visual` reordered
+*characters* and handed them back, leaving the caller to shape and
+arrange runs. `layout::shape_visual_line(chain, text, size_px,
+base_level)` closes the gap. It runs the §3 paragraph pipeline + §3.4 L1
+reset, partitions the line into BD7 **level runs**, shapes each run's
+*logical* substring through `FaceChain::shape` (so ligatures, Arabic
+joining, and Indic clustering see the natural character order), reverses
+each RTL (odd-level) run's glyph sequence, and concatenates the runs in
+§3.4 L2 **visual** order — returning a `ShapedVisualLine` whose `glyphs`
+a renderer paints left-to-right with the pen advancing normally.
+`ShapedVisualLine::width()` reports the laid-out advance. Shaping in
+logical order (rather than over the pre-mirrored visual char stream
+`reorder_line_visual` produces) is what keeps RTL ligatures / joining
+correct. Tests: `tests/round374_shape_visual_line.rs` (pure-LTR matches
+direct shaping, pure-RTL glyph reversal, LTR-then-RTL run ordering, RTL
+base with a Latin island, width sum, base-level override).
+
 ### Added — GPOS pair kerning honours the IGNORE_MARKS LookupFlag (round 374)
 
 The GPOS pair-kerning pass previously kerned literally-adjacent glyphs.

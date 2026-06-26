@@ -8,10 +8,11 @@
 //! ligatures are correctly accounted for in the width budget.
 
 use crate::bidi::{
-    apply_mirroring, bidi_class, process_paragraph_classes_with_brackets, reorder_combining_marks,
-    reorder_line, reset_trailing_levels, BidiClass,
+    apply_mirroring, bidi_class, level_runs, process_paragraph_classes_with_brackets,
+    reorder_combining_marks, reorder_line, reset_trailing_levels, BidiClass,
 };
 use crate::face::Face;
+use crate::face_chain::FaceChain;
 use crate::shaper::{PositionedGlyph, Shaper};
 use crate::Error;
 
@@ -179,6 +180,160 @@ pub fn reorder_line_visual(text: &str, base_level: Option<u8>) -> VisualLine {
         visual_to_logical,
         base_level: carrier.paragraph_level,
     }
+}
+
+/// A bidirectional **display line** shaped into positioned glyphs laid
+/// out left-to-right in visual order, the join between the UAX #9
+/// reordering pipeline and the OpenType shaper.
+///
+/// Produced by [`shape_visual_line`]. A renderer paints
+/// [`Self::glyphs`] left-to-right starting at pen `x = 0`, advancing by
+/// each glyph's `x_advance` and applying its `(x_offset, y_offset)` —
+/// exactly the contract of a [`crate::Shaper::shape`] result, but for a
+/// mixed-direction line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapedVisualLine {
+    /// The shaped glyphs in left-to-right visual order. Glyphs of an
+    /// RTL (odd-level) run appear in reversed logical order so the run
+    /// reads right-to-left while the pen still advances left-to-right.
+    pub glyphs: Vec<PositionedGlyph>,
+    /// The paragraph / line embedding level resolved by P2 / P3 (or the
+    /// HL1 caller override). `0` for an LTR line, `1` for RTL.
+    pub base_level: u8,
+}
+
+impl ShapedVisualLine {
+    /// Total advance width of the line in raster pixels.
+    #[must_use]
+    pub fn width(&self) -> f32 {
+        run_width(&self.glyphs)
+    }
+
+    /// Number of shaped glyphs.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.glyphs.len()
+    }
+
+    /// Whether the line produced no glyphs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.glyphs.is_empty()
+    }
+}
+
+/// Shape a single bidirectional **display line** into positioned glyphs
+/// in left-to-right visual order, bridging the complete UAX #9 §3 / §3.4
+/// reordering pipeline and the OpenType shaper.
+///
+/// Where [`reorder_line_visual`] reorders *characters* and hands the
+/// caller a [`VisualLine`] to feed glyph-by-glyph, this entry point does
+/// the shaping too — and does it the spec-correct way: shaping runs in
+/// **logical** order (so ligatures, cursive joining, and contextual
+/// rules see the natural character sequence) and arranging the shaped
+/// runs in visual order afterwards.
+///
+/// The procedure, per line:
+///
+/// 1. Run the §3 paragraph pipeline (`P → X → W → N0 → N1/N2 → I`) plus
+///    the §3.4 **L1** trailing-whitespace / separator reset over the
+///    whole line, yielding a per-character resolved level vector.
+/// 2. Partition the line into **level runs** (BD7) — maximal
+///    same-level substrings.
+/// 3. Shape each level run's *logical* substring through `chain`
+///    ([`FaceChain::shape`], so face fallback + Arabic joining + Indic
+///    clustering all apply). A run whose level is **odd** (RTL) has its
+///    shaped-glyph sequence reversed so the run reads right-to-left.
+/// 4. Emit the runs in **visual order** — the order the §3.4 **L2**
+///    reversal puts them in — concatenating their glyph sequences into
+///    one left-to-right stream.
+///
+/// `base_level` is the HL1 override: `Some(0)` forces LTR, `Some(1)`
+/// forces RTL, `None` lets P2 / P3 resolve it.
+///
+/// Note on mirroring: characters are shaped from the **logical** text,
+/// so L4 glyph mirroring (a `(` rendering as `)` inside an RTL run) is
+/// the font's / shaper's responsibility via the `rtlm` feature or a
+/// mirrored cmap entry — this function does not pre-mirror the
+/// characters the way [`reorder_line_visual`] does for its char-level
+/// output, because a mirrored *character* would shape to the wrong
+/// glyph. Callers needing the visual *character* stream still use
+/// [`reorder_line_visual`].
+///
+/// Provenance: composed from the §3 / §3.4 per-rule entry points in
+/// [`crate::bidi`], each citing
+/// `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`.
+pub fn shape_visual_line(
+    chain: &FaceChain,
+    text: &str,
+    size_px: f32,
+    base_level: Option<u8>,
+) -> Result<ShapedVisualLine, Error> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || size_px <= 0.0 {
+        return Ok(ShapedVisualLine {
+            glyphs: Vec::new(),
+            base_level: base_level.map(|l| l & 1).unwrap_or(0),
+        });
+    }
+
+    let classes: Vec<BidiClass> = chars.iter().copied().map(bidi_class).collect();
+    let carrier = process_paragraph_classes_with_brackets(&classes, &chars, base_level);
+
+    // §3.4 L1: reset separators + trailing whitespace to the paragraph
+    // level before partitioning, so trailing spaces of an RTL line sit
+    // at the paragraph edge.
+    let mut line_levels = carrier.levels.clone();
+    reset_trailing_levels(&carrier.classes, &mut line_levels, carrier.paragraph_level);
+
+    // §3.4 L2: the logical-to-visual character permutation. We use it to
+    // order the level runs visually (a run's visual rank is the visual
+    // position of its first character under L2).
+    let logical_to_visual = reorder_line(&line_levels);
+    let n = chars.len();
+    let mut visual_to_logical = vec![0usize; n];
+    for (vis_pos, &log_idx) in logical_to_visual.iter().enumerate() {
+        visual_to_logical[log_idx] = vis_pos;
+    }
+
+    // BD7 level-run partition.
+    let runs = level_runs(&line_levels);
+
+    // Shape each run logically; record (visual_rank, glyphs).
+    let mut shaped_runs: Vec<(usize, Vec<PositionedGlyph>)> = Vec::with_capacity(runs.len());
+    for run in &runs {
+        let run_text: String = chars[run.start..run.end].iter().collect();
+        let mut glyphs = chain.shape(&run_text, size_px)?;
+        // RTL run: the shaped glyphs read left-to-right in logical
+        // order, but the run is laid out right-to-left, so reverse the
+        // glyph sequence. Advances stay attached to their glyph, so the
+        // pen still accumulates correctly when the reversed sequence is
+        // emitted left-to-right.
+        if run.level & 1 == 1 {
+            glyphs.reverse();
+        }
+        // The run's visual rank: among all runs, where does this one
+        // land left-to-right? Use the minimum visual position of its
+        // characters (a contiguous run maps to a contiguous visual
+        // block under L2).
+        let visual_rank = (run.start..run.end)
+            .map(|log_idx| visual_to_logical[log_idx])
+            .min()
+            .unwrap_or(run.start);
+        shaped_runs.push((visual_rank, glyphs));
+    }
+
+    // Emit runs in visual order (ascending visual rank).
+    shaped_runs.sort_by_key(|(rank, _)| *rank);
+    let mut out: Vec<PositionedGlyph> = Vec::new();
+    for (_, mut glyphs) in shaped_runs {
+        out.append(&mut glyphs);
+    }
+
+    Ok(ShapedVisualLine {
+        glyphs: out,
+        base_level: carrier.paragraph_level,
+    })
 }
 
 /// Break `text` into lines that fit within `max_width` after shaping.

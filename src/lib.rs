@@ -193,7 +193,9 @@ pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
 pub use face::{Face, FaceKind};
 pub use face_chain::FaceChain;
-pub use layout::{reorder_line_visual, run_width, wrap_lines, VisualLine};
+pub use layout::{
+    reorder_line_visual, run_width, shape_visual_line, wrap_lines, ShapedVisualLine, VisualLine,
+};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
 pub use post::{standard_mac_glyph_name, PostTable, STANDARD_MAC_GLYPH_NAMES};
 pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};

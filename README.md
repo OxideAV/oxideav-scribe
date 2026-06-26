@@ -171,6 +171,17 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 ### Layout and bidirectional text
 
 - **Line layout** — line measurement + word-wrap.
+- **Bidi-shaped visual line** — `layout::shape_visual_line(chain, text,
+  size_px, base_level) -> ShapedVisualLine` is the join between the UAX
+  #9 reordering pipeline and the OpenType shaper. It partitions the line
+  into bidi **level runs**, shapes each run's *logical* substring through
+  the face chain (so ligatures / Arabic joining / Indic clustering see
+  the natural character sequence), reverses each RTL run's glyph
+  sequence, and concatenates the runs in §3.4 L2 **visual** order. The
+  result is a `Vec<PositionedGlyph>` a renderer paints left-to-right with
+  the pen advancing normally — correct mixed-direction layout without the
+  caller hand-rolling the run arrangement. `ShapedVisualLine::width()`
+  reports the laid-out advance.
 - **High-level bidi bridge** — `layout::reorder_line_visual(text,
   base_level) -> VisualLine` drives the complete UAX #9 pipeline over
   one display line (class assignment → P → X → W → N0 → N1/N2 → I → L1
