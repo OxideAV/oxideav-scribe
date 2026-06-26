@@ -43,33 +43,6 @@ correct. Tests: `tests/round374_shape_visual_line.rs` (pure-LTR matches
 direct shaping, pure-RTL glyph reversal, LTR-then-RTL run ordering, RTL
 base with a Latin island, width sum, base-level override).
 
-### Added — GPOS cursive attachment RIGHT_TO_LEFT flag-set variant (round 374)
-
-The cursive-attachment pass (GPOS LookupType 3) previously only handled
-the parent lookup's RIGHT_TO_LEFT flag in its *clear* state — the
-second glyph of each connected pair adjusted in the cross-stream
-direction, chain cascading forward. The flag-*set* variant was deferred
-pending lookup-flag exposure in the `oxideav-ttf` GPOS API.
-
-Round 374 lands it. The pass now reads each type-3 lookup's
-`lookupFlag` (`Font::gpos_lookup_flags`) and, when RIGHT_TO_LEFT
-(`0x0001`) is set, adjusts the *first* glyph of each connected pair to
-align with the second and resolves the cross-stream chain **backward**
-from the last glyph — which keeps its initial baseline position per the
-§GPOS note ("the last glyph in the connected sequence keeps its initial
-position in the cross-stream direction relative to the baseline, and the
-cross-stream positions of the preceding, connected glyphs are
-adjusted"). The line-layout (X advance) handling is unchanged — the
-spec rewrites the first glyph's advance regardless of the flag. Marks
-attached to the adjusted glyph follow it vertically.
-
-Provenance: `docs/text/opentype/otspec-gpos.html` (cursive attachment
-cross-stream / RIGHT_TO_LEFT note) +
-`docs/text/opentype/otspec-chapter2-common-layout-tables.html`
-(LookupFlag bit enumeration). Tests: `tests/round374_cursive_rtl.rs`
-(backward chain, size scaling, NULL-anchor skip, flag-clear sanity
-guard).
-
 ### Added — positioned caller-feature shaping: GSUB features through the full GPOS pass (round 362)
 
 The caller-driven GSUB feature surface (`Face::shape_text` and friends)

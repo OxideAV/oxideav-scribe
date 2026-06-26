@@ -50,19 +50,16 @@
 //!    mark-to-base path remains the fallback: if no mark-to-mark
 //!    anchor exists, the new mark falls back to attaching to the
 //!    walked-back base (round-3 behaviour).
-//! 6. **Cursive attachment (GPOS type 3)** (rounds 276 + 374): for
-//!    each consecutive pair of non-mark glyphs where the first
-//!    publishes an exit anchor and the second an entry anchor, the
-//!    first glyph's advance is rewritten so the anchors align in the
-//!    line-layout direction, and the cross-stream (`y_offset`)
-//!    adjustment aligns them per the parent lookup's RIGHT_TO_LEFT
-//!    flag: flag-clear moves the *second* glyph (the chain cascades
-//!    forward, the first glyph holds its baseline Y); flag-set moves
-//!    the *first* glyph (the chain resolves backward from the last
-//!    glyph, which holds its position). Marks attached to the adjusted
-//!    glyph follow it vertically. Cross-stream adjustments accumulate
-//!    down a connected chain — the cascading-baseline behaviour
-//!    cursive scripts need.
+//! 6. **Cursive attachment (GPOS type 3)** (round 276): for each
+//!    consecutive pair of non-mark glyphs where the first publishes
+//!    an exit anchor and the second an entry anchor, the first
+//!    glyph's advance is rewritten so the anchors align in the
+//!    line-layout direction, and the second glyph's `y_offset` is
+//!    adjusted so they align in the cross-stream direction (the
+//!    RIGHT_TO_LEFT-flag-clear semantics; see the in-pass comment).
+//!    Marks attached to the second glyph follow it vertically.
+//!    Cross-stream adjustments accumulate down a connected chain —
+//!    the cascading-baseline behaviour cursive scripts need.
 //! 7. **Contextual + chained-contextual positioning (GPOS types 7 +
 //!    8)**: recognise an input context (a glyph sequence, optionally
 //!    bracketed by backtrack / lookahead in the chained variant) and
@@ -762,24 +759,14 @@ pub fn position_run_with_font(
     //     which moves the second glyph so the anchors align in that
     //     direction.
     //   - **Cross-stream direction (Y here)** — "placement of one
-    //     glyph is adjusted to make the anchors align". Which glyph is
-    //     adjusted is determined by the parent lookup's RIGHT_TO_LEFT
-    //     flag (LookupFlag bit `0x0001`):
-    //       * **flag clear** — "the second glyph is adjusted to align
-    //         anchors with the first glyph"; the cross-stream chain
-    //         cascades *forward* (each following glyph placed relative
-    //         to the already-adjusted preceding one), so the FIRST
-    //         glyph of a connected sequence keeps its baseline Y.
-    //       * **flag set** — "the first glyph is adjusted to align
-    //         anchors with the second glyph", and per the §GPOS note
-    //         "the last glyph in the connected sequence keeps its
-    //         initial position in the cross-stream direction relative
-    //         to the baseline, and the cross-stream positions of the
-    //         preceding, connected glyphs are adjusted" — the chain
-    //         resolves *backward* from the anchoring last glyph.
-    //     The X (line-layout) handling is identical for both flags:
-    //     "the layout engine adjusts the advance of the first glyph
-    //     (in logical order)".
+    //     glyph is adjusted to make the anchors align". With the
+    //     parent lookup's RIGHT_TO_LEFT flag clear, "the second glyph
+    //     is adjusted to align anchors with the first glyph" — the
+    //     semantics implemented below. The flag-set variant (first
+    //     glyph adjusted, chain anchored to the *last* glyph's
+    //     baseline position) needs the lookup flag, which the
+    //     dependency's public GPOS API does not currently expose —
+    //     deferred.
     //
     // The pass runs after mark attachment so intervening marks have
     // already had their advances zeroed: the chain walks consecutive
@@ -788,37 +775,12 @@ pub fn position_run_with_font(
     // corresponding anchor point exists, the offset for either the
     // entry or exit Anchor table may be NULL, in which case no
     // positioning adjustment is applied" — pairs missing either side
-    // are skipped.
-    //
-    // Provenance: `docs/text/opentype/otspec-gpos.html` (cursive
-    // attachment cross-stream / RIGHT_TO_LEFT note) +
-    // `docs/text/opentype/otspec-chapter2-common-layout-tables.html`
-    // (LookupFlag bit enumeration, RIGHT_TO_LEFT `0x0001`).
-    let cursive_lookups: Vec<u16> = font
-        .gpos_lookup_list()
-        .iter()
-        .filter(|&&(_, ty, _)| ty == 3)
-        .map(|&(idx, _, _)| idx)
-        .collect();
-    if !cursive_lookups.is_empty() {
-        // The RIGHT_TO_LEFT flag is a per-lookup qualifier; when any
-        // cursive lookup the font publishes carries it, the
-        // cross-stream cascade direction flips. (Mixed-flag fonts are
-        // vanishingly rare; the public anchor lookup aggregates across
-        // type-3 lookups, so we honour the flag if any cursive lookup
-        // sets it.)
-        let right_to_left = cursive_lookups
-            .iter()
-            .any(|&idx| font.gpos_lookup_flags(idx) & 0x0001 != 0);
-
-        // First gather the connected pairs (consecutive non-mark glyphs
-        // where the earlier one publishes an exit anchor and the later
-        // one an entry anchor) and apply the X (line-layout) advance
-        // rewrite — identical for both flag states.
+    // are skipped. Cross-stream adjustments accumulate naturally down
+    // the chain because each second glyph is placed relative to the
+    // (already-adjusted) first.
+    let has_cursive = font.gpos_lookup_list().iter().any(|&(_, ty, _)| ty == 3);
+    if has_cursive {
         let mut prev_base: Option<usize> = None;
-        // (first_idx, second_idx, exit_y, entry_y) per connected pair,
-        // in logical order, for the cross-stream resolution below.
-        let mut pairs: Vec<(usize, usize, i16, i16)> = Vec::new();
         for i in 0..out.len() {
             if font.is_mark_glyph(out[i].glyph_id) {
                 continue;
@@ -844,53 +806,25 @@ pub fn position_run_with_font(
                     }
                     out[p].x_advance = out[p].x_offset - out[i].x_offset - intervening
                         + (f32::from(exit_x) - f32::from(entry_x)) * scale;
-                    pairs.push((p, i, exit_y, entry_y));
+                    // Y (cross-stream): move the SECOND glyph so its
+                    // entry anchor sits at the first glyph's exit
+                    // height. Anchors are font units (TT Y-up);
+                    // y_offset is raster Y-down, hence the negation.
+                    let new_y = out[p].y_offset - (f32::from(exit_y) - f32::from(entry_y)) * scale;
+                    let dy = new_y - out[i].y_offset;
+                    out[i].y_offset = new_y;
+                    // Marks attached to the second glyph follow it
+                    // vertically. (No X fix-up needed: changing the
+                    // first glyph's advance shifts the pen of the
+                    // second glyph and its trailing marks equally.)
+                    let mut j = i + 1;
+                    while j < out.len() && font.is_mark_glyph(out[j].glyph_id) {
+                        out[j].y_offset += dy;
+                        j += 1;
+                    }
                 }
             }
             prev_base = Some(i);
-        }
-
-        // Cross-stream (Y) resolution. A connected pair must end with
-        // `first.exit` and `second.entry` at the same raster height.
-        // In raster (Y-down) a TT Y-up anchor at height `a` sits at
-        // `y_offset - a*scale`, so alignment is
-        //   first.y_offset - exit_y*scale == second.y_offset - entry_y*scale.
-        if right_to_left {
-            // Flag set: the LAST glyph of each connected sequence holds
-            // its position; resolve preceding glyphs backward. Walking
-            // the pair list in reverse, the first glyph of each pair is
-            // pinned to the (already-resolved) second glyph:
-            //   first.y_offset = second.y_offset + (exit_y - entry_y)*scale.
-            for &(p, i, exit_y, entry_y) in pairs.iter().rev() {
-                let new_y = out[i].y_offset + (f32::from(exit_y) - f32::from(entry_y)) * scale;
-                let dy = new_y - out[p].y_offset;
-                out[p].y_offset = new_y;
-                // Marks attached to the adjusted first glyph follow it
-                // vertically (they trail it in the run until the next
-                // non-mark base).
-                let mut j = p + 1;
-                while j < out.len() && j < i && font.is_mark_glyph(out[j].glyph_id) {
-                    out[j].y_offset += dy;
-                    j += 1;
-                }
-            }
-        } else {
-            // Flag clear: the FIRST glyph of each connected sequence
-            // holds its position; resolve forward. The second glyph is
-            // moved so its entry anchor sits at the first glyph's exit
-            // height:
-            //   second.y_offset = first.y_offset - (exit_y - entry_y)*scale.
-            for &(p, i, exit_y, entry_y) in &pairs {
-                let new_y = out[p].y_offset - (f32::from(exit_y) - f32::from(entry_y)) * scale;
-                let dy = new_y - out[i].y_offset;
-                out[i].y_offset = new_y;
-                // Marks attached to the second glyph follow it vertically.
-                let mut j = i + 1;
-                while j < out.len() && font.is_mark_glyph(out[j].glyph_id) {
-                    out[j].y_offset += dy;
-                    j += 1;
-                }
-            }
         }
     }
 
