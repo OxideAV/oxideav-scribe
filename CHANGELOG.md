@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GPOS pair kerning honours the IGNORE_MARKS LookupFlag (round 374)
+
+The GPOS pair-kerning pass previously kerned literally-adjacent glyphs.
+Per the §2 LookupFlag enumeration
+(`docs/text/opentype/otspec-chapter2-common-layout-tables.html`,
+IGNORE_MARKS `0x0008` — "skips over all combining marks"), a PairPos
+lookup carrying that flag forms each pair between a glyph and the
+nearest *following non-mark* glyph, so a `base + mark + base` run must
+kern base↔base across the intervening mark. Production Latin fonts
+almost universally set IGNORE_MARKS on their kern lookup, so the literal
+walk silently dropped real base↔base kerns whenever a combining mark sat
+between the two letters.
+
+Round 374 makes the kern walk skip GDEF mark glyphs when any GPOS
+PairPos (type-2) lookup the font publishes sets IGNORE_MARKS. Fonts
+without such a lookup — and fonts with no GDEF table (where the §2 skip
+predicate degenerates to "never skip") — keep the prior literal
+adjacency. Tests: `tests/round374_kern_ignore_marks.rs` (synthetic GDEF
++ IGNORE_MARKS PairPos: kern across a mark, flag-clear control,
+no-GDEF control).
+
 ### Added — GPOS cursive attachment RIGHT_TO_LEFT flag-set variant (round 374)
 
 The cursive-attachment pass (GPOS LookupType 3) previously only handled

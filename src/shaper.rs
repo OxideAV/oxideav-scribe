@@ -26,7 +26,10 @@
 //!    pair adjustment changes the xAdvance of the *first* glyph in the
 //!    pair, so the pen accumulates the kern and every glyph downstream
 //!    shifts with it (applying it as an `x_offset` on the right glyph
-//!    would move only that glyph and leak the adjustment).
+//!    would move only that glyph and leak the adjustment). When the
+//!    font's PairPos lookup carries the IGNORE_MARKS LookupFlag
+//!    (`0x0008`), GDEF mark glyphs are skipped when forming each pair
+//!    so a `base + mark + base` run kerns base↔base across the mark.
 //! 4. **Mark-to-base attachment (GPOS type 4)**: for each (base, mark)
 //!    pair where `mark` is classified as a mark by GDEF, call
 //!    `Font::lookup_mark_to_base(base, mark)`. The returned anchor
@@ -539,13 +542,60 @@ pub fn position_run_with_font(
             face_idx,
         });
     }
+    //
+    // **Mark skipping (round 374).** Per the §2 LookupFlag enumeration
+    // (`docs/text/opentype/otspec-chapter2-common-layout-tables.html`),
+    // a PairPos lookup carrying IGNORE_MARKS (`0x0008`) "skips over all
+    // combining marks" when matching its two-glyph input — so the kern
+    // pair is between a glyph and the nearest *following non-skipped*
+    // glyph, not its literal neighbour. Production Latin fonts almost
+    // always set IGNORE_MARKS on their kern lookup, so a `base + mark +
+    // base` run must kern base↔base across the intervening mark rather
+    // than base↔mark / mark↔base (both of which are typically uncovered
+    // and return 0, but the literal-adjacency walk also fails to apply
+    // the real base↔base kern). When any GPOS PairPos (type-2) lookup
+    // the font publishes sets IGNORE_MARKS, we skip GDEF mark glyphs
+    // when picking each pair's right member. Fonts without an
+    // IGNORE_MARKS kern lookup keep the literal-adjacency behaviour.
+    let kern_ignores_marks = font
+        .gpos_lookup_list()
+        .iter()
+        .filter(|&&(_, ty, _)| ty == 2)
+        .any(|&(idx, _, _)| font.gpos_lookup_flags(idx) & 0x0008 != 0);
     for idx in 1..shaped_gids.len() {
-        let prev = shaped_gids[idx - 1];
+        // The kern's right member: glyph `idx`, but if the lookup set
+        // returns IGNORE_MARKS, skip back over any marks so the left
+        // glyph kerns against the nearest preceding non-mark base.
+        let prev = if kern_ignores_marks {
+            let mut p = idx;
+            loop {
+                if p == 0 {
+                    break 0; // unused; idx==0 is excluded by the loop range
+                }
+                p -= 1;
+                if !font.is_mark_glyph(shaped_gids[p]) {
+                    break p;
+                }
+            }
+        } else {
+            idx - 1
+        };
+        // When mark-skipping is on and the current glyph is itself a
+        // mark, it is not the right member of any kern pair — skip it.
+        if kern_ignores_marks && font.is_mark_glyph(shaped_gids[idx]) {
+            continue;
+        }
+        // No non-mark base before this glyph (leading marks): nothing to
+        // kern against.
+        if kern_ignores_marks && font.is_mark_glyph(shaped_gids[prev]) {
+            continue;
+        }
+        let left = shaped_gids[prev];
         let gid = shaped_gids[idx];
-        let kern_units = font.lookup_kerning(prev, gid) as f32;
+        let kern_units = font.lookup_kerning(left, gid) as f32;
         if kern_units != 0.0 {
             // xAdvance of the first (left) glyph of the pair.
-            out[idx - 1].x_advance += kern_units * scale;
+            out[prev].x_advance += kern_units * scale;
         }
     }
 
