@@ -1106,6 +1106,56 @@ impl Face {
         out
     }
 
+    /// Round 377 — the substitution-only counterpart of
+    /// [`Self::position_text_itemized`]: itemise `text` into per-script
+    /// runs and run GSUB substitution on each run under its resolved
+    /// OpenType script tag, returning the concatenated post-substitution
+    /// glyph IDs in logical order.
+    ///
+    /// Where [`Self::shape_text`] auto-probes a single script-tag priority
+    /// list for the whole input, this method picks the right tag *per
+    /// run* (via [`Self::resolve_ot_script_tag`], modern-v.2-preferred
+    /// with legacy fallback), so a Latin word and a Devanagari word in the
+    /// same string each resolve their features against their own script.
+    /// The same `features` set is offered to every run.
+    ///
+    /// Returns an empty vec for OTF (CFF) faces or empty `text`. This is
+    /// the gid-level API (no positioning); use
+    /// [`Self::position_text_itemized`] for render-ready
+    /// [`crate::shaper::PositionedGlyph`]s.
+    pub fn shape_text_itemized(&self, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut out: Vec<u16> = Vec::new();
+        for run in crate::script::script_runs(&chars) {
+            let run_text: String = chars[run.start..run.end].iter().collect();
+            let tag = self.resolve_ot_script_tag(run.script);
+            out.extend(self.shape_text_with_script(&run_text, tag, features));
+        }
+        out
+    }
+
+    /// Round 377 — itemise `text` and pair each [`crate::script::ScriptRun`]
+    /// with the OpenType script tag **this font** resolves for it
+    /// ([`Self::resolve_ot_script_tag`]).
+    ///
+    /// A convenience for callers driving their own per-run shaping (or
+    /// debugging itemisation): returns one `(ScriptRun, [u8; 4])` per run,
+    /// in logical order, partitioning `0..text.chars().count()`. The
+    /// run's `start` / `end` are char indices into `text`.
+    pub fn script_run_tags(&self, text: &str) -> Vec<(crate::script::ScriptRun, [u8; 4])> {
+        let chars: Vec<char> = text.chars().collect();
+        crate::script::script_runs(&chars)
+            .into_iter()
+            .map(|run| {
+                let tag = self.resolve_ot_script_tag(run.script);
+                (run, tag)
+            })
+            .collect()
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.

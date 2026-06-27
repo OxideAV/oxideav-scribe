@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `Face::shape_text_itemized` / `script_run_tags`: gid-level itemised shaping (round 377)
+
+Two more entry points completing the itemised-shaping API surface:
+
+- `shape_text_itemized(text, features)` is the substitution-only
+  counterpart of `position_text_itemized`: it itemises `text` into
+  per-script runs and runs GSUB on each run under its resolved OpenType
+  tag, returning the concatenated post-substitution glyph IDs. Picks the
+  tag *per run* (modern-v.2-preferred, legacy fallback) rather than
+  auto-probing a single priority list over the whole input.
+- `script_run_tags(text)` pairs each `ScriptRun` with the OpenType tag
+  this font resolves for it, for callers driving their own per-run
+  shaping or inspecting itemisation. One `(ScriptRun, [u8; 4])` per run,
+  partitioning the char range in logical order.
+
+Tests added to `tests/round377_itemized_shaping.rs`.
+
 ### Added — `Face::resolve_ot_script_tag`: font-aware v.2 / legacy tag selection (round 377)
 
 `resolve_ot_script_tag(script)` resolves a Unicode `Script` to the

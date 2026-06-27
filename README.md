@@ -175,6 +175,13 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   run and `"123abc"` is one Latin run. The output is a gap-free
   partition. Full UAX #24 §5.1 bracket-pairing / `Script_Extensions`
   refinement is layered on later.
+- **Font-aware itemised shaping** — `Face::resolve_ot_script_tag(script)`
+  picks the tag the font actually registers (v.2 preferred, legacy
+  fallback); `Face::script_run_tags(text)` pairs each `ScriptRun` with
+  that resolved tag; `Face::shape_text_itemized(text, features)` (gids)
+  and `Face::position_text_itemized(text, size_px, features)`
+  (render-ready glyphs) shape a mixed-script string run-by-run under the
+  resolved tags.
 
 ### Variable fonts
 

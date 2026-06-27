@@ -105,3 +105,46 @@ fn no_glyph_is_notdef_for_covered_scripts() {
         );
     }
 }
+
+#[test]
+fn shape_text_itemized_matches_single_for_pure_latin() {
+    let face = dejavu();
+    let text = "Hello";
+    let it = face.shape_text_itemized(text, &[]);
+    let single = face.shape_text_with_script(text, *b"latn", &[]);
+    assert_eq!(it, single);
+    assert!(!it.is_empty());
+    assert!(it.iter().all(|&g| g != 0));
+}
+
+#[test]
+fn shape_text_itemized_empty() {
+    let face = dejavu();
+    assert!(face.shape_text_itemized("", &[]).is_empty());
+}
+
+#[test]
+fn shape_text_itemized_mixed_no_notdef() {
+    // Latin + Cyrillic + Greek, all covered by DejaVu.
+    let face = dejavu();
+    let text = "ab\u{0414}\u{0435}\u{03B1}\u{03B2}";
+    let gids = face.shape_text_itemized(text, &[]);
+    assert!(!gids.is_empty());
+    assert!(gids.iter().all(|&g| g != 0), "{gids:?}");
+}
+
+#[test]
+fn script_run_tags_partition_and_tags() {
+    let face = dejavu();
+    // Latin, space (Common -> Latin), Cyrillic.
+    let text = "abc \u{0414}\u{0430}";
+    let tagged = face.script_run_tags(text);
+    assert_eq!(tagged.len(), 2, "{tagged:?}");
+    assert_eq!(tagged[0].1, *b"latn");
+    assert_eq!(tagged[1].1, *b"cyrl");
+    // Total partition over char indices.
+    let n = text.chars().count();
+    assert_eq!(tagged[0].0.start, 0);
+    assert_eq!(tagged.last().unwrap().0.end, n);
+    assert_eq!(tagged[0].0.end, tagged[1].0.start);
+}
