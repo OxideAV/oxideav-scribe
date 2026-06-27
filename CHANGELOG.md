@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `script`: Unicode-script → OpenType-tag map + script-run segmentation (round 377)
+
+A new `script` module bridges the Unicode `Script` property to the
+OpenType `ScriptList` keying a shaper needs before it can select GSUB /
+GPOS lookups, plus the upstream itemiser that splits mixed-script text
+into per-script runs.
+
+- `script::ot_script_tag(s)` / `ot_script_tags(s)` resolve a Unicode
+  `Script` (from the `intl` UCD tables) to its OpenType 4-byte script
+  tag(s). All 175 `intl::unicode::script::Script` variants are mapped.
+  The ten Indic scripts the registry assigns both a legacy and a "v.2"
+  shaping tag return the pair modern-tag-first (`Devanagari` →
+  `[b"dev2", b"deva"]`, `Tamil` → `[b"tml2", b"taml"]`, `Myanmar` →
+  `[b"mym2", b"mymr"]`, …) so a shaper looks up the v.2 entry first and
+  falls back to the legacy form for older fonts. Space-padded tags keep
+  their pad (`b"lao "`, `b"nko "`, `b"yi  "`, `b"vai "`); Hiragana and
+  Katakana share `b"kana"`; `Common` / `Inherited` / `Unknown` resolve
+  to the OpenType Default tag `b"DFLT"`. The tag values are transcribed
+  from the OpenType Layout *Script Tags* registry
+  (`docs/text/opentype/registries/script-tags.html`, © Microsoft
+  Corporation, CC-BY-4.0).
+- `script::script_runs(chars)` / `script_runs_str(text)` itemise text
+  into maximal same-script `ScriptRun`s (char-index `start..end` +
+  resolved `Script`). `Inherited` (combining marks, variation selectors)
+  always extends the preceding run; `Common` (spaces, digits,
+  punctuation, symbols) extends the open run, and a *leading* `Common`
+  span back-fills onto the first real script — so `"abc, def"` is one
+  Latin run and `"123abc"` is one Latin run. The result is always a
+  gap-free, in-order partition of `0..chars.len()`. The conservative
+  neutral-attachment policy is scribe's own, built on the `intl` `Script`
+  / `Script_Extensions` data; the full UAX #24 §5.1 itemisation
+  (bracket pairing + `Script_Extensions` consultation) is deferred.
+  Tests: `tests/round377_script_runs.rs` + the in-module unit tests.
+
 ### Added — `layout::shape_paragraphs`: multi-paragraph document layout (round 374)
 
 The document-level counterpart to `wrap_and_shape_lines`. It splits the

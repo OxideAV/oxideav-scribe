@@ -143,6 +143,27 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `DEVANAGARI_RULES` / `BENGALI_RULES` / … / `BURMESE_RULES` for callers
   reusing the cluster machine. Coverage misses pass through unchanged.
 
+### Script itemisation
+
+- **Unicode script → OpenType tag** — `script::ot_script_tag(s)` /
+  `ot_script_tags(s)` map a Unicode `Script` (from the `intl` UCD
+  tables) to its OpenType `ScriptList` tag(s). The Indic scripts that
+  register both a legacy and a "v.2" shaping tag return the pair
+  modern-first (`deva` → `[dev2, deva]`, `taml` → `[tml2, taml]`, …) so a
+  shaper can prefer the v.2 form and fall back for older fonts. The
+  tables are transcribed from the OpenType *Script Tags* registry
+  (`docs/text/opentype/registries/script-tags.html`, CC-BY-4.0);
+  `Common` / `Inherited` / `Unknown` resolve to the Default tag `DFLT`.
+- **Script-run segmentation** — `script::script_runs(chars)` /
+  `script_runs_str(text)` itemise a string into maximal same-script
+  `ScriptRun`s (char-index ranges + resolved `Script`). `Inherited`
+  combining marks always join the preceding run; `Common` punctuation /
+  digits / spaces join the open run (and a leading `Common` span
+  back-fills onto the first real script), so `"abc, def"` is one Latin
+  run and `"123abc"` is one Latin run. The output is a gap-free
+  partition. Full UAX #24 §5.1 bracket-pairing / `Script_Extensions`
+  refinement is layered on later.
+
 ### Variable fonts
 
 - **Outline interpolation** — `Face::set_variation_coords` /
