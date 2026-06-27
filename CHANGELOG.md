@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `Face::position_text_itemized`: segmenter-driven per-script shaping (round 377)
+
+The end-to-end consumer of the new `script` segmenter.
+`Face::position_text_itemized(text, size_px, features)` itemises `text`
+into per-script runs (`script::script_runs`), resolves each run's
+Unicode script to its OpenType tag (`script::ot_script_tag`, modern v.2
+tag preferred), and positions each run under that tag through the
+caller-feature GSUB + full GPOS pipeline
+(`Face::position_text_with_script`), concatenating the per-run
+`PositionedGlyph` streams in logical order. A mixed `latn` + `cyrl`
+string now resolves a distinct script tag per run rather than forcing a
+single tag over the whole input, so a feature registered under one
+script does not leak into another. For a single-script input the output
+is byte-identical to `position_text_with_script` under the resolved tag.
+Each run is positioned from pen x = 0, so a renderer accumulates the pen
+across run boundaries with no inserted gap; bidi reordering remains a
+separate, upstream step. Tests: `tests/round377_itemized_shaping.rs`
+(DejaVuSans, Latin/Cyrillic/Greek coverage).
+
 ### Added — `script`: Unicode-script → OpenType-tag map + script-run segmentation (round 377)
 
 A new `script` module bridges the Unicode `Script` property to the

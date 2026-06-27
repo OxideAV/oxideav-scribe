@@ -1011,6 +1011,61 @@ impl Face {
         .unwrap_or_default()
     }
 
+    /// Round 377 — shape a **mixed-script** string by itemising it into
+    /// per-script runs and positioning each run under its own OpenType
+    /// script tag.
+    ///
+    /// Where [`Self::position_text_with_script`] applies a single caller-
+    /// supplied script tag to the whole input, this method runs
+    /// [`crate::script::script_runs`] over `text`, resolves each run's
+    /// Unicode script to its OpenType tag via
+    /// [`crate::script::ot_script_tag`], and positions each run under that
+    /// tag through the full GSUB-feature + GPOS pipeline
+    /// ([`Self::position_text_with_script`]). The per-run glyph streams
+    /// are concatenated in logical order into one
+    /// [`crate::shaper::PositionedGlyph`] vector.
+    ///
+    /// This is the segmenter-driven shaping path: a string like
+    /// `"Hello \u{0939}\u{093F}"` (Latin then Devanagari) selects `latn`
+    /// for the first run and `dev2` for the second, so a feature
+    /// published under one script does not leak into the other. The
+    /// modern v.2 tag is preferred where the registry defines one (e.g.
+    /// Devanagari → `dev2`); callers needing the legacy-tag fallback
+    /// drive [`crate::script::ot_script_tags`] themselves.
+    ///
+    /// Each run is positioned starting at pen x = 0; the per-glyph
+    /// `x_advance` values mean a renderer accumulates the pen across run
+    /// boundaries exactly as it does within a run — no inter-run gap is
+    /// inserted. The same `features` set is offered to every run (a run
+    /// whose script does not register a requested feature simply ignores
+    /// it). Bidi reordering is **not** applied here — this is the
+    /// logical-order itemised-shaping primitive; callers wanting visual
+    /// order pass each [`crate::layout::ShapedVisualLine`] run through
+    /// the bidi pipeline first.
+    ///
+    /// Returns an empty vec for OTF (CFF) faces, empty `text`, or
+    /// `size_px <= 0.0`.
+    pub fn position_text_itemized(
+        &self,
+        text: &str,
+        size_px: f32,
+        features: &[[u8; 4]],
+    ) -> Vec<crate::shaper::PositionedGlyph> {
+        if text.is_empty() || size_px <= 0.0 || !size_px.is_finite() {
+            return Vec::new();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let runs = crate::script::script_runs(&chars);
+        let mut out: Vec<crate::shaper::PositionedGlyph> = Vec::new();
+        for run in runs {
+            let run_text: String = chars[run.start..run.end].iter().collect();
+            let tag = crate::script::ot_script_tag(run.script);
+            let mut placed = self.position_text_with_script(&run_text, size_px, tag, features);
+            out.append(&mut placed);
+        }
+        out
+    }
+
     /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
     /// view of the owned bytes. Mirrors [`Face::with_font`] for the
     /// CFF / cubic-Bezier path.
