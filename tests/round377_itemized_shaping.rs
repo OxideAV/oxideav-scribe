@@ -2,12 +2,37 @@
 //! per-script shaping over a real font (DejaVuSans, which carries Latin,
 //! Cyrillic, Greek, Hebrew and Arabic coverage plus GSUB/GPOS).
 
+use intl::unicode::script::Script;
 use oxideav_scribe::{ot_script_tag, script_runs_str, Face};
 
 const DEJAVU_BYTES: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 
 fn dejavu() -> Face {
     Face::from_ttf_bytes(DEJAVU_BYTES.to_vec()).expect("DejaVu parses")
+}
+
+#[test]
+fn resolve_tag_uses_registered_script() {
+    // DejaVuSans registers latn / cyrl / grek / hebr / arab in its GSUB
+    // ScriptList; resolution returns those real tags.
+    let face = dejavu();
+    assert_eq!(face.resolve_ot_script_tag(Script::Latin), *b"latn");
+    assert_eq!(face.resolve_ot_script_tag(Script::Cyrillic), *b"cyrl");
+    assert_eq!(face.resolve_ot_script_tag(Script::Greek), *b"grek");
+    assert_eq!(face.resolve_ot_script_tag(Script::Hebrew), *b"hebr");
+    assert_eq!(face.resolve_ot_script_tag(Script::Arabic), *b"arab");
+}
+
+#[test]
+fn resolve_tag_falls_back_to_primary_for_unregistered_script() {
+    // DejaVuSans does NOT register Devanagari; resolution falls back to
+    // the primary (modern v.2) registry tag rather than failing.
+    let face = dejavu();
+    assert_eq!(
+        face.resolve_ot_script_tag(Script::Devanagari),
+        ot_script_tag(Script::Devanagari)
+    );
+    assert_eq!(face.resolve_ot_script_tag(Script::Devanagari), *b"dev2");
 }
 
 #[test]

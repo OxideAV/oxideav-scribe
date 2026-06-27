@@ -1011,6 +1011,45 @@ impl Face {
         .unwrap_or_default()
     }
 
+    /// Round 377 — resolve a Unicode [`intl::unicode::script::Script`] to
+    /// the OpenType script tag **this font actually registers**.
+    ///
+    /// [`crate::script::ot_script_tags`] returns the registry's tag list
+    /// for a script (modern "v.2" tag first, legacy tag second for the
+    /// Indic scripts). This method walks that list and returns the first
+    /// tag the font publishes a `GSUB` `ScriptList` entry for — so a
+    /// Devanagari run resolves to `dev2` on a modern font but falls back
+    /// to `deva` on a legacy-only font. A font registers a script when
+    /// [`oxideav_ttf::Font::gsub_features_for_script`] returns a non-empty
+    /// feature list for the tag (or the script's default-language-system
+    /// is present even with no features — checked via the same call with
+    /// `lang_tag = None`).
+    ///
+    /// When the font registers **none** of the script's tags (e.g. a
+    /// Latin-only font asked about a Devanagari run, or an OTF/CFF face
+    /// with no parsed GSUB here), the **primary** registry tag
+    /// ([`crate::script::ot_script_tag`]) is returned unchanged — the
+    /// shaper then simply finds no script-specific lookups and falls back
+    /// to cmap-only positioning, which is the correct graceful
+    /// degradation.
+    pub fn resolve_ot_script_tag(&self, script: intl::unicode::script::Script) -> [u8; 4] {
+        let tags = crate::script::ot_script_tags(script);
+        // OTF (CFF) faces don't expose GSUB through `with_font`; return
+        // the primary tag and let cmap-only shaping handle it.
+        if self.kind != FaceKind::Ttf {
+            return tags[0];
+        }
+        self.with_font(|font| {
+            for &tag in tags {
+                if !font.gsub_features_for_script(tag, None).is_empty() {
+                    return tag;
+                }
+            }
+            tags[0]
+        })
+        .unwrap_or(tags[0])
+    }
+
     /// Round 377 — shape a **mixed-script** string by itemising it into
     /// per-script runs and positioning each run under its own OpenType
     /// script tag.
@@ -1027,11 +1066,12 @@ impl Face {
     ///
     /// This is the segmenter-driven shaping path: a string like
     /// `"Hello \u{0939}\u{093F}"` (Latin then Devanagari) selects `latn`
-    /// for the first run and `dev2` for the second, so a feature
-    /// published under one script does not leak into the other. The
-    /// modern v.2 tag is preferred where the registry defines one (e.g.
-    /// Devanagari → `dev2`); callers needing the legacy-tag fallback
-    /// drive [`crate::script::ot_script_tags`] themselves.
+    /// for the first run and the Devanagari tag for the second, so a
+    /// feature published under one script does not leak into the other.
+    /// The per-run tag is resolved through [`Self::resolve_ot_script_tag`],
+    /// which prefers the modern "v.2" tag but falls back to the legacy
+    /// tag (e.g. `deva`) when the font only registers that one — so the
+    /// path shapes correctly on both modern and legacy Indic fonts.
     ///
     /// Each run is positioned starting at pen x = 0; the per-glyph
     /// `x_advance` values mean a renderer accumulates the pen across run
@@ -1059,7 +1099,7 @@ impl Face {
         let mut out: Vec<crate::shaper::PositionedGlyph> = Vec::new();
         for run in runs {
             let run_text: String = chars[run.start..run.end].iter().collect();
-            let tag = crate::script::ot_script_tag(run.script);
+            let tag = self.resolve_ot_script_tag(run.script);
             let mut placed = self.position_text_with_script(&run_text, size_px, tag, features);
             out.append(&mut placed);
         }

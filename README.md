@@ -124,13 +124,16 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   collapse so mark-to-ligature attachment targets the right component.
 - **Itemised mixed-script shaping** — `Face::position_text_itemized(text,
   size_px, features)` runs the `script` segmenter (below) over the input,
-  resolves each run's Unicode script to its OpenType tag, and positions
-  each run under that tag through the GSUB-feature + GPOS pipeline,
-  concatenating the per-run glyphs in logical order. A `"Hello हि"`
-  string selects `latn` for the Latin run and `dev2` for the Devanagari
-  run, so a feature published under one script does not leak into the
-  other. For a single-script input the result is identical to
-  `position_text_with_script` under the resolved tag.
+  resolves each run's Unicode script to the OpenType tag the font
+  registers (`Face::resolve_ot_script_tag`: modern "v.2" tag preferred,
+  legacy tag fallback, e.g. `dev2` on a modern font but `deva` on a
+  legacy-only one), and positions each run under that tag through the
+  GSUB-feature + GPOS pipeline, concatenating the per-run glyphs in
+  logical order. A `"Hello हि"` string selects `latn` for the Latin run
+  and the Devanagari tag for the second, so a feature published under one
+  script does not leak into the other. For a single-script input the
+  result is identical to `position_text_with_script` under the resolved
+  tag.
 
 ### Complex-script shaping
 

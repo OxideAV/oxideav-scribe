@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `Face::resolve_ot_script_tag`: font-aware v.2 / legacy tag selection (round 377)
+
+`resolve_ot_script_tag(script)` resolves a Unicode `Script` to the
+OpenType script tag the **font actually registers** in its GSUB
+`ScriptList`: it walks the registry tag list (`script::ot_script_tags`,
+modern "v.2" first, legacy second) and returns the first tag for which
+`Font::gsub_features_for_script(tag, None)` is non-empty. So a Devanagari
+run resolves to `dev2` on a modern font and to `deva` on a legacy-only
+font. When the font registers none of the tags (Latin-only font asked
+about an Indic run, or an OTF/CFF face), the primary registry tag is
+returned and the shaper degrades to cmap-only positioning. `Face::
+position_text_itemized` now resolves each run's tag through this method
+instead of always using the modern tag, so the itemised path shapes
+Indic runs correctly on both modern and legacy fonts. Tests added to
+`tests/round377_itemized_shaping.rs`.
+
 ### Added — `Face::position_text_itemized`: segmenter-driven per-script shaping (round 377)
 
 The end-to-end consumer of the new `script` segmenter.
