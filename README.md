@@ -1,5 +1,7 @@
 # oxideav-scribe
 
+[![CI](https://github.com/OxideAV/oxideav-scribe/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-scribe/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-scribe.svg)](https://crates.io/crates/oxideav-scribe) [![docs.rs](https://docs.rs/oxideav-scribe/badge.svg)](https://docs.rs/oxideav-scribe) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust **vector** font shaper + line layout for the
 [oxideav](https://github.com/OxideAV) framework. Parses TTF / OTF
 tables (via [`oxideav-ttf`](https://github.com/OxideAV/oxideav-ttf)
