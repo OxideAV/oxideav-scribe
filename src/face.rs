@@ -698,6 +698,77 @@ impl Face {
             .contains(&feature_tag)
     }
 
+    /// GPOS sibling of [`Self::gsub_features_for_script`]: the positioning
+    /// feature tags this face publishes under `script_tag` (and, when
+    /// `lang_tag` is `Some(_)`, that language system's LangSys — falling
+    /// back to the script's default LangSys when the tag is absent).
+    ///
+    /// Callers gating positioning behaviour typically want just the tag
+    /// set — e.g. is `kern` present? does the face publish `cpsp`
+    /// (capital-spacing) or `mark` / `mkmk` attachment? For the
+    /// per-feature lookup-index detail, drop down through
+    /// [`Self::with_font`] and call
+    /// [`oxideav_ttf::Font::gpos_features_for_script`] directly.
+    ///
+    /// Returns `Vec::new()` when the face has no GPOS table, the script
+    /// tag is not in the GPOS ScriptList, or `lang_tag` is `Some(_)` with
+    /// no matching LangSys and no default LangSys. As with the GSUB
+    /// accessor this uses the TTF path; CFF-only OTF faces fall through to
+    /// the empty vec.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::Face;
+    /// # fn demo(face: Face) {
+    /// // Does this font kern Latin?
+    /// if face.gpos_features_for_script(*b"latn", None).contains(b"kern") {
+    ///     // enable pair kerning
+    /// }
+    /// # }
+    /// ```
+    pub fn gpos_features_for_script(
+        &self,
+        script_tag: [u8; 4],
+        lang_tag: Option<[u8; 4]>,
+    ) -> Vec<[u8; 4]> {
+        self.with_font(|font| {
+            font.gpos_features_for_script(script_tag, lang_tag)
+                .into_iter()
+                .map(|f| f.tag)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// `true` when this face publishes GPOS `feature_tag` for `script_tag`
+    /// (under the default LangSys). GPOS mirror of
+    /// [`Self::has_gsub_feature`]; convenience over
+    /// [`Self::gpos_features_for_script`] for a single hit-or-miss check.
+    pub fn has_gpos_feature(&self, script_tag: [u8; 4], feature_tag: [u8; 4]) -> bool {
+        self.gpos_features_for_script(script_tag, None)
+            .contains(&feature_tag)
+    }
+
+    /// The union of the GSUB and GPOS feature tags this face publishes
+    /// under `script_tag` / `lang_tag`, de-duplicated and sorted. A
+    /// convenience for higher-level APIs that present "which OpenType
+    /// features can I toggle for this script?" without caring whether a
+    /// given tag is realised through substitution, positioning, or both
+    /// (`kern` is GPOS, `liga` is GSUB, `locl` can be either). Returns an
+    /// empty `Vec` when neither table lists the script.
+    pub fn layout_features_for_script(
+        &self,
+        script_tag: [u8; 4],
+        lang_tag: Option<[u8; 4]>,
+    ) -> Vec<[u8; 4]> {
+        let mut tags = self.gsub_features_for_script(script_tag, lang_tag);
+        tags.extend(self.gpos_features_for_script(script_tag, lang_tag));
+        tags.sort_unstable();
+        tags.dedup();
+        tags
+    }
+
     /// Shape `text` with the caller-specified GSUB feature tags applied
     /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
     ///
