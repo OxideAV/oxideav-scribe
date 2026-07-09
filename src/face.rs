@@ -33,6 +33,19 @@ pub enum FaceKind {
     Otf,
 }
 
+/// Which `BASE`-table layout axis a baseline coordinate is queried on
+/// (ISO/IEC 14496-22:2019 §6.3.1). A `HorizAxis` baseline is a **Y**
+/// coordinate used when laying text out horizontally; a `VertAxis`
+/// baseline is an **X** coordinate used for vertical writing modes. A
+/// font may ship one axis, both, or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BaselineAxis {
+    /// `HorizAxis` — baseline values are Y coordinates (horizontal text).
+    Horizontal,
+    /// `VertAxis` — baseline values are X coordinates (vertical text).
+    Vertical,
+}
+
 /// Monotonic global id generator for `Face` instances. Used as the
 /// primary key when caching rasterised glyph bitmaps so that two
 /// faces that happen to share family names don't collide.
@@ -767,6 +780,88 @@ impl Face {
         tags.sort_unstable();
         tags.dedup();
         tags
+    }
+
+    // ---- baseline metrics (BASE) -----------------------------------------
+
+    /// `true` when the face ships a `BASE` table (ISO/IEC 14496-22:2019
+    /// §6.3.1) — the per-script baseline registry a layout engine
+    /// consults to align glyphs from different scripts (roman, hanging,
+    /// ideographic, mathematical, …) on a common line. Works for both
+    /// TTF and OTF/CFF faces. `false` for the many fonts that ship no
+    /// `BASE` table (a client then falls back to the `OS/2` /`hhea`
+    /// ascent-descent line metrics).
+    pub fn has_base_table(&self) -> bool {
+        match self.kind {
+            FaceKind::Ttf => self.with_font(|f| f.has_base()).unwrap_or(false),
+            FaceKind::Otf => self.with_otf_font(|f| f.base().is_some()).unwrap_or(false),
+        }
+    }
+
+    /// The design-unit baseline coordinate for `(script_tag,
+    /// baseline_tag)` on the requested [`BaselineAxis`], from the face's
+    /// `BASE` table (§6.3.1.3 `BaseValues`). On the horizontal axis the
+    /// value is a **Y** offset from the font's origin baseline; on the
+    /// vertical axis it is an **X** offset. Common `baseline_tag`s come
+    /// from the OpenType *Baseline Tags* registry — `romn` (roman /
+    /// alphabetic), `ideo` (ideographic em-box bottom), `hang` (hanging),
+    /// `math`, `icfb` / `icft` (ideographic character face).
+    ///
+    /// For a variable TTF face the coordinate is resolved at the
+    /// currently-set variation instance (a `BaseCoordFormat3`
+    /// VariationIndex delta is folded through the `BASE`
+    /// `ItemVariationStore`); set the instance with
+    /// [`Self::set_variation_coords`] first.
+    ///
+    /// Returns `None` when:
+    /// - the face has no `BASE` table;
+    /// - the requested axis is absent (a horizontal-only Latin font has
+    ///   no `VertAxis`, and vice-versa);
+    /// - `script_tag` is not listed in that axis's `BaseScriptList`
+    ///   (§6.3.1.3: an unlisted script is laid out with the whole-font
+    ///   default metrics);
+    /// - the axis has no `BaseTagList`, or `baseline_tag` is not in it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use oxideav_scribe::{Face, BaselineAxis};
+    /// # fn demo(face: Face) {
+    /// // Ideographic vs roman baseline offset for Latin, so a CJK run
+    /// // and a Latin run share a line.
+    /// let romn = face.baseline_coord(BaselineAxis::Horizontal, *b"latn", *b"romn");
+    /// let ideo = face.baseline_coord(BaselineAxis::Horizontal, *b"latn", *b"ideo");
+    /// # let _ = (romn, ideo);
+    /// # }
+    /// ```
+    pub fn baseline_coord(
+        &self,
+        axis: BaselineAxis,
+        script_tag: [u8; 4],
+        baseline_tag: [u8; 4],
+    ) -> Option<i16> {
+        match self.kind {
+            FaceKind::Ttf => self
+                .with_font(|f| match axis {
+                    BaselineAxis::Horizontal => {
+                        f.base_horiz_y_for_script_baseline_var(script_tag, baseline_tag)
+                    }
+                    BaselineAxis::Vertical => {
+                        f.base_vert_x_for_script_baseline_var(script_tag, baseline_tag)
+                    }
+                })
+                .ok()
+                .flatten(),
+            FaceKind::Otf => {
+                let otf_axis = match axis {
+                    BaselineAxis::Horizontal => oxideav_otf::BaseAxis::Horizontal,
+                    BaselineAxis::Vertical => oxideav_otf::BaseAxis::Vertical,
+                };
+                self.with_otf_font(|f| f.baseline_coord(otf_axis, &script_tag, &baseline_tag))
+                    .ok()
+                    .flatten()
+            }
+        }
     }
 
     /// Shape `text` with the caller-specified GSUB feature tags applied

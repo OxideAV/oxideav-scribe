@@ -212,6 +212,16 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
 
 ### Layout and bidirectional text
 
+- **Baseline metrics** — `Face::has_base_table` / `Face::baseline_coord(
+  axis, script_tag, baseline_tag)` surface the `BASE` table's per-script
+  design-unit baseline offsets (roman `romn`, ideographic `ideo`,
+  hanging `hang`, `math`, …) so a layout engine can sit a Latin run and
+  a CJK run on a common line. `BaselineAxis::{Horizontal, Vertical}`
+  selects the Y (horizontal-layout) or X (vertical-layout) axis;
+  variable TTF faces resolve the coordinate at the current instance
+  through the `BASE` `ItemVariationStore`. Works for both TTF and
+  OTF/CFF faces; `None` when the table, axis, script, or baseline tag is
+  absent.
 - **Line layout** — line measurement + word-wrap. `layout::wrap_lines`
   breaks logical text to a pixel width; `layout::wrap_and_shape_lines(
   chain, text, size_px, max_width, base_level)` is the one-call path that

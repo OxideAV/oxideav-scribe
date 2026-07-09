@@ -192,7 +192,7 @@ pub use bidi::{
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
-pub use face::{Face, FaceKind};
+pub use face::{BaselineAxis, Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{
     reorder_line_visual, run_width, shape_paragraphs, shape_visual_line, wrap_and_shape_lines,
