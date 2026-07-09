@@ -864,6 +864,60 @@ impl Face {
         }
     }
 
+    /// The baseline tag a `script_tag` declares as its **default** on the
+    /// given [`BaselineAxis`] (§6.3.1.3 `BaseScript::defaultBaselineIndex`
+    /// into the axis's `BaseTagList`). This is the baseline the font's
+    /// author wants text of that script to sit on when the layout client
+    /// has no stronger preference — `romn` for Latin/Greek/Cyrillic,
+    /// `ideo` (or `icfb`) for CJK, etc. — so a caller can align to the
+    /// font's own intent instead of hard-coding a tag.
+    ///
+    /// Returns `None` when the face has no `BASE` table, the axis is
+    /// absent, `script_tag` is unlisted, or the axis carries no
+    /// `BaseTagList`.
+    pub fn default_baseline_tag(&self, axis: BaselineAxis, script_tag: [u8; 4]) -> Option<[u8; 4]> {
+        match self.kind {
+            FaceKind::Ttf => self
+                .with_font(|f| {
+                    let base = f.base_table()?;
+                    let ax = match axis {
+                        BaselineAxis::Horizontal => base.horiz_axis.as_ref(),
+                        BaselineAxis::Vertical => base.vert_axis.as_ref(),
+                    }?;
+                    let bs = ax.base_script_for_tag(script_tag)?;
+                    let idx = bs.base_values.as_ref()?.default_baseline_index as usize;
+                    ax.baseline_tags.as_ref()?.get(idx).copied()
+                })
+                .ok()
+                .flatten(),
+            FaceKind::Otf => {
+                let otf_axis = match axis {
+                    BaselineAxis::Horizontal => oxideav_otf::BaseAxis::Horizontal,
+                    BaselineAxis::Vertical => oxideav_otf::BaseAxis::Vertical,
+                };
+                self.with_otf_font(|f| {
+                    let ax = f.base()?.axis(otf_axis)?;
+                    let bs = ax.script(&script_tag)?;
+                    ax.baseline_tags()
+                        .get(bs.default_baseline_index as usize)
+                        .copied()
+                })
+                .ok()
+                .flatten()
+            }
+        }
+    }
+
+    /// The design-unit coordinate of `script_tag`'s **default** baseline
+    /// on `axis` — [`Self::default_baseline_tag`] resolved through
+    /// [`Self::baseline_coord`]. `None` under the same conditions as
+    /// those two. Convenience for "give me the baseline this script wants,
+    /// and where it sits" without naming the tag.
+    pub fn default_baseline_coord(&self, axis: BaselineAxis, script_tag: [u8; 4]) -> Option<i16> {
+        let tag = self.default_baseline_tag(axis, script_tag)?;
+        self.baseline_coord(axis, script_tag, tag)
+    }
+
     /// Shape `text` with the caller-specified GSUB feature tags applied
     /// to the cmap'd glyph run. Returns the post-substitution glyph IDs.
     ///

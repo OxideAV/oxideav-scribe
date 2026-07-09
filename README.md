@@ -219,7 +219,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   a CJK run on a common line. `BaselineAxis::{Horizontal, Vertical}`
   selects the Y (horizontal-layout) or X (vertical-layout) axis;
   variable TTF faces resolve the coordinate at the current instance
-  through the `BASE` `ItemVariationStore`. Works for both TTF and
+  through the `BASE` `ItemVariationStore`. `default_baseline_tag` /
+  `default_baseline_coord` resolve the baseline a script declares as its
+  own default (`BaseScript::defaultBaselineIndex`), so a caller can align
+  to the font's intent without hard-coding `romn`. Works for both TTF and
   OTF/CFF faces; `None` when the table, axis, script, or baseline tag is
   absent.
 - **Line layout** — line measurement + word-wrap. `layout::wrap_lines`

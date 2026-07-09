@@ -104,3 +104,55 @@ fn unlisted_script_and_baseline_return_none() {
         None
     );
 }
+
+// ---------- default baseline resolution ---------------------------------
+
+#[test]
+fn source_sans_latin_default_baseline_is_roman() {
+    let face = source_sans();
+    // Source Sans declares romn as the default baseline for latn/grek/cyrl.
+    assert_eq!(
+        face.default_baseline_tag(BaselineAxis::Horizontal, *b"latn"),
+        Some(*b"romn")
+    );
+    // …and its coordinate is the origin.
+    assert_eq!(
+        face.default_baseline_coord(BaselineAxis::Horizontal, *b"latn"),
+        Some(0)
+    );
+    // Consistent with the explicit tag query.
+    assert_eq!(
+        face.default_baseline_coord(BaselineAxis::Horizontal, *b"grek"),
+        face.baseline_coord(BaselineAxis::Horizontal, *b"grek", *b"romn"),
+    );
+}
+
+#[test]
+fn default_baseline_none_paths() {
+    let face = source_sans();
+    // No VertAxis on this font.
+    assert_eq!(
+        face.default_baseline_tag(BaselineAxis::Vertical, *b"latn"),
+        None
+    );
+    assert_eq!(
+        face.default_baseline_coord(BaselineAxis::Vertical, *b"latn"),
+        None
+    );
+    // Unlisted script.
+    assert_eq!(
+        face.default_baseline_tag(BaselineAxis::Horizontal, *b"arab"),
+        None
+    );
+
+    // BASE-less TTF face.
+    let dejavu = Face::from_ttf_bytes(DEJAVU_BYTES.to_vec()).expect("DejaVu parses");
+    assert_eq!(
+        dejavu.default_baseline_tag(BaselineAxis::Horizontal, *b"latn"),
+        None
+    );
+    assert_eq!(
+        dejavu.default_baseline_coord(BaselineAxis::Horizontal, *b"latn"),
+        None
+    );
+}
