@@ -86,7 +86,11 @@ scx-constrained punctuation and bracketed quotations. Existing
 behaviour for neutral attachment (leading back-fill, left attachment at
 script changes) is unchanged. Unit tests in `src/script.rs` cover the
 §5.1/§5.2/§5.3 worked examples; the run partition remains total,
-gap-free, and in order.
+gap-free, and in order. `tests/round445_uax24_itemization.rs` verifies
+the refinement through the font-aware surfaces (bracketed-quotation tag
+runs, U+060C run membership, U+30FC extraction, itemised-vs-explicit
+positioning equality, resolver invariants on hostile input including
+past-BD16-depth bracket nesting).
 
 ### Added — `Face::shape_text_itemized` / `script_run_tags`: gid-level itemised shaping (round 377)
 
