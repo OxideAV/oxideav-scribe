@@ -37,8 +37,17 @@
 //!   for Latin runs). Type 2 (multiple substitution / decomposition)
 //!   becomes reachable for the first time.
 
+//! - Round 445: [`cluster`] — universal (script-agnostic) cluster
+//!   segmentation: the UAX #24 §5.2 combining-character-sequence model
+//!   (base + `Mn`/`Mc`/`Me` marks + ZWJ/ZWNJ join controls) for every
+//!   script without a dedicated machine, plus the §5.2 cluster-script
+//!   resolution. Drives cluster-atomic font fallback in
+//!   [`crate::FaceChain`] so a combining mark is sourced from the same
+//!   face as its base whenever that face covers it.
+
 pub mod arabic;
 pub mod arabic_pf;
+pub mod cluster;
 pub mod contextual_pos;
 pub mod feature_subst;
 pub mod general;
@@ -49,6 +58,9 @@ pub use arabic::{
     Script,
 };
 pub use arabic_pf::presentation_form;
+pub use cluster::{
+    cluster_category, cluster_script, universal_cluster_boundaries, ClusterCategory,
+};
 pub use feature_subst::{
     position_gids_with_features_with_font, position_text_with_alternates_with_font,
     position_text_with_features_with_font, position_text_with_script_and_features_with_font,
