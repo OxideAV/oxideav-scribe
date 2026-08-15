@@ -19,17 +19,31 @@
 //!   Scripts that the registry assigns both a legacy and a "v.2" shaping
 //!   tag (the Indic scripts) return the pair, modern-tag-first, from
 //!   [`ot_script_tags`].
-//! * [`ScriptRun`] / [`script_runs`] — itemise a string into maximal
-//!   same-script runs, resolving the `Common` and `Inherited` pseudo-
-//!   scripts onto a neighbouring real script so a run like
-//!   `"abc, def"` (where the comma and space are `Common`) stays one
-//!   Latin run rather than fragmenting on the punctuation.
+//! * [`ScriptRun`] / [`script_runs`] / [`resolve_scripts`] — itemise a
+//!   string into maximal same-script runs, resolving the `Common` and
+//!   `Inherited` pseudo-scripts onto a neighbouring real script so a run
+//!   like `"abc, def"` (where the comma and space are `Common`) stays
+//!   one Latin run rather than fragmenting on the punctuation. The
+//!   resolution implements the full UAX #24 §5 rule set: the
+//!   `Script_Extensions` (scx) constraint sets (§5.3 — U+30FC KATAKANA-
+//!   HIRAGANA PROLONGED SOUND MARK continues a Kana run but *not* a
+//!   Latin one), combining-mark inheritance (§5.2), and the paired-
+//!   bracket refinement (§5.1 — the closing element of a bracket pair
+//!   resolves to the same script as its opening partner, i.e. the
+//!   *enclosing* text's script).
 //!
-//! The Unicode `Script` property itself is supplied by the `intl`
-//! crate's compiled UCD tables ([`intl::unicode::script::script`]); this
-//! module never re-derives it.
+//! The Unicode `Script` / `Script_Extensions` properties themselves are
+//! supplied by the `intl` crate's compiled UCD tables
+//! ([`intl::unicode::script::script`] /
+//! [`intl::unicode::script::script_extensions`]); this module never
+//! re-derives them. The normative basis is the staged UAX #24
+//! transcription (`docs/text/unicode-script/uax24-script-extensions.md`)
+//! plus the UCD data files under `docs/text/opentype/ucd/`
+//! (`Scripts.txt` / `ScriptExtensions.txt`); bracket pairing reuses the
+//! crate's `BidiBrackets.txt` table via [`crate::bidi::paired_bracket`].
 
-use intl::unicode::script::{script, Script};
+use crate::bidi::{paired_bracket, BracketKind};
+use intl::unicode::script::{script, script_extensions, Script, ScriptExtensions};
 
 /// Resolve a Unicode [`Script`] to its primary OpenType script tag.
 ///
@@ -311,119 +325,336 @@ impl ScriptRun {
     }
 }
 
-/// Itemise `chars` into maximal same-script [`ScriptRun`]s.
+/// Per-character classification derived from the `Script` (sc) and
+/// `Script_Extensions` (scx) properties — UAX #24 §2.1 / §3.
+#[derive(Clone, Copy)]
+enum CharClass {
+    /// `sc = Inherited` — combining marks, ZWJ/ZWNJ, variation
+    /// selectors. §5.2: never break between a mark and its base; the
+    /// mark inherits the open run's script unconditionally. The scx set
+    /// is kept as a *hint* for spans with no base yet (e.g. the Arabic
+    /// vowel signs' `{Arab Syrc}`).
+    Mark(ScriptExtensions),
+    /// `sc = Common` / `Unknown` with an implicit scx set — usable with
+    /// almost any script (§3.2 rule 1). Attaches to whatever run is
+    /// open.
+    Neutral,
+    /// `sc` implicit but scx is a *limited explicit set* (§3.2 rule 2):
+    /// the character continues a run only if the run's script is in the
+    /// set (§5.3 — U+30FC continues Hiragana/Katakana, never Latin).
+    Constrained(&'static [Script]),
+    /// `sc` is an explicit script. The scx set (which contains `sc`,
+    /// §3.1 rule D) may list *extra* scripts the character is borrowed
+    /// into, in which case it can also continue a run of one of those.
+    Determinate(Script, ScriptExtensions),
+}
+
+/// UAX #9 BD16's canonical-equivalence clause, reused for §5.1 bracket
+/// pairing: U+2329/U+232A are canonically equivalent to U+3008/U+3009,
+/// so an opener of one form pairs with a closer of the other.
+fn canon_bracket(c: char) -> char {
+    match c {
+        '\u{2329}' => '\u{3008}',
+        '\u{232A}' => '\u{3009}',
+        other => other,
+    }
+}
+
+/// Resolve every character of `chars` to one concrete Unicode
+/// [`Script`], applying the UAX #24 §5 resolution rules.
 ///
-/// Each character's Unicode `Script` property drives the split, with the
-/// two pseudo-scripts handled so punctuation and combining marks do not
-/// fragment a run:
+/// This is the per-character form of [`script_runs`] (which is a simple
+/// grouping of this function's output): each `Common` / `Inherited` /
+/// `Unknown` character is resolved onto a real script from its context,
+/// and each scx-constrained character onto a member of its
+/// `Script_Extensions` set. The rules, in the order they apply to a
+/// character:
 ///
-/// * **`Inherited`** (combining marks, variation selectors) always joins
-///   the *preceding* character's resolved script — a mark never starts a
-///   new run.
-/// * **`Common`** (spaces, ASCII digits, most punctuation, symbols)
-///   joins the preceding run's script when there is one; a leading
-///   `Common` span (before any real script appears) is provisionally
-///   `Common` and is **back-filled** onto the first following real
-///   script, so `"123abc"` is a single Latin run rather than a `Common`
-///   run followed by a Latin run.
-/// * A `Common` / `Inherited` span that sits between two *different* real
-///   scripts stays attached to the **preceding** script (the run that
-///   was already open), so `"abcДef"` (Latin, Cyrillic) splits exactly
-///   at the script change with any intervening neutral characters going
-///   to the left run.
+/// * **Paired brackets (§5.1)** — the closing element of a bracket pair
+///   (per the `Bidi_Paired_Bracket` property, the same `BidiBrackets.txt`
+///   table [`crate::bidi::paired_bracket`] serves) resolves to the
+///   **same script as its opening partner**, i.e. the *enclosing*
+///   text's script — so in `"abc (αβ) def"` both parentheses resolve to
+///   Latin rather than the closer picking up Greek from its left
+///   neighbour. Bracket tracking uses a bounded stack (63 entries, the
+///   UAX #9 BD16 depth) with the BD16 canonical-equivalence clause for
+///   U+2329/U+232A ↔ U+3008/U+3009; unmatched closers degrade to plain
+///   neutral attachment.
+/// * **Combining marks (§5.2)** — `sc = Inherited` characters never
+///   break a run: they take the open run's script unconditionally
+///   (their scx set, when explicit, only narrows the resolution of a
+///   span that has no base character yet).
+/// * **scx constraint sets (§5.3)** — a character whose scx names a
+///   limited script set continues the open run only when the run's
+///   script is a member. Otherwise it opens an *ambiguous span*
+///   constrained to the set; consecutive constrained characters
+///   intersect their sets, and the span resolves to the first following
+///   determinate script that is a member (or to the set's first script
+///   when none arrives). So `"アー"` is one Katakana run, `"あー"` one
+///   Hiragana run, and `"abcー"` splits into a Latin run and a Kana
+///   run instead of swallowing U+30FC into Latin.
+/// * **Neutrals** — implicit-scx `Common` / `Unknown` characters attach
+///   to the open run; a leading neutral span back-fills onto the first
+///   real script (so `"123abc"` is all Latin). Text that never resolves
+///   to a real script comes back as `Common`.
 ///
-/// Resolution policy note: this is scribe's own conservative
-/// neutral-attachment rule built on the Unicode `Script` /
-/// `Script_Extensions` property data the `intl` crate supplies. It is
-/// deliberately simpler than the full UAX #24 §5.1 itemisation (which
-/// additionally pairs brackets and consults `Script_Extensions` to keep
-/// a `Common` character with a script it shares membership in); those
-/// refinements are layered on later. The output is always a complete,
-/// gap-free partition of `0..chars.len()` in order.
-///
-/// An empty input yields an empty `Vec`.
+/// The output always has exactly `chars.len()` entries, each an
+/// explicit script or `Script::Common` (for fully neutral text);
+/// `Inherited` / `Unknown` are never emitted.
 #[must_use]
-pub fn script_runs(chars: &[char]) -> Vec<ScriptRun> {
-    let mut runs: Vec<ScriptRun> = Vec::new();
-    if chars.is_empty() {
-        return runs;
+pub fn resolve_scripts(chars: &[char]) -> Vec<Script> {
+    /// Resolve the whole pending span to `to` and clear it.
+    fn resolve_span(
+        resolved: &mut [Option<Script>],
+        pending: &mut Vec<usize>,
+        pending_set: &mut Option<Vec<Script>>,
+        to: Script,
+    ) {
+        for &idx in pending.iter() {
+            resolved[idx] = Some(to);
+        }
+        pending.clear();
+        *pending_set = None;
     }
 
-    // `current` is the resolved script of the run currently being built;
-    // `None` while we are still in a leading Common/Inherited span that
-    // has no real script to attach to yet.
+    /// Resolve the pending span to its best fallback: the first script
+    /// of the constraint set, or `Common` for an unconstrained span.
+    fn flush_fallback(
+        resolved: &mut [Option<Script>],
+        pending: &mut Vec<usize>,
+        pending_set: &mut Option<Vec<Script>>,
+    ) {
+        if pending.is_empty() {
+            *pending_set = None;
+            return;
+        }
+        let fb = pending_set
+            .as_ref()
+            .and_then(|ps| ps.first().copied())
+            .unwrap_or(Script::Common);
+        resolve_span(resolved, pending, pending_set, fb);
+    }
+
+    let mut resolved: Vec<Option<Script>> = vec![None; chars.len()];
+    // Script of the currently open run; `None` while an unresolved
+    // (pending) span is being accumulated.
     let mut current: Option<Script> = None;
-    let mut run_start = 0usize;
-    // Index of the first run that still carries the provisional leading
-    // Common/Inherited script and needs back-filling once a real script
-    // appears. `None` once back-filled (or if the text opened with a
-    // real script).
-    let mut pending_leading: Option<usize> = None;
+    // Indices awaiting resolution, plus the scx constraint the span has
+    // accumulated (`None` = unconstrained: only neutrals so far).
+    let mut pending: Vec<usize> = Vec::new();
+    let mut pending_set: Option<Vec<Script>> = None;
+    // Open-bracket stack: (canonicalised expected closer, opener index).
+    let mut brackets: Vec<(char, usize)> = Vec::new();
+    const BRACKET_STACK_MAX: usize = 63;
 
     for (i, &c) in chars.iter().enumerate() {
-        let s = script(c);
-        match s {
-            // Inherited / Common never *force* a boundary: they extend
-            // whatever run is open.
-            Script::Inherited | Script::Common | Script::Unknown => {
-                if current.is_none() && runs.is_empty() {
-                    // Leading neutral span with no run open yet: open a
-                    // provisional run we will back-fill later.
-                    current = Some(Script::Common);
-                    run_start = run_start.min(i);
-                    pending_leading = Some(runs.len());
+        let sc = script(c);
+        let scx = script_extensions(c);
+        let class = match sc {
+            Script::Inherited => CharClass::Mark(scx),
+            Script::Common | Script::Unknown => match scx {
+                ScriptExtensions::Multiple(set) => CharClass::Constrained(set),
+                _ => CharClass::Neutral,
+            },
+            real => CharClass::Determinate(real, scx),
+        };
+
+        // §5.1 paired-bracket refinement. Every `Bidi_Paired_Bracket`
+        // character has an implicit or CJK-constrained Common script,
+        // so only the Neutral / Constrained classes can be brackets.
+        let bracket = match class {
+            CharClass::Neutral | CharClass::Constrained(_) => paired_bracket(c),
+            _ => None,
+        };
+        if let Some((_, BracketKind::Close)) = bracket {
+            let key = canon_bracket(c);
+            if let Some(depth) = brackets.iter().rposition(|&(cl, _)| cl == key) {
+                let (_, opener_idx) = brackets[depth];
+                brackets.truncate(depth);
+                if let Some(s) = resolved[opener_idx] {
+                    // The closing element resolves to the same script
+                    // as its opening partner — the enclosing text.
+                    if current != Some(s) {
+                        // Close any half-open ambiguous span first: it
+                        // joins the enclosing script when compatible,
+                        // else falls back on its own constraint.
+                        if !pending.is_empty() {
+                            let compatible =
+                                pending_set.as_ref().map_or(true, |ps| ps.contains(&s));
+                            if compatible {
+                                resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
+                            } else {
+                                flush_fallback(&mut resolved, &mut pending, &mut pending_set);
+                            }
+                        }
+                        current = Some(s);
+                    }
+                    resolved[i] = Some(s);
+                } else {
+                    // Opener is itself still pending: closer joins the
+                    // same span and they resolve together.
+                    pending.push(i);
                 }
-                // else: just keep extending the open run (no boundary).
+                continue;
             }
-            real => {
-                match current {
-                    // First real script seen — back-fill the provisional
-                    // leading-neutral run, if any, onto it.
-                    Some(Script::Common) if pending_leading.is_some() => {
-                        current = Some(real);
-                        pending_leading = None;
+            // Unmatched closer: plain neutral / constrained handling.
+        }
+
+        match class {
+            CharClass::Mark(scx) => {
+                if let Some(s) = current {
+                    // §5.2: the mark inherits its base's script.
+                    resolved[i] = Some(s);
+                } else {
+                    // Base-less mark: joins the pending span. An
+                    // explicit scx set narrows the span's resolution
+                    // when compatible with what it already carries.
+                    if let ScriptExtensions::Multiple(set) = scx {
+                        match &mut pending_set {
+                            None => pending_set = Some(set.to_vec()),
+                            Some(ps) => {
+                                let inter: Vec<Script> =
+                                    ps.iter().copied().filter(|s| set.contains(s)).collect();
+                                if !inter.is_empty() {
+                                    *ps = inter;
+                                }
+                            }
+                        }
                     }
-                    Some(cur) if cur == real => {
-                        // Same script — keep extending.
+                    pending.push(i);
+                }
+            }
+            CharClass::Neutral => {
+                if let Some(s) = current {
+                    resolved[i] = Some(s);
+                } else {
+                    pending.push(i);
+                }
+            }
+            CharClass::Constrained(set) => {
+                if let Some(t) = current {
+                    if set.contains(&t) {
+                        // §5.3: compatible with the open run — continue.
+                        resolved[i] = Some(t);
+                    } else {
+                        // The open run cannot absorb this character: it
+                        // ends here and an ambiguous span constrained
+                        // to `set` opens.
+                        current = None;
+                        pending.push(i);
+                        pending_set = Some(set.to_vec());
                     }
-                    Some(_) => {
-                        // Real script change: close the open run at `i`
-                        // and start a new one.
-                        runs.push(ScriptRun {
-                            start: run_start,
-                            end: i,
-                            script: current.unwrap(),
-                        });
-                        run_start = i;
-                        current = Some(real);
+                } else {
+                    match &mut pending_set {
+                        None => {
+                            pending.push(i);
+                            pending_set = Some(set.to_vec());
+                        }
+                        Some(ps) => {
+                            let inter: Vec<Script> =
+                                ps.iter().copied().filter(|s| set.contains(s)).collect();
+                            if inter.is_empty() {
+                                // Disjoint constraints: the old span
+                                // resolves on its own fallback and a
+                                // new one opens for this character.
+                                flush_fallback(&mut resolved, &mut pending, &mut pending_set);
+                                pending.push(i);
+                                pending_set = Some(set.to_vec());
+                            } else {
+                                pending.push(i);
+                                *ps = inter;
+                            }
+                        }
                     }
-                    None => {
-                        current = Some(real);
-                        run_start = run_start.min(i);
+                    // A constraint narrowed to one script is resolved.
+                    if let Some(ps) = &pending_set {
+                        if ps.len() == 1 {
+                            let s = ps[0];
+                            resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
+                            current = Some(s);
+                        }
                     }
                 }
+            }
+            CharClass::Determinate(s, scx) => {
+                if let Some(t) = current {
+                    if t == s || scx.contains(t) {
+                        // Same script, or a borrowed character whose
+                        // scx lists the run's script (§3.1 note) —
+                        // continue the open run.
+                        resolved[i] = Some(t);
+                    } else {
+                        resolved[i] = Some(s);
+                        current = Some(s);
+                    }
+                } else {
+                    let compatible = pending_set.as_ref().map_or(true, |ps| ps.contains(&s));
+                    if compatible {
+                        // Back-fill the pending span (leading neutrals,
+                        // or a constrained span this script satisfies).
+                        resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
+                    } else {
+                        flush_fallback(&mut resolved, &mut pending, &mut pending_set);
+                    }
+                    resolved[i] = Some(s);
+                    current = Some(s);
+                }
+            }
+        }
+
+        // Push opening brackets *after* the attach so the closer
+        // inherits the opener's own resolution.
+        if let Some((partner, BracketKind::Open)) = bracket {
+            if brackets.len() < BRACKET_STACK_MAX {
+                brackets.push((canon_bracket(partner), i));
             }
         }
     }
 
-    // Flush the final open run (always present for non-empty input).
-    if let Some(cur) = current {
-        runs.push(ScriptRun {
-            start: run_start,
-            end: chars.len(),
-            script: cur,
-        });
-    } else {
-        // Pathological: every char was neutral and we never opened a
-        // provisional run (cannot happen given the leading-neutral
-        // branch, but keep the partition total).
-        runs.push(ScriptRun {
-            start: 0,
-            end: chars.len(),
-            script: Script::Common,
-        });
-    }
+    // A trailing unresolved span falls back to the first script of its
+    // constraint set, or Common for fully neutral text.
+    flush_fallback(&mut resolved, &mut pending, &mut pending_set);
 
+    resolved
+        .into_iter()
+        .map(|s| s.unwrap_or(Script::Common))
+        .collect()
+}
+
+/// Itemise `chars` into maximal same-script [`ScriptRun`]s.
+///
+/// Each character is first resolved to a concrete script by
+/// [`resolve_scripts`] — the full UAX #24 §5 resolution: combining-mark
+/// inheritance (§5.2), `Script_Extensions` constraint sets (§5.3), the
+/// paired-bracket refinement (§5.1), leading-neutral back-fill, and
+/// neutrals otherwise attaching to the *preceding* run. Consecutive
+/// characters with the same resolved script then form one run, so:
+///
+/// * `"abc, def"` is one Latin run (comma + spaces are neutral);
+/// * `"123abc"` is one Latin run (leading neutrals back-fill);
+/// * `"abc Дзе"` splits at the script change, the space joining the
+///   Latin (preceding) run;
+/// * `"abc (αβ) def"` is Latin / Greek / Latin with **both** parentheses
+///   in the Latin runs (§5.1);
+/// * `"アー"` is a single Katakana run, and `"abcー"` splits U+30FC
+///   *out* of the Latin run (§5.3).
+///
+/// The output is always a complete, gap-free partition of
+/// `0..chars.len()` in order, with adjacent runs differing in script.
+/// An empty input yields an empty `Vec`.
+#[must_use]
+pub fn script_runs(chars: &[char]) -> Vec<ScriptRun> {
+    let mut runs: Vec<ScriptRun> = Vec::new();
+    for (i, s) in resolve_scripts(chars).into_iter().enumerate() {
+        match runs.last_mut() {
+            Some(last) if last.script == s => last.end = i + 1,
+            _ => runs.push(ScriptRun {
+                start: i,
+                end: i + 1,
+                script: s,
+            }),
+        }
+    }
     runs
 }
 
@@ -563,5 +794,154 @@ mod tests {
         assert_eq!(runs.len(), 2, "got {runs:?}");
         assert_eq!(runs[0].script, Script::Hebrew);
         assert_eq!(runs[1].script, Script::Han);
+    }
+
+    // ---- UAX #24 §5 refinements (Script_Extensions + brackets) ----
+
+    #[test]
+    fn scx_constrained_char_continues_a_compatible_run() {
+        // U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK: sc = Common,
+        // scx = {Hira Kana} (§3, the UAX #24 worked example). After a
+        // Katakana character it continues the Katakana run.
+        let runs = script_runs_str("\u{30A2}\u{30FC}");
+        assert_eq!(runs.len(), 1, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Katakana);
+        // …and after a Hiragana character, the Hiragana run.
+        let runs = script_runs_str("\u{3042}\u{30FC}");
+        assert_eq!(runs.len(), 1, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Hiragana);
+    }
+
+    #[test]
+    fn scx_constrained_char_does_not_continue_an_incompatible_run() {
+        // §5.3: U+30FC "should continue only runs of certain scripts,
+        // not a Latin run". Latin ∉ {Hira Kana}, so the Latin run ends
+        // and U+30FC resolves within its own scx set.
+        let runs = script_runs_str("abc\u{30FC}");
+        assert_eq!(runs.len(), 2, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Latin);
+        assert_eq!((runs[0].start, runs[0].end), (0, 3));
+        assert!(
+            matches!(runs[1].script, Script::Hiragana | Script::Katakana),
+            "got {runs:?}"
+        );
+    }
+
+    #[test]
+    fn scx_constrained_span_resolves_to_following_member_script() {
+        // U+060C ARABIC COMMA: sc = Common, scx names Arabic-family
+        // scripts (not Latin). Between a Latin run and an Arabic run it
+        // must join the Arabic side, not attach left to Latin.
+        let runs = script_runs_str("a\u{060C}\u{0628}");
+        assert_eq!(runs.len(), 2, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Latin);
+        assert_eq!((runs[0].start, runs[0].end), (0, 1));
+        assert_eq!(runs[1].script, Script::Arabic);
+        assert_eq!((runs[1].start, runs[1].end), (1, 3));
+    }
+
+    #[test]
+    fn arabic_vowel_signs_inherit_their_base() {
+        // U+064E ARABIC FATHA: sc = Inherited, scx = {Arab Syrc}. After
+        // an Arabic base it stays in the Arabic run (§5.2)…
+        let runs = script_runs_str("\u{0628}\u{064E}");
+        assert_eq!(runs.len(), 1, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Arabic);
+        // …and §5.2's "never break between a mark and its base" wins
+        // even over the scx hint: a (degenerate) Latin base keeps its
+        // mark in the Latin run.
+        let runs = script_runs_str("a\u{064E}");
+        assert_eq!(runs.len(), 1, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Latin);
+    }
+
+    #[test]
+    fn base_less_constrained_mark_resolves_within_its_scx_set() {
+        // A lone U+064E has no base: the span falls back to a member
+        // of its scx set rather than Common.
+        let resolved = resolve_scripts(&['\u{064E}']);
+        assert!(
+            matches!(resolved[0], Script::Arabic | Script::Syriac),
+            "got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn bracket_pair_resolves_to_enclosing_script() {
+        // §5.1: parentheses around a Greek word inside Latin text both
+        // resolve to Latin (the enclosing script) — the closer must NOT
+        // pick up Greek from its left neighbour.
+        let text = "abc (\u{03A8}\u{03B1}) def";
+        let chars: Vec<char> = text.chars().collect();
+        let runs = script_runs(&chars);
+        assert_eq!(runs.len(), 3, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Latin);
+        assert_eq!(runs[1].script, Script::Greek);
+        assert_eq!(runs[2].script, Script::Latin);
+        // "abc (" | "Ψα" | ") def"
+        assert_eq!((runs[0].start, runs[0].end), (0, 5));
+        assert_eq!((runs[1].start, runs[1].end), (5, 7));
+        assert_eq!((runs[2].start, runs[2].end), (7, 12));
+    }
+
+    #[test]
+    fn nested_bracket_pairs_resolve_independently() {
+        // "a[б(в)г]d": the inner pair encloses Cyrillic (opened while
+        // the Cyrillic run was live), the outer pair Latin.
+        let text = "a[\u{0431}(\u{0432})\u{0433}]d";
+        let chars: Vec<char> = text.chars().collect();
+        let resolved = resolve_scripts(&chars);
+        assert_eq!(resolved[1], Script::Latin, "outer opener: {resolved:?}");
+        assert_eq!(resolved[3], Script::Cyrillic, "inner opener: {resolved:?}");
+        assert_eq!(resolved[5], Script::Cyrillic, "inner closer: {resolved:?}");
+        assert_eq!(resolved[7], Script::Latin, "outer closer: {resolved:?}");
+    }
+
+    #[test]
+    fn unmatched_closer_attaches_like_a_neutral() {
+        // A stray ")" with no opener keeps the old left-attachment.
+        let runs = script_runs_str("abc) \u{0431}");
+        assert_eq!(runs.len(), 2, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Latin);
+        assert_eq!((runs[0].start, runs[0].end), (0, 5));
+        assert_eq!(runs[1].script, Script::Cyrillic);
+    }
+
+    #[test]
+    fn canonically_equivalent_angle_brackets_pair() {
+        // BD16 canonical equivalence: U+2329 opener pairs with U+3009
+        // closer. Enclosing script is Latin.
+        let text = "a\u{2329}\u{0431}\u{3009}b";
+        let chars: Vec<char> = text.chars().collect();
+        let resolved = resolve_scripts(&chars);
+        assert_eq!(resolved[1], Script::Latin, "{resolved:?}");
+        assert_eq!(resolved[3], Script::Latin, "{resolved:?}");
+    }
+
+    #[test]
+    fn devanagari_danda_continues_a_devanagari_run() {
+        // U+0964 DEVANAGARI DANDA: sc = Common, scx spans the Indic
+        // scripts — it continues a Devanagari run.
+        let runs = script_runs_str("\u{0915}\u{0964}");
+        assert_eq!(runs.len(), 1, "got {runs:?}");
+        assert_eq!(runs[0].script, Script::Devanagari);
+    }
+
+    #[test]
+    fn resolve_scripts_never_emits_pseudo_scripts_for_real_text() {
+        let chars: Vec<char> = "Hello, \u{05E9}\u{05DC} 123 \u{4E16}!".chars().collect();
+        for (i, s) in resolve_scripts(&chars).into_iter().enumerate() {
+            assert!(
+                !matches!(s, Script::Inherited | Script::Unknown),
+                "char {i} resolved to pseudo-script {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_scripts_length_matches_input() {
+        let chars: Vec<char> = "a(\u{03B1}\u{060C})\u{30FC} \u{0964}".chars().collect();
+        assert_eq!(resolve_scripts(&chars).len(), chars.len());
+        assert!(resolve_scripts(&[]).is_empty());
     }
 }

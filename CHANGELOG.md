@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — full UAX #24 §5 script itemisation: `Script_Extensions` + paired brackets (round 445)
+
+`script::script_runs` now implements the complete UAX #24 §5 resolution
+that its docs previously deferred ("layered on later"), via a new public
+per-character resolver `script::resolve_scripts(chars) -> Vec<Script>`:
+
+- **`Script_Extensions` constraint sets (§5.3)** — a character whose scx
+  property names a limited script set (from the `intl` crate's compiled
+  `ScriptExtensions.txt` tables; staged under `docs/text/opentype/ucd/`)
+  continues the open run only when the run's script is a member.
+  U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK (`{Hira Kana}`) now
+  continues a Katakana or Hiragana run but splits *out* of a Latin run;
+  U+060C ARABIC COMMA joins the following Arabic run instead of
+  attaching left onto Latin; U+0964 DEVANAGARI DANDA continues a
+  Devanagari run. Consecutive constrained characters intersect their
+  sets; an unresolvable span falls back to the first script of its
+  constraint (never silently to `Common`).
+- **Paired-bracket refinement (§5.1)** — the closing element of a
+  bracket pair resolves to the **same script as its opening partner**
+  (the enclosing text), driven by the crate's vendored
+  `BidiBrackets.txt` table (`bidi::paired_bracket`) with a BD16-style
+  63-deep stack and the U+2329/U+232A ↔ U+3008/U+3009
+  canonical-equivalence clause. `"abc (Ψα) def"` now itemises as
+  Latin / Greek / Latin with *both* parentheses in the Latin runs —
+  previously the closer picked up Greek from its left neighbour.
+  Nested pairs resolve independently; unmatched closers degrade to
+  plain neutral attachment.
+- **Combining-mark inheritance (§5.2)** — `sc = Inherited` marks take
+  the open run's script unconditionally (never break between a mark and
+  its base), with an explicit scx set narrowing only *base-less* spans
+  (a lone U+064E ARABIC FATHA resolves within `{Arab Syrc}` rather
+  than to Common).
+
+The refined itemisation flows through every consumer of `script_runs`:
+`Face::position_text_itemized` / `shape_text_itemized` /
+`script_run_tags` now pick the correct per-run OpenType script tag for
+scx-constrained punctuation and bracketed quotations. Existing
+behaviour for neutral attachment (leading back-fill, left attachment at
+script changes) is unchanged. Unit tests in `src/script.rs` cover the
+§5.1/§5.2/§5.3 worked examples; the run partition remains total,
+gap-free, and in order.
+
 ### Added — `Face::shape_text_itemized` / `script_run_tags`: gid-level itemised shaping (round 377)
 
 Two more entry points completing the itemised-shaping API surface:
