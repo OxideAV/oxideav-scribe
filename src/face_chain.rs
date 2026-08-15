@@ -326,6 +326,52 @@ impl FaceChain {
             // No face had it — render as primary's .notdef.
             out.push(found.unwrap_or((0, 0)));
         }
+        // Universal mark handling (round 445): cluster-atomic font
+        // fallback. UAX #24 §5.2 — never break between a combining
+        // mark and its base. The per-character scan above picks the
+        // FIRST face covering each char independently, so a base
+        // sourced from a fallback face could get its combining marks
+        // from the primary — but GPOS mark-to-base attachment (and the
+        // mark's design fit) cannot cross faces. Re-source every
+        // `Mn`/`Mc`/`Me` mark from its cluster's base face whenever
+        // that face covers the mark; marks the base face lacks keep
+        // the per-character assignment (graceful degradation, the
+        // pre-round-445 behaviour). ZWJ/ZWNJ join controls and the
+        // Indic cluster machinery are untouched: the spans come from
+        // the script-agnostic combining-character-sequence model in
+        // `crate::shaping::cluster`.
+        for (start, end) in crate::shaping::cluster::universal_cluster_boundaries(&shaped_chars) {
+            // The cluster's base is its first Base-category char (a
+            // defective leading-mark cluster has none — skip it).
+            let Some(base_off) = shaped_chars[start..end].iter().position(|&c| {
+                crate::shaping::cluster::cluster_category(c)
+                    == crate::shaping::cluster::ClusterCategory::Base
+            }) else {
+                continue;
+            };
+            let (base_face, base_gid) = out[start + base_off];
+            if base_gid == 0 {
+                // Base is .notdef — no owning face to cohere marks to.
+                continue;
+            }
+            for i in (start + base_off + 1)..end {
+                if crate::shaping::cluster::cluster_category(shaped_chars[i])
+                    != crate::shaping::cluster::ClusterCategory::Mark
+                {
+                    continue;
+                }
+                if out[i].0 == base_face {
+                    continue;
+                }
+                let g = self.faces[base_face as usize]
+                    .with_font(|font| font.glyph_index(shaped_chars[i]))?;
+                if let Some(gid) = g {
+                    if gid != 0 {
+                        out[i] = (base_face, gid);
+                    }
+                }
+            }
+        }
         // Apply reph GSUB substitution: for each `RephMark` we identified
         // in the pre-cmap pass, look up the `rphf` feature on the
         // *assigned* face for the RA glyph, apply LookupType 1, and if

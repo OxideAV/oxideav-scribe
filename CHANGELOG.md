@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — cluster-atomic font fallback: a mark never splits from its base's face (round 445)
+
+`FaceChain`'s per-character fallback scan picked the FIRST face
+covering each character independently, so a base sourced from a
+fallback face could get its combining marks from the primary — the mark
+and its base landing on different faces, where GPOS mark-to-base
+attachment cannot operate and the mark's design coordinates do not fit
+the base. A new post-pass over the `shaping::cluster` universal spans
+re-sources every `Mn`/`Mc`/`Me` mark from its cluster's **base face**
+whenever that face covers the mark (UAX #24 §5.2 — never break between
+a combining mark and its base). Marks the base face lacks keep the
+per-character assignment (the previous graceful degradation); ZWJ/ZWNJ
+join controls, the Arabic presentation-form pass, and the Indic cluster
+machinery are untouched. `Shaper::shape_to_paths` and every
+`FaceChain::shape*` consumer inherit the fix. Tests:
+`tests/round445_cluster_fallback.rs` (InterVariable primary +
+DejaVuSans fallback; Hebrew base with combining marks both faces
+cover).
+
+### Added — `shaping::cluster`: universal (script-agnostic) cluster segmentation (round 445)
+
+The combining-character-sequence cluster model of UAX #24 §5.2, for
+every script without a dedicated machine in `shaping::indic` /
+`shaping::arabic`:
+
+- `cluster_category(c)` — `Base` / `Mark` (General_Category `Mn` /
+  `Mc` / `Me`) / `Joiner` (U+200C ZWNJ, U+200D ZWJ — `Script =
+  Inherited` per UAX #24 §2.1, cluster-bound to the preceding base).
+- `universal_cluster_boundaries(chars)` — half-open `(start, end)`
+  spans (one base plus its following marks/joiners), tiling the input
+  completely; defective leading-mark sequences form their own span.
+  Same span convention as `shaping::indic::cluster_boundaries`.
+- `cluster_script(cluster)` — the §5.2 refinement: the script of the
+  first non-Inherited, non-Common character, else `Common`.
+
+General_Category comes from the `intl` crate's compiled UCD tables;
+the normative prose is the staged UAX #24 transcription
+(`docs/text/unicode-script/uax24-script-extensions.md`).
+
 ### Added — full UAX #24 §5 script itemisation: `Script_Extensions` + paired brackets (round 445)
 
 `script::script_runs` now implements the complete UAX #24 §5 resolution
