@@ -161,6 +161,20 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `init` / `haln`). Per-script reorder rules are exposed as
   `DEVANAGARI_RULES` / `BENGALI_RULES` / … / `BURMESE_RULES` for callers
   reusing the cluster machine. Coverage misses pass through unchanged.
+- **Universal cluster model** — `shaping::cluster` implements the
+  script-agnostic combining-character-sequence cluster of UAX #24 §5.2
+  (base + `Mn`/`Mc`/`Me` marks + ZWJ/ZWNJ join controls) for every
+  script without a dedicated machine: `cluster_category`,
+  `universal_cluster_boundaries` (half-open spans tiling the input),
+  and `cluster_script` (the §5.2 first-real-script resolution).
+  `FaceChain`'s font fallback is **cluster-atomic** on top of it: a
+  combining mark is re-sourced from its cluster's base face whenever
+  that face covers it, so GPOS mark attachment never has to cross
+  faces; marks the base face lacks degrade to the per-character scan.
+  The per-script syllable grammars of the OpenType Universal Shaping
+  Engine (USE) model — reordering classes, syllable machines for e.g.
+  Balinese / Javanese / Cham / Tai Tham — need the per-script
+  script-development specs, which are not in the staged docs set.
 
 ### Script itemisation
 
@@ -173,15 +187,24 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   tables are transcribed from the OpenType *Script Tags* registry
   (`docs/text/opentype/registries/script-tags.html`, CC-BY-4.0);
   `Common` / `Inherited` / `Unknown` resolve to the Default tag `DFLT`.
-- **Script-run segmentation** — `script::script_runs(chars)` /
-  `script_runs_str(text)` itemise a string into maximal same-script
-  `ScriptRun`s (char-index ranges + resolved `Script`). `Inherited`
-  combining marks always join the preceding run; `Common` punctuation /
-  digits / spaces join the open run (and a leading `Common` span
-  back-fills onto the first real script), so `"abc, def"` is one Latin
-  run and `"123abc"` is one Latin run. The output is a gap-free
-  partition. Full UAX #24 §5.1 bracket-pairing / `Script_Extensions`
-  refinement is layered on later.
+- **Script-run segmentation (full UAX #24 §5)** —
+  `script::script_runs(chars)` / `script_runs_str(text)` itemise a
+  string into maximal same-script `ScriptRun`s (char-index ranges +
+  resolved `Script`), on top of the per-character resolver
+  `script::resolve_scripts`. The resolution implements the complete
+  UAX #24 §5 rule set: `Inherited` combining marks join the open run
+  unconditionally (§5.2); `Common` punctuation / digits / spaces join
+  the open run (a leading `Common` span back-fills onto the first real
+  script), so `"abc, def"` and `"123abc"` are each one Latin run;
+  characters with a **limited `Script_Extensions` set** continue a run
+  only when the run's script is a member (§5.3 — `"アー"` is one
+  Katakana run but `"abcー"` splits U+30FC out of Latin, and U+060C
+  ARABIC COMMA joins the Arabic side), with consecutive constrained
+  characters intersecting their sets; and **paired brackets** resolve
+  the closing element to the same script as its opener — the enclosing
+  text — via the vendored `BidiBrackets.txt` table (§5.1 —
+  `"abc (Ψα) def"` keeps both parentheses in the Latin runs). The
+  output is a gap-free partition.
 - **Font-aware itemised shaping** — `Face::resolve_ot_script_tag(script)`
   picks the tag the font actually registers (v.2 preferred, legacy
   fallback); `Face::script_run_tags(text)` pairs each `ScriptRun` with
