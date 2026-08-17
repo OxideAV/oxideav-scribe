@@ -104,8 +104,8 @@ fn resolver_invariants_hold_on_hostile_input() {
     // 63-entry stack, lone marks, pseudo-script soup. The resolver
     // must stay total (one output per input char) and never emit
     // Inherited/Unknown.
-    let deep_open: String = std::iter::repeat('(').take(100).collect();
-    let deep_close: String = std::iter::repeat(')').take(100).collect();
+    let deep_open: String = "(".repeat(100);
+    let deep_close: String = ")".repeat(100);
     let cases = [
         "",
         ")))(((",
