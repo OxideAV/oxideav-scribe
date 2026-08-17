@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.9...v0.1.10) - 2026-08-17
+
+### Other
+
+- use str::repeat for the deep-bracket probes (clippy 1.9x drift)
+- document the UAX #24 §5 itemiser, universal cluster model, cluster-atomic fallback
+- UAX #24 §5 itemisation through the Face shaping surfaces
+- cluster-atomic font fallback — marks never split from their base's face
+- universal cluster segmentation — UAX #24 §5.2 combining character sequences
+- full UAX #24 §5 itemisation — Script_Extensions sets + paired-bracket refinement
+- default-baseline resolution (default_baseline_tag / _coord)
+- deterministic generative fuzz-smoke harness for shaping/layout
+- hostile-input hardening battery on shaping / layout entry points
+- BASE-table baseline metric accessors (has_base_table / baseline_coord)
+- GPOS feature-tag introspection mirror + GSUB∪GPOS union query
+- add CI / crates.io / docs.rs / MIT-license badges
+- Face::shape_text_itemized + script_run_tags — gid-level itemised shaping (round 377)
+- Face::resolve_ot_script_tag — font-aware v.2/legacy tag selection (round 377)
+- Face::position_text_itemized — segmenter-driven per-script shaping (round 377)
+- Unicode-script → OpenType-tag map + script-run segmentation (round 377)
+- shape_paragraphs — multi-paragraph document layout (round 374)
+- Revert "shaper: GPOS cursive RIGHT_TO_LEFT flag-set cross-stream variant (round 374)"
+- Revert "shaper: GPOS pair kerning honours the IGNORE_MARKS LookupFlag (round 374)"
+- wrap_and_shape_lines — wrap + bidi-shape in one call (round 374)
+- bidi-shaped visual line — shape_visual_line (round 374)
+- GPOS pair kerning honours the IGNORE_MARKS LookupFlag (round 374)
+- GPOS cursive RIGHT_TO_LEFT flag-set cross-stream variant (round 374)
+- README + CHANGELOG for round-362 positioned caller-feature shaping
+- high-level positioned caller-feature API (Face + FaceChain)
+- positioned caller-feature shaping path (GSUB features → full GPOS)
+- README + CHANGELOG for round-353 GSUB contextual subst on the caller path
+- process always-on GSUB type-8 reverse-chaining right-to-left (round 353)
+- GSUB contextual / chained / reverse-chained subst on the caller path (round 353)
+- clarify the contextual-pos early-return guard
+- paraphrase third-party-library references in clean-room doc comments
+- GPOS contextual + chained-contextual positioning (LookupType 7/8)
+- Revert "face: GPOS feature-tag introspection mirror (gpos_features_for_script / has_gpos_feature)"
+- GPOS feature-tag introspection mirror (gpos_features_for_script / has_gpos_feature)
+- glyph-name resolution (258 standard Mac names + formats 1.0/2.0/2.5)
+- OFF §6.4 pair-kern advance fix + intl-backed UCD lookups (round 319)
+
 ### Fixed — cluster-atomic font fallback: a mark never splits from its base's face (round 445)
 
 `FaceChain`'s per-character fallback scan picked the FIRST face
