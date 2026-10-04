@@ -43,4 +43,7 @@ intl = { version = "0.4", default-features = false, features = ["bidi", "full"] 
 # first download; gated behind OXIDEAV_NETWORK_TESTS=1; SHA-256
 # verified on every load. Mirrors the oxideav-msmpeg4 microsoft_fixtures
 # pattern.
-ureq = "3"
+# default-features = false drops ureq's gzip layer (flate2 /
+# miniz_oxide); the workspace uses compcol for compression and the
+# fixtures are fetched uncompressed. `rustls` keeps https working.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
