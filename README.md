@@ -38,6 +38,7 @@ for (_face_idx, glyph_node, transform) in placed {
 let mut frame = VectorFrame::new(400.0, 80.0);
 frame.root = root;
 let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Capabilities
