@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.10...v0.1.11) - 2026-10-04
+
+### Other
+
+- README examples use the current registry API
+- ureq without default features — drop the flate2/miniz_oxide gzip layer
+
 ## [0.1.10](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.9...v0.1.10) - 2026-08-17
 
 ### Other
