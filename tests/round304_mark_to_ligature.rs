@@ -71,7 +71,7 @@ use oxideav_scribe::{Face, PositionedGlyph, Shaper};
 // ---------------------------------------------------------------------------
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -185,7 +185,7 @@ fn build_gpos_mark_to_ligature(
     let lig_attach_header = 2 + 2 * mark_class_count * n; // componentCount + offsets
     let mut lig_attach = Vec::new();
     lig_attach.extend_from_slice(&n.to_be_bytes()); // componentCount
-                                                    // Anchors are laid out after all ComponentRecords, one per component.
+    // Anchors are laid out after all ComponentRecords, one per component.
     let anchors_base = lig_attach_header;
     let anchor_len = 6u16; // Anchor Format 1: fmt + x + y
     for k in 0..n {

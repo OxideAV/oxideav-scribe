@@ -12,8 +12,8 @@
 //!   `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
 
 use oxideav_scribe::{
-    bidi_class, process_paragraph, process_paragraph_classes, reorder_line, reset_trailing_levels,
-    BidiClass, ParagraphBidi,
+    BidiClass, ParagraphBidi, bidi_class, process_paragraph, process_paragraph_classes,
+    reorder_line, reset_trailing_levels,
 };
 
 // --- §3.3.1 P2 + P3: paragraph-level resolution --------------------

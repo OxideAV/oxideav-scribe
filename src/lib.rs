@@ -182,48 +182,48 @@ pub mod style;
 pub mod variations;
 
 pub use bidi::{
-    apply_mirroring, bidi_class, bracket_pairs, isolating_run_sequences, level_runs,
-    mirrored_glyph, paired_bracket, paragraph_level, process_paragraph, process_paragraph_classes,
-    process_paragraph_classes_with_brackets, process_paragraph_with_brackets, process_text,
-    reorder_combining_marks, reorder_line, reset_trailing_levels, resolve_bracket_pairs,
-    resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,
-    split_paragraphs, BidiClass, BracketKind, ExplicitLevels, IsolatingRunSequence, LevelRun,
-    ParagraphBidi, ParagraphSlice, TextBidi, MAX_DEPTH,
+    BidiClass, BracketKind, ExplicitLevels, IsolatingRunSequence, LevelRun, MAX_DEPTH,
+    ParagraphBidi, ParagraphSlice, TextBidi, apply_mirroring, bidi_class, bracket_pairs,
+    isolating_run_sequences, level_runs, mirrored_glyph, paired_bracket, paragraph_level,
+    process_paragraph, process_paragraph_classes, process_paragraph_classes_with_brackets,
+    process_paragraph_with_brackets, process_text, reorder_combining_marks, reorder_line,
+    reset_trailing_levels, resolve_bracket_pairs, resolve_explicit_levels, resolve_implicit_levels,
+    resolve_neutral_types, resolve_weak_types, split_paragraphs,
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
 pub use face::{BaselineAxis, Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{
-    reorder_line_visual, run_width, shape_paragraphs, shape_visual_line, wrap_and_shape_lines,
-    wrap_lines, ShapedParagraph, ShapedVisualLine, VisualLine,
+    ShapedParagraph, ShapedVisualLine, VisualLine, reorder_line_visual, run_width,
+    shape_paragraphs, shape_visual_line, wrap_and_shape_lines, wrap_lines,
 };
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
-pub use post::{standard_mac_glyph_name, PostTable, STANDARD_MAC_GLYPH_NAMES};
+pub use post::{PostTable, STANDARD_MAC_GLYPH_NAMES, standard_mac_glyph_name};
 pub use script::{
-    ot_script_tag, ot_script_tags, resolve_scripts, script_runs, script_runs_str, ScriptRun,
+    ScriptRun, ot_script_tag, ot_script_tags, resolve_scripts, script_runs, script_runs_str,
 };
 pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
 pub use shaping::{
-    bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,
-    cluster_boundaries, cluster_boundaries_with, cluster_category, cluster_script, compute_forms,
-    devanagari_category, devanagari_feature_tags, feature_tags_for_run, gujarati_category,
-    gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags, joining_class,
-    kannada_category, kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category,
-    lao_feature_tags, malayalam_category, malayalam_feature_tags, oriya_category,
-    oriya_feature_tags, position_gids_with_features_with_font,
+    BENGALI_RULES, BURMESE_RULES, ClusterCategory, ClusterFlags, DEVANAGARI_RULES, GUJARATI_RULES,
+    GURMUKHI_RULES, IndicCategory, JoiningClass, JoiningForm, KANNADA_RULES, KHMER_RULES,
+    LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, ReorderRules, RephKind, SINHALA_RULES, Script,
+    TAMIL_RULES, TELUGU_RULES, THAI_RULES, bengali_category, bengali_feature_tags,
+    burmese_category, burmese_feature_tags, cluster_boundaries, cluster_boundaries_with,
+    cluster_category, cluster_script, compute_forms, devanagari_category, devanagari_feature_tags,
+    feature_tags_for_run, gujarati_category, gujarati_feature_tags, gurmukhi_category,
+    gurmukhi_feature_tags, joining_class, kannada_category, kannada_feature_tags, khmer_category,
+    khmer_feature_tags, lao_category, lao_feature_tags, malayalam_category, malayalam_feature_tags,
+    oriya_category, oriya_feature_tags, position_gids_with_features_with_font,
     position_text_with_alternates_with_font, position_text_with_features_with_font,
     position_text_with_script_and_features_with_font, presentation_form, reorder_cluster,
     reorder_cluster_with, script_indic_tags, shape_text_with_font,
     shape_text_with_script_with_font, sinhala_category, sinhala_feature_tags, tamil_category,
     tamil_feature_tags, telugu_category, telugu_feature_tags, thai_category, thai_feature_tags,
-    universal_cluster_boundaries, ClusterCategory, ClusterFlags, IndicCategory, JoiningClass,
-    JoiningForm, ReorderRules, RephKind, Script, BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES,
-    GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES,
-    ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES,
+    universal_cluster_boundaries,
 };
 pub use style::{
-    synthetic_italic_shear, Style, DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG,
+    DEFAULT_SYNTHETIC_ITALIC_DEG, ITALIC_ANGLE_EPSILON_DEG, Style, synthetic_italic_shear,
 };
 
 /// Errors emitted by the scribe pipeline.

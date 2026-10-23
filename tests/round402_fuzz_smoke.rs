@@ -17,7 +17,7 @@
 //! and a few structural invariants, not glyph-exact output. A failing
 //! seed prints enough to reproduce.
 
-use oxideav_scribe::{layout, Face, FaceChain};
+use oxideav_scribe::{Face, FaceChain, layout};
 
 const DEJAVU_BYTES: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 

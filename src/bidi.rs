@@ -975,8 +975,8 @@ fn fsi_inner_level(classes: &[BidiClass], start: usize) -> u8 {
 /// ```
 pub fn resolve_weak_types(classes: &mut [BidiClass], sos: BidiClass, eos: BidiClass) {
     let _ = eos; // eos is not consumed by W1..W7 (kept in the signature
-                 // for symmetry with the N-rules + because the spec
-                 // narration references it for boundary cases).
+    // for symmetry with the N-rules + because the spec
+    // narration references it for boundary cases).
     if classes.is_empty() {
         return;
     }
@@ -1246,7 +1246,7 @@ pub fn resolve_neutral_types(
     let sos_dir = strong_dir(sos).unwrap_or(BidiClass::L);
     let eos_dir = strong_dir(eos).unwrap_or(BidiClass::L);
 
-    let embedding_dir = if embedding_level % 2 == 0 {
+    let embedding_dir = if embedding_level.is_multiple_of(2) {
         BidiClass::L
     } else {
         BidiClass::R
@@ -1463,11 +1463,7 @@ pub fn bracket_pairs(chars: &[char], classes: &[BidiClass]) -> Vec<(usize, usize
     // limits canonical equivalence to exactly the U+3008/U+3009 and
     // U+2329/U+232A pairs, so this one substitution is exhaustive.
     const fn canon(c: char) -> char {
-        if c as u32 == 0x232A {
-            '\u{3009}'
-        } else {
-            c
-        }
+        if c as u32 == 0x232A { '\u{3009}' } else { c }
     }
 
     for (i, &c) in chars.iter().enumerate() {
@@ -1630,7 +1626,7 @@ pub fn resolve_bracket_pairs(
     }
 
     let sos_dir = strong_dir_n0(sos).unwrap_or(BidiClass::L);
-    let embedding_dir = if embedding_level % 2 == 0 {
+    let embedding_dir = if embedding_level.is_multiple_of(2) {
         BidiClass::L
     } else {
         BidiClass::R
@@ -1764,7 +1760,7 @@ pub fn resolve_bracket_pairs(
 /// ```
 #[must_use]
 pub fn resolve_implicit_levels(classes: &[BidiClass], embedding_level: u8) -> Vec<u8> {
-    let even = embedding_level % 2 == 0;
+    let even = embedding_level.is_multiple_of(2);
     classes
         .iter()
         .map(|c| match c {
@@ -2452,7 +2448,7 @@ impl IsolatingRunSequence {
 /// directional type per UAX #9 X10 step 2: "If the higher level is
 /// odd, the sos or eos is R; otherwise, it is L."
 fn level_to_sos_eos(level: u8) -> BidiClass {
-    if level % 2 == 0 {
+    if level.is_multiple_of(2) {
         BidiClass::L
     } else {
         BidiClass::R
@@ -2631,16 +2627,15 @@ pub fn isolating_run_sequences(
         if matches!(
             classes[last],
             BidiClass::LRI | BidiClass::RLI | BidiClass::FSI
-        ) {
-            if let Some(pdi_idx) = matching_pdi(classes, last) {
-                let pdi_run = run_of_index[pdi_idx];
-                // BD13's parenthetical note: "this matching PDI
-                // must be the first character of its level run".
-                // Confirm — if not, the chain breaks and we skip.
-                if runs[pdi_run].start == pdi_idx {
-                    next_run[ri] = Some(pdi_run);
-                    chained_from_prior[pdi_run] = true;
-                }
+        ) && let Some(pdi_idx) = matching_pdi(classes, last)
+        {
+            let pdi_run = run_of_index[pdi_idx];
+            // BD13's parenthetical note: "this matching PDI
+            // must be the first character of its level run".
+            // Confirm — if not, the chain breaks and we skip.
+            if runs[pdi_run].start == pdi_idx {
+                next_run[ri] = Some(pdi_run);
+                chained_from_prior[pdi_run] = true;
             }
         }
     }
@@ -2704,12 +2699,11 @@ pub fn isolating_run_sequences(
                 break;
             }
         }
-        if let Some(j) = last_run_last_nonremoved {
-            if matches!(classes[j], BidiClass::LRI | BidiClass::RLI | BidiClass::FSI)
-                && matching_pdi(classes, j).is_none()
-            {
-                eos_fallback = true;
-            }
+        if let Some(j) = last_run_last_nonremoved
+            && matches!(classes[j], BidiClass::LRI | BidiClass::RLI | BidiClass::FSI)
+            && matching_pdi(classes, j).is_none()
+        {
+            eos_fallback = true;
         }
         let mut eos_other = paragraph_level;
         if !eos_fallback {
@@ -3462,7 +3456,7 @@ mod tests {
         // Currency signs are ET.
         assert_eq!(bidi_class('\u{00A3}'), BidiClass::ET); // £
         assert_eq!(bidi_class('\u{00A5}'), BidiClass::ET); // ¥
-                                                           // DEGREE SIGN is ET.
+        // DEGREE SIGN is ET.
         assert_eq!(bidi_class('\u{00B0}'), BidiClass::ET);
         // SOFT HYPHEN is BN.
         assert_eq!(bidi_class('\u{00AD}'), BidiClass::BN);
@@ -3599,8 +3593,8 @@ mod tests {
         // Latin "H" → P3 returns 0.
         let s = "\u{202B}\u{05D0}\u{202C}Hello";
         assert_eq!(paragraph_level(s), 1); // Hebrew comes first as strong.
-                                           // Now invert: embedding wraps Latin, then Hebrew. P2 sees
-                                           // Latin first inside the embedding → 0.
+        // Now invert: embedding wraps Latin, then Hebrew. P2 sees
+        // Latin first inside the embedding → 0.
         let s = "\u{202B}Hello\u{202C}\u{05D0}";
         assert_eq!(paragraph_level(s), 0);
     }

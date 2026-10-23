@@ -14,8 +14,8 @@
 //!
 //! Inter v4.0 OFL (see `tests/fixtures/INTER-OFL-LICENSE.txt`).
 
-use oxideav_scribe::variations::{StatAxisValue, StatTable};
 use oxideav_scribe::Face;
+use oxideav_scribe::variations::{StatAxisValue, StatTable};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/InterVariable.ttf");
 

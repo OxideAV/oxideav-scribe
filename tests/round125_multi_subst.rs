@@ -51,7 +51,7 @@ use oxideav_scribe::Face;
 // ---------------------------------------------------------------------------
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -195,7 +195,7 @@ fn build_synthetic_ttf_with_subst(input_gid: u16, sequence: &[u16]) -> Vec<u8> {
     sub.extend_from_slice(&0x0063u16.to_be_bytes());
     sub.extend_from_slice(&0xFFFFu16.to_be_bytes());
     sub.extend_from_slice(&0u16.to_be_bytes()); // reservedPad
-                                                // startCode[2]: 0x61, 0xFFFF
+    // startCode[2]: 0x61, 0xFFFF
     sub.extend_from_slice(&0x0061u16.to_be_bytes());
     sub.extend_from_slice(&0xFFFFu16.to_be_bytes());
     // idDelta[2]: -0x60 (= 0xFFA0), 1 (terminator → gid 0)
@@ -366,7 +366,7 @@ fn build_synthetic_ttf_with_subst(input_gid: u16, sequence: &[u16]) -> Vec<u8> {
         records.push((tag, checksum, length, data));
         // 4-byte pad already applied inside each builder.
         cursor += length;
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }

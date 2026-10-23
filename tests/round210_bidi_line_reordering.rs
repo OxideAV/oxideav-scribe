@@ -22,8 +22,8 @@
 //! the public contract of `reorder_line`.
 
 use oxideav_scribe::{
-    paragraph_level, reorder_line, reset_trailing_levels, resolve_implicit_levels,
-    resolve_neutral_types, resolve_weak_types, BidiClass,
+    BidiClass, paragraph_level, reorder_line, reset_trailing_levels, resolve_implicit_levels,
+    resolve_neutral_types, resolve_weak_types,
 };
 
 // --- §3.4 Rule L1 — separator + trailing-filler reset --------------

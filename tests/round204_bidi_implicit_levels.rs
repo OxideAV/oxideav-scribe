@@ -17,7 +17,7 @@
 //! passes it directly, which matches the public contract.
 
 use oxideav_scribe::{
-    resolve_implicit_levels, resolve_neutral_types, resolve_weak_types, BidiClass,
+    BidiClass, resolve_implicit_levels, resolve_neutral_types, resolve_weak_types,
 };
 
 // --- §3.3.6 Table 5 row 1: type L ---------------------------------

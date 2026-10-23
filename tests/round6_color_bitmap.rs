@@ -26,10 +26,10 @@
 #[path = "font_fixtures/mod.rs"]
 mod font_fixtures;
 
-use font_fixtures::{load_fixture, NOTO_COLOR_EMOJI_TTF};
+use font_fixtures::{NOTO_COLOR_EMOJI_TTF, load_fixture};
 use oxideav_core::Node;
-use oxideav_scribe::color_glyph::RgbaBitmap;
 use oxideav_scribe::Face;
+use oxideav_scribe::color_glyph::RgbaBitmap;
 
 /// Bilinear resample identity — destination size matches the source,
 /// so every pixel must come back unchanged. Catches sign / off-by-one
@@ -266,7 +266,7 @@ fn glyph_node_carries_color_pixels_for_emoji() {
     let plane = &image.frame.planes[0];
     let mut color_pixels = 0usize;
     let mut nonzero_alpha = 0usize;
-    for px in plane.data.chunks_exact(4) {
+    for px in plane.data.as_chunks::<4>().0 {
         if px[3] != 0 {
             nonzero_alpha += 1;
         }

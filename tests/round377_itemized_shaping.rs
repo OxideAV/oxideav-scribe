@@ -3,7 +3,7 @@
 //! Cyrillic, Greek, Hebrew and Arabic coverage plus GSUB/GPOS).
 
 use intl::unicode::script::Script;
-use oxideav_scribe::{ot_script_tag, script_runs_str, Face};
+use oxideav_scribe::{Face, ot_script_tag, script_runs_str};
 
 const DEJAVU_BYTES: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 

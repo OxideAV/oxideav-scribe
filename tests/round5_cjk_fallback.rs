@@ -25,7 +25,7 @@
 #[path = "font_fixtures/mod.rs"]
 mod font_fixtures;
 
-use font_fixtures::{load_fixture, NOTO_SANS_CJK_MEDIUM_TTC};
+use font_fixtures::{NOTO_SANS_CJK_MEDIUM_TTC, load_fixture};
 use oxideav_scribe::{Face, FaceChain};
 
 const DEJAVU_MONO: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
@@ -83,11 +83,7 @@ fn cjk_fallback_routes_per_codepoint() {
         .map(|c| {
             // Anything outside ASCII printable range is treated as CJK.
             // (`日`, `本`, `語` all have codepoints > 0x4E00.)
-            if (c as u32) < 0x80 {
-                0
-            } else {
-                1
-            }
+            if (c as u32) < 0x80 { 0 } else { 1 }
         })
         .collect();
     let actual_face: Vec<u16> = glyphs.iter().map(|g| g.face_idx).collect();

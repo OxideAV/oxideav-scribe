@@ -54,12 +54,12 @@ pub mod general;
 pub mod indic;
 
 pub use arabic::{
-    compute_forms, feature_tags_for_run, joining_class, script_of, JoiningClass, JoiningForm,
-    Script,
+    JoiningClass, JoiningForm, Script, compute_forms, feature_tags_for_run, joining_class,
+    script_of,
 };
 pub use arabic_pf::presentation_form;
 pub use cluster::{
-    cluster_category, cluster_script, universal_cluster_boundaries, ClusterCategory,
+    ClusterCategory, cluster_category, cluster_script, universal_cluster_boundaries,
 };
 pub use feature_subst::{
     position_gids_with_features_with_font, position_text_with_alternates_with_font,
@@ -69,15 +69,15 @@ pub use feature_subst::{
 };
 pub use general::{apply_calt, apply_ccmp};
 pub use indic::{
-    bengali_category, bengali_feature_tags, burmese_category, burmese_feature_tags,
-    cluster_boundaries, cluster_boundaries_with, devanagari_category, devanagari_feature_tags,
-    gujarati_category, gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags,
-    kannada_category, kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category,
-    lao_feature_tags, malayalam_category, malayalam_feature_tags, oriya_category,
-    oriya_feature_tags, reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
+    BENGALI_RULES, BURMESE_RULES, ClusterFlags, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES,
+    IndicCategory, KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES,
+    ReorderRules, RephKind, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES, bengali_category,
+    bengali_feature_tags, burmese_category, burmese_feature_tags, cluster_boundaries,
+    cluster_boundaries_with, devanagari_category, devanagari_feature_tags, gujarati_category,
+    gujarati_feature_tags, gurmukhi_category, gurmukhi_feature_tags, kannada_category,
+    kannada_feature_tags, khmer_category, khmer_feature_tags, lao_category, lao_feature_tags,
+    malayalam_category, malayalam_feature_tags, oriya_category, oriya_feature_tags,
+    reorder_cluster, reorder_cluster_with, script_indic_tags, sinhala_category,
     sinhala_feature_tags, tamil_category, tamil_feature_tags, telugu_category, telugu_feature_tags,
-    thai_category, thai_feature_tags, ClusterFlags, IndicCategory, ReorderRules, RephKind,
-    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
-    KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES,
-    THAI_RULES,
+    thai_category, thai_feature_tags,
 };

@@ -73,9 +73,9 @@
 //!
 //! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
 
+use crate::Error;
 use crate::face::Face;
 use crate::face_chain::FaceChain;
-use crate::Error;
 use oxideav_core::{Group, Node, Transform2D};
 
 /// Compute the producer-side `Group::cache_key` for one positioned
@@ -440,13 +440,13 @@ pub fn shape_run_with_font(
     let mut component_counts: Vec<u16> = Vec::with_capacity(raw_glyphs.len());
     let mut i = 0;
     while i < raw_glyphs.len() {
-        if let Some((replacement, count)) = font.lookup_ligature(&raw_glyphs[i..]) {
-            if count >= 2 {
-                shaped_gids.push(replacement);
-                component_counts.push(count.min(u16::MAX as usize) as u16);
-                i += count;
-                continue;
-            }
+        if let Some((replacement, count)) = font.lookup_ligature(&raw_glyphs[i..])
+            && count >= 2
+        {
+            shaped_gids.push(replacement);
+            component_counts.push(count.min(u16::MAX as usize) as u16);
+            i += count;
+            continue;
         }
         shaped_gids.push(raw_glyphs[i]);
         component_counts.push(1);
@@ -627,32 +627,32 @@ pub fn position_run_with_font(
         // Try mark-to-mark first against the immediately-previous mark.
         let prev = i - 1;
         let prev_gid = out[prev].glyph_id;
-        if font.is_mark_glyph(prev_gid) {
-            if let Some((dx_units, dy_units)) = font.lookup_mark_to_mark(prev_gid, mark_gid) {
-                let dx = dx_units as f32 * scale;
-                let dy = dy_units as f32 * scale;
-                // The previous mark's effective pen position is its
-                // own (x_offset, y_offset) plus the cumulative
-                // advances up to it. The new mark is one slot later,
-                // so its un-attached pen X is `prev.advance` further
-                // right (typically 0 since the previous mark already
-                // had its advance zeroed). We want the new mark to
-                // land at `prev_pen + (dx, dy)` — which is
-                // `prev.x_offset + dx`, with the new mark's own pen
-                // delta already accounted for in its current
-                // `x_offset` (zero kerning since marks don't kern).
-                //
-                // Concretely: shift the new mark by
-                //   (prev.x_offset - new_mark.current_x_offset) + dx
-                // on X, and equivalently on Y. Simplest expression:
-                // overwrite both offsets and zero the advance.
-                out[i].x_offset = out[prev].x_offset + dx - out[i].x_advance;
-                // TT Y-up → raster Y-down (negate dy on Y). The
-                // previous mark's y_offset is already in raster space.
-                out[i].y_offset = out[prev].y_offset - dy;
-                out[i].x_advance = 0.0;
-                continue;
-            }
+        if font.is_mark_glyph(prev_gid)
+            && let Some((dx_units, dy_units)) = font.lookup_mark_to_mark(prev_gid, mark_gid)
+        {
+            let dx = dx_units as f32 * scale;
+            let dy = dy_units as f32 * scale;
+            // The previous mark's effective pen position is its
+            // own (x_offset, y_offset) plus the cumulative
+            // advances up to it. The new mark is one slot later,
+            // so its un-attached pen X is `prev.advance` further
+            // right (typically 0 since the previous mark already
+            // had its advance zeroed). We want the new mark to
+            // land at `prev_pen + (dx, dy)` — which is
+            // `prev.x_offset + dx`, with the new mark's own pen
+            // delta already accounted for in its current
+            // `x_offset` (zero kerning since marks don't kern).
+            //
+            // Concretely: shift the new mark by
+            //   (prev.x_offset - new_mark.current_x_offset) + dx
+            // on X, and equivalently on Y. Simplest expression:
+            // overwrite both offsets and zero the advance.
+            out[i].x_offset = out[prev].x_offset + dx - out[i].x_advance;
+            // TT Y-up → raster Y-down (negate dy on Y). The
+            // previous mark's y_offset is already in raster space.
+            out[i].y_offset = out[prev].y_offset - dy;
+            out[i].x_advance = 0.0;
+            continue;
         }
 
         // Fallback: mark-to-base. Walk back to the nearest non-mark.

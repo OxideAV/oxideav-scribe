@@ -17,7 +17,7 @@
 //! > display process, then the ordering of the marks and the base
 //! > character must be reversed.
 
-use oxideav_scribe::{reorder_combining_marks, reorder_line, reset_trailing_levels, BidiClass};
+use oxideav_scribe::{BidiClass, reorder_combining_marks, reorder_line, reset_trailing_levels};
 
 // --- Single-base RTL clusters -------------------------------------
 

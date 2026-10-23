@@ -24,18 +24,18 @@
 //! globally unique), so a glyph from face[0] and a glyph from face[1]
 //! with the same numerical `glyph_id` never collide.
 
+use crate::Error;
 use crate::face::Face;
-use crate::shaper::{shape_run_with_font, PositionedGlyph};
-use crate::shaping::arabic::{compute_forms, script_of, Script};
+use crate::shaper::{PositionedGlyph, shape_run_with_font};
+use crate::shaping::arabic::{Script, compute_forms, script_of};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::indic::{
-    cluster_boundaries_with, reorder_cluster_with, script_indic_tags, IndicCategory, ReorderRules,
-    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, KANNADA_RULES,
-    KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, SINHALA_RULES, TAMIL_RULES, TELUGU_RULES,
-    THAI_RULES,
+    BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, IndicCategory,
+    KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, ReorderRules,
+    SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES, cluster_boundaries_with,
+    reorder_cluster_with, script_indic_tags,
 };
 use crate::style::Style;
-use crate::Error;
 
 /// Ordered chain of faces. Index 0 is the primary; index N is consulted
 /// only if 0..N all returned `.notdef` for a codepoint.
@@ -314,11 +314,11 @@ impl FaceChain {
                 if let Some(orig) = orig {
                     for (idx, face) in self.faces.iter().enumerate() {
                         let g = face.with_font(|font| font.glyph_index(orig))?;
-                        if let Some(gid) = g {
-                            if gid != 0 {
-                                found = Some((idx as u16, gid));
-                                break;
-                            }
+                        if let Some(gid) = g
+                            && gid != 0
+                        {
+                            found = Some((idx as u16, gid));
+                            break;
                         }
                     }
                 }
@@ -365,10 +365,10 @@ impl FaceChain {
                 }
                 let g = self.faces[base_face as usize]
                     .with_font(|font| font.glyph_index(shaped_chars[i]))?;
-                if let Some(gid) = g {
-                    if gid != 0 {
-                        out[i] = (base_face, gid);
-                    }
+                if let Some(gid) = g
+                    && gid != 0
+                {
+                    out[i] = (base_face, gid);
                 }
             }
         }
@@ -1052,7 +1052,7 @@ fn apply_arabic_joining(chars: &[char]) -> Vec<char> {
 #[cfg(test)]
 #[allow(non_snake_case)] // tests reference Unicode codepoint literals + algorithm shorthands
 mod tests {
-    use super::{apply_arabic_joining, apply_indic_reorder, ClusterSpan};
+    use super::{ClusterSpan, apply_arabic_joining, apply_indic_reorder};
     use crate::shaping::arabic::Script;
 
     #[test]

@@ -10,7 +10,7 @@
 //! snapshot at `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
 
 use oxideav_scribe::{
-    bidi_class, paragraph_level, resolve_explicit_levels, BidiClass, ExplicitLevels, MAX_DEPTH,
+    BidiClass, ExplicitLevels, MAX_DEPTH, bidi_class, paragraph_level, resolve_explicit_levels,
 };
 
 // --- X-rules basics: paragraph-level dispatch -----------------------

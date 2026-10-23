@@ -13,8 +13,8 @@
 //!   `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`.
 
 use oxideav_scribe::{
-    bidi_class, paragraph_level, process_paragraph, process_text, reorder_line,
-    reset_trailing_levels, split_paragraphs, BidiClass, ParagraphSlice,
+    BidiClass, ParagraphSlice, bidi_class, paragraph_level, process_paragraph, process_text,
+    reorder_line, reset_trailing_levels, split_paragraphs,
 };
 
 // --- §3.3.1 P1: paragraph split ------------------------------------

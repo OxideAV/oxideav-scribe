@@ -147,7 +147,7 @@ fn forms_for(cp: u32) -> Option<PfFormSet> {
 
 #[cfg(test)]
 #[allow(non_snake_case)] // Tests reference PF-B codepoints (FE8F, etc.)
-                         // by their canonical hex spelling.
+// by their canonical hex spelling.
 mod tests {
     use super::*;
 

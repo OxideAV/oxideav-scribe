@@ -11,7 +11,7 @@
 //! These are enumerated adversarial cases; the companion
 //! `round402_fuzz_smoke` test drives randomised byte mutations.
 
-use oxideav_scribe::{layout, Face, FaceChain, Shaper};
+use oxideav_scribe::{Face, FaceChain, Shaper, layout};
 
 const DEJAVU_BYTES: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 

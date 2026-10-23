@@ -21,8 +21,8 @@
 //! statements staged under `docs/text/unicode-bidi/`.
 
 use oxideav_scribe::{
-    apply_mirroring, bidi_class, bracket_pairs, mirrored_glyph, paired_bracket,
-    process_paragraph_with_brackets, BidiClass, BracketKind,
+    BidiClass, BracketKind, apply_mirroring, bidi_class, bracket_pairs, mirrored_glyph,
+    paired_bracket, process_paragraph_with_brackets,
 };
 
 // --- Bidi_Class: explicit DerivedBidiClass.txt assignments ----------

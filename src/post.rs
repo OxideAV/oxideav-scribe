@@ -495,7 +495,7 @@ mod tests {
     /// Build a minimal 32-byte post header with the given version.
     fn header(version: u32) -> Vec<u8> {
         let mut v = version.to_be_bytes().to_vec();
-        v.extend(std::iter::repeat(0u8).take(28)); // pad to 32 bytes
+        v.extend(std::iter::repeat_n(0u8, 28)); // pad to 32 bytes
         v
     }
 

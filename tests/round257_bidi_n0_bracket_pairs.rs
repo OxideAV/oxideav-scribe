@@ -15,8 +15,9 @@
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
 
 use oxideav_scribe::{
-    bidi_class, bracket_pairs, paired_bracket, process_paragraph_classes_with_brackets,
-    process_paragraph_with_brackets, resolve_bracket_pairs, BidiClass, BracketKind,
+    BidiClass, BracketKind, bidi_class, bracket_pairs, paired_bracket,
+    process_paragraph_classes_with_brackets, process_paragraph_with_brackets,
+    resolve_bracket_pairs,
 };
 
 // --- BD14 / BD15: paired-bracket lookup ----------------------------

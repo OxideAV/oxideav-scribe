@@ -39,7 +39,7 @@ const INTER: &[u8] = include_bytes!("fixtures/InterVariable.ttf");
 // ---------------------------------------------------------------------------
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -468,9 +468,9 @@ fn reverse_chain(from: u16, lookahead: &[u16], to: u16) -> Vec<u8> {
     }
     s.extend_from_slice(&1u16.to_be_bytes()); // glyphCount
     s.extend_from_slice(&to.to_be_bytes()); // substituteGlyphIDs[0]
-                                            // Coverage tables are appended in the same order their offsets were
-                                            // assigned: the lookahead coverages start at `header_len`, the input
-                                            // coverage follows at `cov_off` (its post-lookahead value).
+    // Coverage tables are appended in the same order their offsets were
+    // assigned: the lookahead coverages start at `header_len`, the input
+    // coverage follows at `cov_off` (its post-lookahead value).
     let input_cov_off = cov_off;
     s[input_cov_off_pos..input_cov_off_pos + 2].copy_from_slice(&input_cov_off.to_be_bytes());
     for blob in la_blobs {

@@ -11,7 +11,7 @@
 //! No external library source was consulted at any point — every
 //! expectation derives from the UAX #9 rule examples cited above.
 
-use oxideav_scribe::{resolve_weak_types, BidiClass};
+use oxideav_scribe::{BidiClass, resolve_weak_types};
 
 #[test]
 fn r191_public_resolve_weak_types_empty_is_noop() {

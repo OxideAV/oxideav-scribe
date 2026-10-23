@@ -27,8 +27,8 @@
 //! General_Category values come from the `intl` crate's compiled UCD
 //! tables.
 
-use intl::unicode::script::{script, Script};
-use intl::unicode::{general_category, GeneralCategory};
+use intl::unicode::script::{Script, script};
+use intl::unicode::{GeneralCategory, general_category};
 
 /// The role a character plays inside a universal cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -9,7 +9,7 @@
 #[path = "font_fixtures/mod.rs"]
 mod font_fixtures;
 
-use font_fixtures::{load_fixture, NOTO_COLOR_EMOJI_TTF};
+use font_fixtures::{NOTO_COLOR_EMOJI_TTF, load_fixture};
 use oxideav_core::Node;
 use oxideav_scribe::Face;
 
@@ -71,7 +71,13 @@ fn party_popper_glyph_node_is_image_ref() {
     );
 
     // Sanity: at least one pixel has non-zero alpha (4 B/px RGBA).
-    let nz = plane.data.chunks_exact(4).filter(|p| p[3] != 0).count();
+    let nz = plane
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] != 0)
+        .count();
     assert!(
         nz > 0,
         "no pixels with non-zero alpha — bitmap is fully transparent"

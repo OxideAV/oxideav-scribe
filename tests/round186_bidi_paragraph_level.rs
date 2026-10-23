@@ -8,7 +8,7 @@
 //! at `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`). No
 //! library source was consulted.
 
-use oxideav_scribe::{bidi_class, paragraph_level, split_paragraphs, BidiClass};
+use oxideav_scribe::{BidiClass, bidi_class, paragraph_level, split_paragraphs};
 
 #[test]
 fn r186_public_bidi_class_explicit_format_set() {

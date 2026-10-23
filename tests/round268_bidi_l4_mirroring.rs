@@ -16,8 +16,8 @@
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
 
 use oxideav_scribe::{
-    apply_mirroring, mirrored_glyph, paired_bracket, process_paragraph_with_brackets,
-    reorder_combining_marks, reorder_line, reset_trailing_levels, BidiClass,
+    BidiClass, apply_mirroring, mirrored_glyph, paired_bracket, process_paragraph_with_brackets,
+    reorder_combining_marks, reorder_line, reset_trailing_levels,
 };
 
 // --- mirrored_glyph: the Bidi_Mirroring_Glyph seed lookup -----------

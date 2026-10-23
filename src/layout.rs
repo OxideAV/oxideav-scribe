@@ -7,14 +7,14 @@
 //! The shaper is invoked once per candidate line so kerning and
 //! ligatures are correctly accounted for in the width budget.
 
+use crate::Error;
 use crate::bidi::{
-    apply_mirroring, bidi_class, level_runs, process_paragraph_classes_with_brackets,
-    reorder_combining_marks, reorder_line, reset_trailing_levels, BidiClass,
+    BidiClass, apply_mirroring, bidi_class, level_runs, process_paragraph_classes_with_brackets,
+    reorder_combining_marks, reorder_line, reset_trailing_levels,
 };
 use crate::face::Face;
 use crate::face_chain::FaceChain;
 use crate::shaper::{PositionedGlyph, Shaper};
-use crate::Error;
 
 /// Width of a shaped run in raster pixels: cumulative advance + the
 /// trailing glyph's offset (which is normally 0; included for correctness

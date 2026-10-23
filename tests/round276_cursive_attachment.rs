@@ -61,7 +61,7 @@ use oxideav_scribe::{Face, Shaper};
 type Anchor = Option<(i16, i16)>;
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -402,8 +402,8 @@ fn cursive_chain_aligns_anchors_and_cascades_cross_stream() {
     // to 450 − 50 = 400.
     assert_eq!(glyphs[0].x_advance, 400.0);
     assert_eq!(glyphs[0].y_offset, 0.0); // first glyph never moves (flag clear)
-                                         // Cross-stream: the SECOND glyph moves down 200 raster px so its
-                                         // entry (300 above its origin) lands at the exit height (100).
+    // Cross-stream: the SECOND glyph moves down 200 raster px so its
+    // entry (300 above its origin) lands at the exit height (100).
     assert_eq!(glyphs[1].y_offset, 200.0);
 
     // Pair (b, c): exit (450, −200) ← entry (0, 0).

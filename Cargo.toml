@@ -1,8 +1,8 @@
 [package]
 name = "oxideav-scribe"
 version = "0.1.10"
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Mark Karpeles"]
 description = "Pure-Rust vector font shaper + layout for the oxideav framework — TrueType / OTF outline access, GSUB ligatures, GPOS kerning, mark attachment, CBDT colour bitmaps. Pixel pipeline lives in oxideav-raster."

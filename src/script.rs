@@ -42,8 +42,8 @@
 //! (`Scripts.txt` / `ScriptExtensions.txt`); bracket pairing reuses the
 //! crate's `BidiBrackets.txt` table via [`crate::bidi::paired_bracket`].
 
-use crate::bidi::{paired_bracket, BracketKind};
-use intl::unicode::script::{script, script_extensions, Script, ScriptExtensions};
+use crate::bidi::{BracketKind, paired_bracket};
+use intl::unicode::script::{Script, ScriptExtensions, script, script_extensions};
 
 /// Resolve a Unicode [`Script`] to its primary OpenType script tag.
 ///
@@ -479,8 +479,7 @@ pub fn resolve_scripts(chars: &[char]) -> Vec<Script> {
                         // joins the enclosing script when compatible,
                         // else falls back on its own constraint.
                         if !pending.is_empty() {
-                            let compatible =
-                                pending_set.as_ref().map_or(true, |ps| ps.contains(&s));
+                            let compatible = pending_set.as_ref().is_none_or(|ps| ps.contains(&s));
                             if compatible {
                                 resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
                             } else {
@@ -567,12 +566,12 @@ pub fn resolve_scripts(chars: &[char]) -> Vec<Script> {
                         }
                     }
                     // A constraint narrowed to one script is resolved.
-                    if let Some(ps) = &pending_set {
-                        if ps.len() == 1 {
-                            let s = ps[0];
-                            resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
-                            current = Some(s);
-                        }
+                    if let Some(ps) = &pending_set
+                        && ps.len() == 1
+                    {
+                        let s = ps[0];
+                        resolve_span(&mut resolved, &mut pending, &mut pending_set, s);
+                        current = Some(s);
                     }
                 }
             }
@@ -588,7 +587,7 @@ pub fn resolve_scripts(chars: &[char]) -> Vec<Script> {
                         current = Some(s);
                     }
                 } else {
-                    let compatible = pending_set.as_ref().map_or(true, |ps| ps.contains(&s));
+                    let compatible = pending_set.as_ref().is_none_or(|ps| ps.contains(&s));
                     if compatible {
                         // Back-fill the pending span (leading neutrals,
                         // or a constrained span this script satisfies).
@@ -604,10 +603,10 @@ pub fn resolve_scripts(chars: &[char]) -> Vec<Script> {
 
         // Push opening brackets *after* the attach so the closer
         // inherits the opener's own resolution.
-        if let Some((partner, BracketKind::Open)) = bracket {
-            if brackets.len() < BRACKET_STACK_MAX {
-                brackets.push((canon_bracket(partner), i));
-            }
+        if let Some((partner, BracketKind::Open)) = bracket
+            && brackets.len() < BRACKET_STACK_MAX
+        {
+            brackets.push((canon_bracket(partner), i));
         }
     }
 

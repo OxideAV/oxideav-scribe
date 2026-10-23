@@ -22,7 +22,7 @@
 //! types, after which the N1 + N2 surface here continues to apply
 //! unchanged.
 
-use oxideav_scribe::{resolve_neutral_types, resolve_weak_types, BidiClass};
+use oxideav_scribe::{BidiClass, resolve_neutral_types, resolve_weak_types};
 
 #[test]
 fn r198_public_resolve_neutral_types_empty_is_noop() {

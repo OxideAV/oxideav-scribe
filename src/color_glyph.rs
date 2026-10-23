@@ -39,8 +39,8 @@
 //! No third-party PNG / image crate is used per workspace policy;
 //! `oxideav-png` (a sibling) is the sole PNG dependency.
 
-use crate::face::Face;
 use crate::Error;
+use crate::face::Face;
 
 use oxideav_core::VideoFrame;
 
@@ -89,7 +89,12 @@ impl RgbaBitmap {
 
     /// Number of pixels with non-zero alpha.
     pub fn nonzero_alpha_count(&self) -> usize {
-        self.data.chunks_exact(4).filter(|p| p[3] != 0).count()
+        self.data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] != 0)
+            .count()
     }
 
     /// Bilinearly resample this bitmap to `(dst_width, dst_height)`.
@@ -378,7 +383,7 @@ fn videoframe_to_rgba(
     let h = height as usize;
     // bytes-per-pixel inferred from `stride / width` (oxideav-png
     // packs rows tightly with no padding).
-    if plane.stride % w != 0 {
+    if !plane.stride.is_multiple_of(w) {
         return RgbaBitmap::default();
     }
     let bpp = plane.stride / w;
@@ -656,7 +661,7 @@ mod tests {
         buf.extend_from_slice(&8u32.to_be_bytes()); // height
         buf.extend_from_slice(&[8, 3, 0, 0, 0]); // depth, ct=3 (palette)
         buf.extend_from_slice(&[0u8; 4]); // CRC stub
-                                          // PLTE: 3 entries (red, green, blue)
+        // PLTE: 3 entries (red, green, blue)
         buf.extend_from_slice(&9u32.to_be_bytes()); // length 9
         buf.extend_from_slice(b"PLTE");
         buf.extend_from_slice(&[
@@ -665,13 +670,13 @@ mod tests {
             0, 0, 255, // blue
         ]);
         buf.extend_from_slice(&[0u8; 4]); // CRC stub
-                                          // tRNS: 2 entries (red opaque, green half-alpha) — the third
-                                          // palette entry stays opaque.
+        // tRNS: 2 entries (red opaque, green half-alpha) — the third
+        // palette entry stays opaque.
         buf.extend_from_slice(&2u32.to_be_bytes()); // length 2
         buf.extend_from_slice(b"tRNS");
         buf.extend_from_slice(&[255, 128]);
         buf.extend_from_slice(&[0u8; 4]); // CRC stub
-                                          // IDAT placeholder so the walker bails before IEND.
+        // IDAT placeholder so the walker bails before IEND.
         buf.extend_from_slice(&0u32.to_be_bytes());
         buf.extend_from_slice(b"IDAT");
         buf.extend_from_slice(&[0u8; 4]); // CRC stub

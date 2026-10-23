@@ -48,7 +48,7 @@ use oxideav_scribe::Face;
 // ---------------------------------------------------------------------------
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -399,7 +399,7 @@ fn build_synthetic_ttf(num_glyphs: u16, chars: &[(char, u16)], sets: &[LigatureS
         let length = data.len() as u32;
         records.push((tag, checksum, length, data));
         cursor += length;
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }

@@ -27,7 +27,7 @@
 #[path = "font_fixtures/mod.rs"]
 mod font_fixtures;
 
-use font_fixtures::{load_fixture, NOTO_COLOR_EMOJI_TTF};
+use font_fixtures::{NOTO_COLOR_EMOJI_TTF, load_fixture};
 use oxideav_scribe::{Face, Shaper};
 
 #[test]

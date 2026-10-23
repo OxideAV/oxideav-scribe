@@ -928,7 +928,7 @@ fn rank_record(platform: u16, encoding: u16, language: u16) -> i32 {
 fn decode_name(platform: u16, encoding: u16, raw: &[u8]) -> Option<String> {
     match (platform, encoding) {
         (0, _) | (3, 1) | (3, 10) => {
-            if raw.len() % 2 != 0 {
+            if !raw.len().is_multiple_of(2) {
                 return None;
             }
             let mut s = String::with_capacity(raw.len() / 2);
@@ -1120,17 +1120,17 @@ fn parse_cff2_top_dict(dict: &[u8]) -> Option<(Option<u32>, Option<u32>)> {
             let last = operands.last().copied();
             match op {
                 17 => {
-                    if let Some(v) = last {
-                        if v >= 0 {
-                            charstrings = Some(v as u32);
-                        }
+                    if let Some(v) = last
+                        && v >= 0
+                    {
+                        charstrings = Some(v as u32);
                     }
                 }
                 24 => {
-                    if let Some(v) = last {
-                        if v >= 0 {
-                            vstore = Some(v as u32);
-                        }
+                    if let Some(v) = last
+                        && v >= 0
+                    {
+                        vstore = Some(v as u32);
                     }
                 }
                 _ => {}
@@ -1254,7 +1254,7 @@ mod tests {
         debug_assert_eq!(b.len() as u32, region_list_off);
         b.extend_from_slice(&1u16.to_be_bytes()); // axisCount
         b.extend_from_slice(&1u16.to_be_bytes()); // regionCount
-                                                  // region[0]: start=-1 peak=1 end=1
+        // region[0]: start=-1 peak=1 end=1
         b.extend_from_slice(&(-16384i16).to_be_bytes());
         b.extend_from_slice(&(16384i16).to_be_bytes());
         b.extend_from_slice(&(16384i16).to_be_bytes());
@@ -1354,8 +1354,8 @@ mod tests {
         b[18..20].copy_from_slice(&2u16.to_be_bytes()); // elidedFallback (=2)
         b[design_axes_offset..design_axes_offset + 4].copy_from_slice(b"wght");
         b[design_axes_offset + 4..design_axes_offset + 6].copy_from_slice(&256u16.to_be_bytes()); // axisNameID
-                                                                                                  // axisOrdering 0 already.
-                                                                                                  // Axis-value offset (relative to offset table base):
+        // axisOrdering 0 already.
+        // Axis-value offset (relative to offset table base):
         let av_rel = (av_record_offset - axis_value_offset_table) as u16;
         b[axis_value_offset_table..axis_value_offset_table + 2]
             .copy_from_slice(&av_rel.to_be_bytes());

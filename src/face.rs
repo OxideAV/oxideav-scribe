@@ -1480,39 +1480,39 @@ impl Face {
         // a 32 px bitmap derived from the 109 px strike is the same
         // every time and can be memoised by callers via the wrapping
         // `Group::cache_key` from `Shaper::shape_to_paths`.)
-        if matches!(self.kind, FaceKind::Ttf) && self.has_color_bitmaps() {
-            if let Ok(Some(cgb)) = self.raster_color_glyph_at(glyph_id, size_px) {
-                if !cgb.bitmap.is_empty() {
-                    let w = cgb.bitmap.width;
-                    let h = cgb.bitmap.height;
-                    // Pack the RGBA8 into a VideoFrame with one plane.
-                    let stride = (w as usize) * 4;
-                    let frame = VideoFrame {
-                        pts: None,
-                        planes: vec![VideoPlane {
-                            stride,
-                            data: cgb.bitmap.data.clone(),
-                        }],
-                    };
-                    // bearing_x / bearing_y / advance from
-                    // raster_color_glyph_at are already in raster pixels
-                    // at `size_px` (pre-scaled by `size_px / strike_ppem`).
-                    let bx = cgb.bearing_x as f32;
-                    let by = -(cgb.bearing_y as f32);
-                    let bw = w as f32;
-                    let bh = h as f32;
-                    return Some(Node::Image(ImageRef {
-                        frame: Box::new(frame),
-                        bounds: Rect {
-                            x: bx,
-                            y: by,
-                            width: bw,
-                            height: bh,
-                        },
-                        transform: Transform2D::identity(),
-                    }));
-                }
-            }
+        if matches!(self.kind, FaceKind::Ttf)
+            && self.has_color_bitmaps()
+            && let Ok(Some(cgb)) = self.raster_color_glyph_at(glyph_id, size_px)
+            && !cgb.bitmap.is_empty()
+        {
+            let w = cgb.bitmap.width;
+            let h = cgb.bitmap.height;
+            // Pack the RGBA8 into a VideoFrame with one plane.
+            let stride = (w as usize) * 4;
+            let frame = VideoFrame {
+                pts: None,
+                planes: vec![VideoPlane {
+                    stride,
+                    data: cgb.bitmap.data.clone(),
+                }],
+            };
+            // bearing_x / bearing_y / advance from
+            // raster_color_glyph_at are already in raster pixels
+            // at `size_px` (pre-scaled by `size_px / strike_ppem`).
+            let bx = cgb.bearing_x as f32;
+            let by = -(cgb.bearing_y as f32);
+            let bw = w as f32;
+            let bh = h as f32;
+            return Some(Node::Image(ImageRef {
+                frame: Box::new(frame),
+                bounds: Rect {
+                    x: bx,
+                    y: by,
+                    width: bw,
+                    height: bh,
+                },
+                transform: Transform2D::identity(),
+            }));
         }
 
         // Outline path: take the Y-up native Path and bake in

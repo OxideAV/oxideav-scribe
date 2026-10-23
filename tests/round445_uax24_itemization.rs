@@ -10,7 +10,7 @@
 //! the shaping face.
 
 use intl::unicode::script::Script;
-use oxideav_scribe::{resolve_scripts, Face};
+use oxideav_scribe::{Face, resolve_scripts};
 
 const DEJAVU: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 

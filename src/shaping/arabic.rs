@@ -553,8 +553,8 @@ pub fn compute_forms(chars: &[char]) -> Vec<JoiningForm> {
 
 #[cfg(test)]
 #[allow(non_snake_case)] // Tests reference Unicode codepoints / UCD class
-                         // letters (R / D / U+062x) by their canonical
-                         // capitalisation; renaming hurts readability.
+// letters (R / D / U+062x) by their canonical
+// capitalisation; renaming hurts readability.
 mod tests {
     use super::*;
 

@@ -11,9 +11,9 @@
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`).
 
 use oxideav_scribe::{
-    bidi_class, isolating_run_sequences, level_runs, paragraph_level, resolve_explicit_levels,
-    resolve_implicit_levels, resolve_neutral_types, resolve_weak_types, BidiClass,
-    IsolatingRunSequence, LevelRun,
+    BidiClass, IsolatingRunSequence, LevelRun, bidi_class, isolating_run_sequences, level_runs,
+    paragraph_level, resolve_explicit_levels, resolve_implicit_levels, resolve_neutral_types,
+    resolve_weak_types,
 };
 
 // --- BD7 level runs -------------------------------------------------

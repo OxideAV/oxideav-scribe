@@ -145,8 +145,10 @@ fn facechain_degenerate_inputs_are_empty() {
     let face = Face::from_ttf_bytes(DEJAVU.to_vec()).expect("DejaVu parses");
     let chain = FaceChain::new(face);
     assert!(chain.shape_with_features("", 16.0, &[]).unwrap().is_empty());
-    assert!(chain
-        .shape_with_features("abc", 0.0, &[])
-        .unwrap()
-        .is_empty());
+    assert!(
+        chain
+            .shape_with_features("abc", 0.0, &[])
+            .unwrap()
+            .is_empty()
+    );
 }

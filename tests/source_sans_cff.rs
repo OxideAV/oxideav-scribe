@@ -15,10 +15,11 @@ const FIXTURE: &[u8] = include_bytes!("fixtures/SourceSans3-Regular.otf");
 fn from_otf_bytes_round_trip() {
     let face = Face::from_otf_bytes(FIXTURE.to_vec()).expect("face from OTF");
     assert_eq!(face.kind(), FaceKind::Otf);
-    assert!(face
-        .family_name()
-        .map(|f| f.contains("Source Sans"))
-        .unwrap_or(false));
+    assert!(
+        face.family_name()
+            .map(|f| f.contains("Source Sans"))
+            .unwrap_or(false)
+    );
     assert_eq!(face.units_per_em(), 1000);
 }
 

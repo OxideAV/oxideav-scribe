@@ -8,7 +8,7 @@
 //! through `layout::reorder_line_visual`, each of which cites
 //! `docs/text/unicode-bidi/tr9-50-uax9-unicode16.html`.
 
-use oxideav_scribe::layout::{reorder_line_visual, VisualLine};
+use oxideav_scribe::layout::{VisualLine, reorder_line_visual};
 
 /// Helper: assert the two permutation vectors invert each other and
 /// together form a bijection over `0..n`.

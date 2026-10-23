@@ -1396,12 +1396,11 @@ pub fn reorder_cluster_with(cluster: &[char], rules: &ReorderRules) -> (Vec<char
     if let Some(matra_idx) = out
         .iter()
         .position(|&c| (rules.category)(c) == IndicCategory::PreBaseMatra)
+        && matra_idx > 0
     {
-        if matra_idx > 0 {
-            let matra = out.remove(matra_idx);
-            out.insert(0, matra);
-            flags.pre_base_reordered = true;
-        }
+        let matra = out.remove(matra_idx);
+        out.insert(0, matra);
+        flags.pre_base_reordered = true;
     }
 
     // Reph detection. Use the original `cluster` (not `out`) so a
@@ -1702,7 +1701,7 @@ mod tests {
 
     #[test]
     fn script_of_recognises_devanagari_block() {
-        use super::super::arabic::{script_of, Script};
+        use super::super::arabic::{Script, script_of};
         assert_eq!(script_of('\u{0915}'), Script::Devanagari);
         assert_eq!(script_of('\u{094D}'), Script::Devanagari);
         assert_eq!(script_of('\u{097F}'), Script::Devanagari);
@@ -1710,7 +1709,7 @@ mod tests {
 
     #[test]
     fn script_of_still_classifies_arabic_and_latin_correctly() {
-        use super::super::arabic::{script_of, Script};
+        use super::super::arabic::{Script, script_of};
         assert_eq!(script_of('\u{0627}'), Script::Arabic);
         assert_eq!(script_of('A'), Script::Other);
     }
@@ -2710,7 +2709,7 @@ mod tests {
 
     #[test]
     fn script_of_recognises_round12_blocks() {
-        use super::super::arabic::{script_of, Script};
+        use super::super::arabic::{Script, script_of};
         // Sinhala block.
         assert_eq!(script_of('\u{0D9A}'), Script::Sinhala);
         assert_eq!(script_of('\u{0DCA}'), Script::Sinhala);
@@ -3069,7 +3068,7 @@ mod tests {
 
     #[test]
     fn script_of_recognises_round13_blocks() {
-        use super::super::arabic::{script_of, Script};
+        use super::super::arabic::{Script, script_of};
         // Lao block.
         assert_eq!(script_of('\u{0E81}'), Script::Lao);
         assert_eq!(script_of('\u{0EC0}'), Script::Lao);

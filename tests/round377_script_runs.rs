@@ -2,7 +2,7 @@
 //! and script-run segmentation through the crate's public API.
 
 use intl::unicode::script::Script;
-use oxideav_scribe::{ot_script_tag, ot_script_tags, script_runs_str, ScriptRun};
+use oxideav_scribe::{ScriptRun, ot_script_tag, ot_script_tags, script_runs_str};
 
 #[test]
 fn ot_tag_core_repertoire() {
