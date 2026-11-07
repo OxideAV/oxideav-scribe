@@ -170,6 +170,7 @@ impl RgbaBitmap {
 /// Result of decoding one CBDT entry — the rasterised RGBA bitmap plus
 /// the per-glyph metrics needed for placement.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ColorGlyphBitmap {
     /// Decoded RGBA8 bitmap (straight alpha; same convention as the
     /// rest of the scribe pipeline).

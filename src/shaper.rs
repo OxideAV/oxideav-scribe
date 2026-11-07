@@ -111,6 +111,7 @@ fn glyph_cache_key(face_stable_id: u64, glyph_id: u16, size_q8: u32, style_bits:
 /// A single shaped glyph with its position relative to the run's pen
 /// origin. Coordinates are in raster pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct PositionedGlyph {
     /// Glyph id within the face (after cmap mapping + ligature
     /// substitution).

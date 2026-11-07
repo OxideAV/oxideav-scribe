@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `#[non_exhaustive]` on the `Error`, `FaceKind` and `Script` enums and on the shaper / layout / bidi output records `PositionedGlyph`, `ColorGlyphBitmap`, `ScriptRun`, `VisualLine`, `ShapedVisualLine`, `ShapedParagraph`, `ParagraphBidi` and `TextBidi`. `BidiClass`, `BracketKind`, `JoiningClass`, `JoiningForm`, `BaselineAxis` and `StatAxisValue` stay exhaustive (UAX #9, the Arabic joining model and the OpenType STAT formats fix their values); `Style` and `RgbaBitmap` are plain value types.
 - edition 2024, MSRV 1.95
 
 ## [0.1.10](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.9...v0.1.10) - 2026-08-17

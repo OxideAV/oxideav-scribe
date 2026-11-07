@@ -2777,6 +2777,7 @@ pub fn isolating_run_sequences(
 /// that have not yet wired a line-breaker and want to treat the
 /// whole paragraph as one line.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ParagraphBidi {
     /// The paragraph embedding level resolved by §3.3.1 P2 / P3 (or
     /// supplied by the caller).
@@ -3208,6 +3209,7 @@ pub struct ParagraphSlice {
 /// here: passing `Some(level)` forces every paragraph to that level;
 /// `None` lets P2 / P3 walk each paragraph.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TextBidi {
     /// One entry per paragraph found by P1, in logical order. Empty
     /// iff the input is empty (an empty string has no paragraphs).

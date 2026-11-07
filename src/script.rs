@@ -301,6 +301,7 @@ pub fn ot_script_tags(s: Script) -> &'static [[u8; 4]] {
 /// [`ot_script_tag`] / [`ot_script_tags`] to map it to the OpenType tag
 /// the shaper feeds to its `GSUB` / `GPOS` `ScriptList` lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScriptRun {
     /// First char index of the run (inclusive).
     pub start: usize,

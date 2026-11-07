@@ -45,6 +45,7 @@ pub fn run_width(glyphs: &[PositionedGlyph]) -> f32 {
 /// a mathematical relation, …) is the mirrored code point, not the
 /// logical one — so the renderer must *not* mirror again.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VisualLine {
     /// The line's characters in left-to-right visual order, with L4
     /// mirroring applied. `visual.len()` equals the line's character
@@ -192,6 +193,7 @@ pub fn reorder_line_visual(text: &str, base_level: Option<u8>) -> VisualLine {
 /// exactly the contract of a [`crate::Shaper::shape`] result, but for a
 /// mixed-direction line.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ShapedVisualLine {
     /// The shaped glyphs in left-to-right visual order. Glyphs of an
     /// RTL (odd-level) run appear in reversed logical order so the run
@@ -417,6 +419,7 @@ pub fn wrap_and_shape_lines(
 /// resolved direction (relevant for aligning ragged lines: an RTL
 /// paragraph is flush-right, an LTR paragraph flush-left).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ShapedParagraph {
     /// The paragraph's display lines, top-to-bottom.
     pub lines: Vec<ShapedVisualLine>,

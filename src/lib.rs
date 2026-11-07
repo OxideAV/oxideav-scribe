@@ -228,6 +228,7 @@ pub use style::{
 
 /// Errors emitted by the scribe pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// The underlying TTF parser rejected the bytes.
     Ttf(oxideav_ttf::Error),

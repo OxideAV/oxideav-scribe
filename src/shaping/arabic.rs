@@ -101,6 +101,7 @@ impl JoiningForm {
 /// the shaper applies to a run. Only the scripts that need contextual
 /// shaping are enumerated; everything else collapses to `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Script {
     /// Arabic block + supplements + presentation forms (U+0600..U+06FF,
     /// U+0750..U+077F, U+08A0..U+08FF, U+FB50..U+FDFF, U+FE70..U+FEFF).
