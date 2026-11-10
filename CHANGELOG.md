@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `FaceChain::shape` / `shape_styled` / `shape_with_features` parse each face at most once per call instead of once per codepoint per face tried (and again per cluster GSUB lookup and per run): the fallback walk, the reph / cluster-position / cluster-context GSUB passes and run positioning share one parsed view per face. A 56-character Latin line on a two-face chain shapes in 0.21 ms instead of 4.3 ms (release; 36 → 3.3 ms in debug); a fallback-heavy line 5.4 → 0.34 ms (#17).
+
 ### Changed
 
 - `#[non_exhaustive]` on the `Error`, `FaceKind` and `Script` enums and on the shaper / layout / bidi output records `PositionedGlyph`, `ColorGlyphBitmap`, `ScriptRun`, `VisualLine`, `ShapedVisualLine`, `ShapedParagraph`, `ParagraphBidi` and `TextBidi`. `BidiClass`, `BracketKind`, `JoiningClass`, `JoiningForm`, `BaselineAxis` and `StatAxisValue` stay exhaustive (UAX #9, the Arabic joining model and the OpenType STAT formats fix their values); `Style` and `RgbaBitmap` are plain value types.

@@ -37,6 +37,33 @@ use crate::shaping::indic::{
 };
 use crate::style::Style;
 
+/// The chain's faces, each parsed at most once for the duration of one
+/// shaping call. A `FaceChain` call consults the same face once per
+/// codepoint (fallback walk), per cluster (GSUB passes) and per run
+/// (positioning); parsing on first use and reusing the view keeps the
+/// cost at one parse per face actually consulted.
+struct ParsedFaces<'a> {
+    faces: &'a [Face],
+    fonts: Vec<Option<oxideav_ttf::Font<'a>>>,
+}
+
+impl<'a> ParsedFaces<'a> {
+    fn new(faces: &'a [Face]) -> Self {
+        Self {
+            faces,
+            fonts: faces.iter().map(|_| None).collect(),
+        }
+    }
+
+    /// The parsed view of face `idx`, parsing it on first use.
+    fn font(&mut self, idx: usize) -> Result<&oxideav_ttf::Font<'a>, Error> {
+        if self.fonts[idx].is_none() {
+            self.fonts[idx] = Some(self.faces[idx].parse_ttf()?);
+        }
+        Ok(self.fonts[idx].as_ref().expect("parsed above"))
+    }
+}
+
 /// Ordered chain of faces. Index 0 is the primary; index N is consulted
 /// only if 0..N all returned `.notdef` for a codepoint.
 #[derive(Debug)]
@@ -149,7 +176,8 @@ impl FaceChain {
 
         // Step 1: per-codepoint, decide which face owns this glyph.
         // Result: Vec<(face_idx, glyph_id)>.
-        let assigned = self.assign_codepoints(text)?;
+        let mut parsed = ParsedFaces::new(&self.faces);
+        let assigned = self.assign_codepoints(&mut parsed, text)?;
         if assigned.is_empty() {
             return Ok(Vec::new());
         }
@@ -166,9 +194,8 @@ impl FaceChain {
                 run_end += 1;
             }
             let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
-            let face = &self.faces[face_idx as usize];
-            let mut run_glyphs =
-                face.with_font(|font| shape_run_with_font(font, &gids, size_px, face_idx))?;
+            let font = parsed.font(face_idx as usize)?;
+            let mut run_glyphs = shape_run_with_font(font, &gids, size_px, face_idx);
             out.append(&mut run_glyphs);
             run_start = run_end;
         }
@@ -217,7 +244,8 @@ impl FaceChain {
             return Ok(Vec::new());
         }
 
-        let assigned = self.assign_codepoints(text)?;
+        let mut parsed = ParsedFaces::new(&self.faces);
+        let assigned = self.assign_codepoints(&mut parsed, text)?;
         if assigned.is_empty() {
             return Ok(Vec::new());
         }
@@ -231,14 +259,12 @@ impl FaceChain {
                 run_end += 1;
             }
             let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
-            let face = &self.faces[face_idx as usize];
-            let mut run_glyphs = face.with_font(|font| {
-                let upem = font.units_per_em().max(1) as f32;
-                let scale = size_px / upem;
-                crate::shaping::position_gids_with_features_with_font(
-                    font, &gids, scale, features, face_idx,
-                )
-            })?;
+            let font = parsed.font(face_idx as usize)?;
+            let upem = font.units_per_em().max(1) as f32;
+            let scale = size_px / upem;
+            let mut run_glyphs = crate::shaping::position_gids_with_features_with_font(
+                font, &gids, scale, features, face_idx,
+            );
             out.append(&mut run_glyphs);
             run_start = run_end;
         }
@@ -268,7 +294,11 @@ impl FaceChain {
     /// actual glyph substitution is gated on the `rphf` GSUB feature
     /// (followup once `oxideav-ttf` exposes feature-tagged single
     /// substitution).
-    fn assign_codepoints(&self, text: &str) -> Result<Vec<(u16, u16)>, Error> {
+    fn assign_codepoints(
+        &self,
+        parsed: &mut ParsedFaces<'_>,
+        text: &str,
+    ) -> Result<Vec<(u16, u16)>, Error> {
         let chars: Vec<char> = text.chars().collect();
         // Three pre-cmap shaping passes: Arabic joining → Indic
         // cluster reorder → reph GSUB (post-cmap, deferred to after
@@ -281,8 +311,8 @@ impl FaceChain {
         let mut out: Vec<(u16, u16)> = Vec::with_capacity(shaped_chars.len());
         for (orig_idx, ch) in shaped_chars.iter().enumerate() {
             let mut found: Option<(u16, u16)> = None;
-            for (idx, face) in self.faces.iter().enumerate() {
-                let g = face.with_font(|font| font.glyph_index(*ch))?;
+            for idx in 0..self.faces.len() {
+                let g = parsed.font(idx)?.glyph_index(*ch);
                 match g {
                     Some(gid) if gid != 0 => {
                         found = Some((idx as u16, gid));
@@ -312,8 +342,8 @@ impl FaceChain {
                     None
                 };
                 if let Some(orig) = orig {
-                    for (idx, face) in self.faces.iter().enumerate() {
-                        let g = face.with_font(|font| font.glyph_index(orig))?;
+                    for idx in 0..self.faces.len() {
+                        let g = parsed.font(idx)?.glyph_index(orig);
                         if let Some(gid) = g
                             && gid != 0
                         {
@@ -363,8 +393,9 @@ impl FaceChain {
                 if out[i].0 == base_face {
                     continue;
                 }
-                let g = self.faces[base_face as usize]
-                    .with_font(|font| font.glyph_index(shaped_chars[i]))?;
+                let g = parsed
+                    .font(base_face as usize)?
+                    .glyph_index(shaped_chars[i]);
                 if let Some(gid) = g
                     && gid != 0
                 {
@@ -386,7 +417,7 @@ impl FaceChain {
         //
         // We process marks back-to-front so the index manipulation
         // stays straightforward (no shifting of pending marks).
-        let (out, dropped_halants) = self.apply_reph_substitutions(out, &reph_marks)?;
+        let (out, dropped_halants) = self.apply_reph_substitutions(parsed, out, &reph_marks)?;
         // Round 11 — cluster-position-aware GSUB pass. For every Indic
         // cluster, dispatch `half` / `pref` / `blwf` / `abvf` / `pstf`
         // (per-position substitution) on halant-suffixed conjunct
@@ -402,7 +433,8 @@ impl FaceChain {
         // first 3 chars, never its boundary, so the START index is
         // always still valid.)
         let adjusted_spans = adjust_cluster_spans(&cluster_spans, &dropped_halants, &shaped_chars);
-        let out = self.apply_cluster_position_substitutions(out, &adjusted_spans, &shaped_chars)?;
+        let out =
+            self.apply_cluster_position_substitutions(parsed, out, &adjusted_spans, &shaped_chars)?;
         // Round 13 — multi-glyph context-aware GSUB pass. For every
         // Indic cluster, dispatch the multi-glyph features
         // (`locl` / `nukt` / `akhn` / `cjct` / `init` / `haln`) via
@@ -419,7 +451,7 @@ impl FaceChain {
         // glyph indices map 1:1 onto the input chars, and round-11 is
         // length-preserving (single substitutions don't insert/delete),
         // so `adjusted_spans` is still correct here.
-        let out = self.apply_cluster_context_substitutions(out, &adjusted_spans)?;
+        let out = self.apply_cluster_context_substitutions(parsed, out, &adjusted_spans)?;
         Ok(out)
     }
 
@@ -434,6 +466,7 @@ impl FaceChain {
     /// this to shift cluster span end indices.
     fn apply_reph_substitutions(
         &self,
+        parsed: &mut ParsedFaces<'_>,
         glyphs: Vec<(u16, u16)>,
         marks: &[RephMark],
     ) -> Result<RephSubstResult, Error> {
@@ -458,7 +491,6 @@ impl FaceChain {
             if ra_gid == 0 {
                 continue;
             }
-            let face = &self.faces[ra_face_idx as usize];
             // Look up the script's `rphf` feature on this face. We try
             // the modern Indic2 tag first (`dev2` / `bng2`), then the
             // legacy v1 tag (`deva` / `beng`) for older fonts.
@@ -466,7 +498,8 @@ impl FaceChain {
                 Some(p) => p,
                 None => continue,
             };
-            let new_ra = face.with_font(|font| {
+            let font = parsed.font(ra_face_idx as usize)?;
+            let new_ra = {
                 let mut substitute: Option<u16> = None;
                 for tag in [modern, legacy] {
                     let features = font.gsub_features_for_script(tag, None);
@@ -488,7 +521,7 @@ impl FaceChain {
                     }
                 }
                 substitute
-            })?;
+            };
             if let Some(reph_gid) = new_ra {
                 // Rewrite the RA glyph to its reph form.
                 out[mark.ra_idx] = (ra_face_idx, reph_gid);
@@ -529,6 +562,7 @@ impl FaceChain {
     /// degrade to the round-10 behaviour (just `rphf`).
     fn apply_cluster_position_substitutions(
         &self,
+        parsed: &mut ParsedFaces<'_>,
         glyphs: Vec<(u16, u16)>,
         spans: &[ClusterSpan],
         chars: &[char],
@@ -571,8 +605,8 @@ impl FaceChain {
                         // `half` form fires when there's anything after
                         // the halant in the cluster.
                         if after_halant < chars_end && glyph_idx < out.len() {
-                            self.try_apply_single_subst(
-                                &mut out, glyph_idx, modern, legacy, b"half",
+                            Self::try_apply_single_subst(
+                                parsed, &mut out, glyph_idx, modern, legacy, b"half",
                             )?;
                         }
                         // The post-halant consonant (if any) gets the
@@ -585,7 +619,8 @@ impl FaceChain {
                             && after_halant < out.len()
                         {
                             for tag in [b"pref", b"blwf", b"abvf", b"pstf"] {
-                                if self.try_apply_single_subst(
+                                if Self::try_apply_single_subst(
+                                    parsed,
                                     &mut out,
                                     after_halant,
                                     modern,
@@ -605,7 +640,7 @@ impl FaceChain {
             for tag in [b"pres", b"psts", b"abvs", b"blws"] {
                 for idx in span.start..end {
                     if idx < out.len() {
-                        self.try_apply_single_subst(&mut out, idx, modern, legacy, tag)?;
+                        Self::try_apply_single_subst(parsed, &mut out, idx, modern, legacy, tag)?;
                     }
                 }
             }
@@ -646,6 +681,7 @@ impl FaceChain {
     /// by total cluster size to avoid infinite loops).
     fn apply_cluster_context_substitutions(
         &self,
+        parsed: &mut ParsedFaces<'_>,
         glyphs: Vec<(u16, u16)>,
         spans: &[ClusterSpan],
     ) -> Result<Vec<(u16, u16)>, Error> {
@@ -685,7 +721,7 @@ impl FaceChain {
             // simply won't match (different gid space) — graceful
             // degradation.
             let face_idx = out[span_start].0;
-            let face = &self.faces[face_idx as usize];
+            let font = parsed.font(face_idx as usize)?;
             let pre_len = span_end - span_start;
             // Snapshot the cluster's gid slice (just the gids — we'll
             // splice the (face_idx, gid) pairs back after the lookup).
@@ -694,7 +730,7 @@ impl FaceChain {
             // every position inside the cluster. The lookup's coverage
             // table decides whether the rule fires — if it does, we
             // adopt the new glyph slice and re-extract.
-            let new_gids = face.with_font(|font| {
+            let new_gids = {
                 let mut gids = gid_slice.clone();
                 for feat_tag in CONTEXT_FEATURES {
                     for tag in [modern, legacy] {
@@ -742,7 +778,7 @@ impl FaceChain {
                     }
                 }
                 gids
-            })?;
+            };
             let post_len = new_gids.len();
             // Splice the rewritten gids back into `out`, preserving
             // face_idx (length may have changed).
@@ -760,7 +796,7 @@ impl FaceChain {
     /// substitution was applied, `Ok(false)` otherwise. Glyphs whose
     /// owning face publishes no matching feature pass through silently.
     fn try_apply_single_subst(
-        &self,
+        parsed: &mut ParsedFaces<'_>,
         out: &mut [(u16, u16)],
         glyph_idx: usize,
         modern: [u8; 4],
@@ -771,8 +807,8 @@ impl FaceChain {
         if gid == 0 {
             return Ok(false);
         }
-        let face = &self.faces[face_idx as usize];
-        let new_gid = face.with_font(|font| {
+        let font = parsed.font(face_idx as usize)?;
+        let new_gid = (|| {
             for tag in [modern, legacy] {
                 let features = font.gsub_features_for_script(tag, None);
                 for feat in features {
@@ -786,7 +822,7 @@ impl FaceChain {
                 }
             }
             None
-        })?;
+        })();
         if let Some(g) = new_gid {
             out[glyph_idx] = (face_idx, g);
             Ok(true)
@@ -1498,4 +1534,70 @@ mod tests {
     // Mock-style tests are covered in the integration test file, where
     // we build a 2-face chain and verify face_idx routing. Unit-level
     // testing here is awkward because Face requires real TTF bytes.
+}
+
+#[cfg(test)]
+mod parse_once_tests {
+    use super::*;
+    use crate::face::PARSE_COUNT;
+
+    fn chain() -> FaceChain {
+        let primary =
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/DejaVuSansMono.ttf").to_vec())
+                .expect("DejaVu Sans Mono parses");
+        let fallback =
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/DejaVuSans.ttf").to_vec())
+                .expect("DejaVu Sans parses");
+        FaceChain::new(primary).push_fallback(fallback)
+    }
+
+    fn parses_during(f: impl FnOnce()) -> usize {
+        let before = PARSE_COUNT.with(|c| c.get());
+        f();
+        PARSE_COUNT.with(|c| c.get()) - before
+    }
+
+    /// One shaping call parses each consulted face once, however many
+    /// codepoints, clusters and runs it has (issue #17: it used to
+    /// parse once per codepoint per face tried).
+    #[test]
+    fn shape_parses_each_face_at_most_once() {
+        let chain = chain();
+        let text = "The quick brown fox jumps over the lazy dog \u{2603}\u{2654} again and again";
+        let n = parses_during(|| {
+            let glyphs = chain.shape(text, 16.0).expect("shapes");
+            assert_eq!(glyphs.len(), text.chars().count());
+        });
+        assert!(
+            n <= chain.len(),
+            "{n} parses for a {}-face chain",
+            chain.len()
+        );
+
+        let n = parses_during(|| {
+            chain
+                .shape_with_features(text, 16.0, &[*b"liga", *b"kern"])
+                .expect("shapes");
+        });
+        assert!(
+            n <= chain.len(),
+            "{n} parses for a {}-face chain",
+            chain.len()
+        );
+
+        // An Indic cluster run drives the reph / cluster GSUB passes.
+        let n = parses_during(|| {
+            chain
+                .shape(
+                    "\u{0930}\u{094D}\u{0915}\u{093F} \u{0915}\u{094D}\u{0937}",
+                    16.0,
+                )
+                .expect("shapes");
+        });
+        assert!(
+            n <= chain.len(),
+            "{n} parses for a {}-face chain",
+            chain.len()
+        );
+    }
 }

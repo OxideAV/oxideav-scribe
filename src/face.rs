@@ -24,6 +24,12 @@ use oxideav_core::{
 };
 use oxideav_ttf::{NamedInstance, VariationAxis};
 
+#[cfg(test)]
+thread_local! {
+    /// Parses performed by [`Face::parse_ttf`] on this thread (tests only).
+    pub(crate) static PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Which underlying parser this face wraps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -288,12 +294,27 @@ impl Face {
     /// view of the owned bytes. We re-parse on each call instead of
     /// storing a self-referential `Font<'static>` (which would
     /// require unsafe or a third-party crate like `ouroboros`, both
-    /// of which we avoid). Re-parsing is read-only header walking —
-    /// well under a millisecond on any modern font.
+    /// of which we avoid). Each call pays one parse, so callers that
+    /// make many lookups should batch them inside one closure.
     ///
     /// Returns `Error::WrongFaceKind` if this face was constructed
     /// from OTF bytes; use [`Face::with_otf_font`] in that case.
     pub fn with_font<R>(&self, f: impl FnOnce(&oxideav_ttf::Font<'_>) -> R) -> Result<R, Error> {
+        let font = self.parse_ttf()?;
+        Ok(f(&font))
+    }
+
+    /// Parse the owned bytes into an `oxideav_ttf::Font<'_>` borrowing
+    /// this face, with the face's variation coordinates applied — the
+    /// work [`Face::with_font`] does before running its closure.
+    ///
+    /// Shaping paths that consult the same face many times in one
+    /// call (per-codepoint chain fallback, per-cluster GSUB passes)
+    /// parse once through this and reuse the view, instead of paying
+    /// a parse per lookup.
+    pub(crate) fn parse_ttf(&self) -> Result<oxideav_ttf::Font<'_>, Error> {
+        #[cfg(test)]
+        PARSE_COUNT.with(|c| c.set(c.get() + 1));
         if self.kind != FaceKind::Ttf {
             return Err(Error::WrongFaceKind {
                 expected: FaceKind::Ttf,
@@ -313,7 +334,7 @@ impl Face {
         if !self.var_coords.is_empty() {
             font.set_variation_coords(&self.var_coords);
         }
-        Ok(f(&font))
+        Ok(font)
     }
 
     /// True if this face is the `i`-th subfont of a TrueType Collection
