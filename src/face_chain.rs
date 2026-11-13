@@ -121,6 +121,14 @@ impl FaceChain {
         }
     }
 
+    /// Builder form of [`FaceChain::set_outline_cache`]: attach
+    /// `cache` to every face currently in the chain.
+    #[must_use]
+    pub fn with_outline_cache(mut self, cache: std::sync::Arc<crate::OutlineCache>) -> Self {
+        self.set_outline_cache(Some(cache));
+        self
+    }
+
     /// Mutably borrow face at `idx`. Used to flip per-face state like
     /// variation coordinates without rebuilding the chain. Panics if
     /// `idx >= len()`.

@@ -233,6 +233,11 @@ fn chain_wide_cache_leaves_shape_to_paths_unchanged() {
     // Detaching goes back to decoding per call, same output.
     cached.set_outline_cache(None);
     assert!(cached.face(0).outline_cache().is_none());
+    let rebuilt = build().with_outline_cache(cache.clone());
+    assert!(Arc::ptr_eq(
+        rebuilt.face(1).outline_cache().unwrap(),
+        &cache
+    ));
     let hits = cache.stats().hits;
     let got = format!("{:?}", Shaper::shape_to_paths(&cached, text, 18.0));
     assert_eq!(got, want);

@@ -44,6 +44,11 @@ pub(crate) struct GposPlan {
 /// baseline and the preceding ones are adjusted.
 const RIGHT_TO_LEFT: u16 = 0x0001;
 
+/// Most scripts whose feature lists one plan keeps (the OpenType
+/// script-tag registry has under two hundred entries; a font uses a
+/// handful).
+const MAX_KEPT_SCRIPTS: usize = 256;
+
 /// Script tags the always-on `ccmp` / `calt` passes probe, in priority
 /// order; the first one publishing the feature wins.
 const GENERAL_SCRIPT_TAGS: [[u8; 4]; 4] = [*b"latn", *b"cyrl", *b"grek", *b"DFLT"];
@@ -125,10 +130,16 @@ impl LayoutPlan {
                 lookups: f.lookup_indices,
             })
             .collect();
-        self.script_features
+        let mut kept = self
+            .script_features
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(script_tag, features.clone());
+            .unwrap_or_else(|e| e.into_inner());
+        // Callers choose the tags they ask about; keep a bounded number
+        // of answers so arbitrary tags cannot grow the plan without
+        // limit. Past the bound a query is simply resolved per call.
+        if kept.len() < MAX_KEPT_SCRIPTS {
+            kept.insert(script_tag, features.clone());
+        }
         features
     }
 
@@ -176,6 +187,23 @@ impl LayoutPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asking about arbitrarily many script tags does not grow the
+    /// plan past its bound, and answers stay correct beyond it.
+    #[test]
+    fn kept_script_lists_are_bounded() {
+        let [face, _] = fonts();
+        let font = face.ttf().unwrap();
+        let plan = LayoutPlan::new();
+        for i in 0..2000u32 {
+            let tag = [b'q', (i >> 16) as u8, (i >> 8) as u8, i as u8];
+            assert!(plan.gsub_features(font, tag).is_empty());
+        }
+        assert_eq!(plan.script_features.lock().unwrap().len(), MAX_KEPT_SCRIPTS);
+        let direct = font.gsub_features_for_script(*b"latn", None);
+        assert!(!direct.is_empty());
+        assert_eq!(plan.gsub_features(font, *b"latn").len(), direct.len());
+    }
 
     fn fonts() -> [crate::Face; 2] {
         [
