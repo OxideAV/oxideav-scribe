@@ -223,6 +223,16 @@ fn main() {
         black_box(Face::from_ttf_bytes(INTER.to_vec()).unwrap());
     });
 
+    // --- line wrapping --------------------------------------------------
+    {
+        let face = Face::from_ttf_bytes(DEJAVU.to_vec()).unwrap();
+        let long = [LATIN; 4].join(" ");
+        let n = long.chars().count();
+        report(&filter, "wrap 480px DejaVuSans", n, "char", || {
+            black_box(oxideav_scribe::wrap_lines(&face, black_box(&long), 16.0, 480.0).unwrap());
+        });
+    }
+
     // --- paragraphs -----------------------------------------------------
     let mut dejavu = FaceChain::new(Face::from_ttf_bytes(DEJAVU.to_vec()).unwrap());
     bench_chain(&filter, "latin DejaVuSans", &mut dejavu, LATIN);

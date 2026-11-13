@@ -524,12 +524,12 @@ fn wrap_paragraph(
         } else {
             format!("{current}{word}")
         };
-        let glyphs = Shaper::shape(face, &candidate, size_px)?;
-        if run_width(&glyphs) <= max_width || current.is_empty() {
+        let candidate_width = run_width(&Shaper::shape(face, &candidate, size_px)?);
+        if candidate_width <= max_width || current.is_empty() {
             current = candidate;
-            // If even the first word doesn't fit, hard-break it.
-            let cur_glyphs = Shaper::shape(face, &current, size_px)?;
-            if run_width(&cur_glyphs) > max_width {
+            // If even the first word doesn't fit, hard-break it. (The
+            // candidate was just measured; it is not shaped again.)
+            if candidate_width > max_width {
                 let (head, tail) = hard_break(face, &current, size_px, max_width)?;
                 lines.push(head);
                 current = tail;

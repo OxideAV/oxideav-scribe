@@ -767,13 +767,23 @@ impl Face {
         script_tag: [u8; 4],
         lang_tag: Option<[u8; 4]>,
     ) -> Vec<[u8; 4]> {
-        self.with_font(|font| {
-            font.gsub_features_for_script(script_tag, lang_tag)
+        let Ok(font) = self.ttf() else {
+            return Vec::new();
+        };
+        match lang_tag {
+            // The default language system's list is kept per script.
+            None => self
+                .plan
+                .gsub_features(font, script_tag)
+                .iter()
+                .map(|f| f.tag)
+                .collect(),
+            Some(_) => font
+                .gsub_features_for_script(script_tag, lang_tag)
                 .into_iter()
                 .map(|f| f.tag)
-                .collect()
-        })
-        .unwrap_or_default()
+                .collect(),
+        }
     }
 
     /// `true` when this face publishes `feature_tag` for `script_tag`
@@ -782,13 +792,18 @@ impl Face {
     /// gate behaviour on feature presence without iterating the full
     /// list.
     ///
-    /// Cheap for the typical hit-or-miss check — internally this re-runs
-    /// the script-walk every call (the same cost as
-    /// `gsub_features_for_script(...).iter().any(...)`); cache the full
-    /// tag vec if you query many tags against the same script.
+    /// Cheap: the script's default-language-system feature list is
+    /// resolved once per face and kept, so repeated checks scan a short
+    /// in-memory list.
     pub fn has_gsub_feature(&self, script_tag: [u8; 4], feature_tag: [u8; 4]) -> bool {
-        self.gsub_features_for_script(script_tag, None)
-            .contains(&feature_tag)
+        match self.ttf() {
+            Ok(font) => self
+                .plan
+                .gsub_features(font, script_tag)
+                .iter()
+                .any(|f| f.tag == feature_tag),
+            Err(_) => false,
+        }
     }
 
     /// GPOS sibling of [`Self::gsub_features_for_script`]: the positioning

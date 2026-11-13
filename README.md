@@ -341,28 +341,42 @@ once to ask about colour bitmaps, once for the outline), so a frame's
 cost was the glyph count times the font's table-parsing time.
 
 `cargo bench --bench hot_paths` (std-only timing, release, median of 9
-batches on a shared build machine; "before" is the previous
+batches, two runs, on a shared build machine; "before" is the previous
 parse-per-call implementation built against the same released
 `oxideav-ttf` 0.1.8 / `oxideav-otf` 0.1.5):
 
 | case | before | now | now, outline cache |
 |------|-------:|----:|-------------------:|
-| UI frame, 486 × `glyph_node`, DejaVu Sans (5 800 glyphs) | 252.8 ms | 0.171 ms | 0.045 ms |
-| UI frame, 486 × `glyph_node`, Inter Variable | 109.4 ms | 0.147 ms | 0.057 ms |
-| UI frame, 486 × `glyph_node`, Source Sans 3 (CFF) | 1.14 ms | 0.280 ms | 0.037 ms |
-| UI frame, 31 × `shape_to_paths`, DejaVu Sans | 179.0 ms | 0.661 ms | 0.275 ms |
-| Latin paragraph (196 glyphs) draw, DejaVu Sans | 60.1 ms | 0.049 ms | 0.017 ms |
-| Arabic paragraph (153 glyphs) draw, DejaVu Sans | 51.4 ms | 0.066 ms | 0.013 ms |
-| Latin paragraph draw, Inter Variable `wght=700` | 42.9 ms | 0.162 ms | 0.020 ms |
-| CJK line (68 glyphs) draw, DejaVu Sans + Noto Sans CJK | 9.32 ms | 0.152 ms | 0.015 ms |
-| Colour emoji (16 glyphs) draw, Noto Color Emoji | 6.36 ms | 0.461 ms | 0.298 ms |
-| Latin paragraph shape, DejaVu Sans | 0.203 ms | 0.062 ms | — |
+| UI frame, 486 × `glyph_node`, DejaVu Sans (5 800 glyphs) | 252.8 ms | 0.16 ms | 0.050 ms |
+| UI frame, 486 × `glyph_node`, Inter Variable | 109.4 ms | 0.17 ms | 0.054 ms |
+| UI frame, 486 × `glyph_node`, Source Sans 3 (CFF) | 1.14 ms | 0.34 ms | 0.047 ms |
+| UI frame, 31 × `shape_to_paths`, DejaVu Sans | 179.0 ms | 0.34 ms | 0.24 ms |
+| UI frame, 31 × `shape_to_paths`, Inter Variable | 108.5 ms | 0.72 ms | 0.67 ms |
+| Latin paragraph (196 glyphs) draw, DejaVu Sans | 60.1 ms | 0.058 ms | 0.018 ms |
+| Arabic paragraph (153 glyphs) draw, DejaVu Sans | 51.4 ms | 0.073 ms | 0.014 ms |
+| Latin paragraph draw, Inter Variable `wght=700` | 42.9 ms | 0.18 ms | 0.023 ms |
+| CJK line (68 glyphs) draw, DejaVu Sans + Noto Sans CJK | 9.32 ms | 0.17 ms | 0.017 ms |
+| Colour emoji (16 glyphs) draw, Noto Color Emoji | 6.36 ms | 0.33 ms | 0.012 ms |
+| Latin paragraph shape, DejaVu Sans | 0.203 ms | 0.058 ms | — |
+| Latin paragraph shape, Inter Variable | 0.336 ms | 0.246 ms | — |
 
 The "UI frame" rows are a text field plus thirty labelled buttons, one
-call per glyph per frame: 520 µs → 0.35 µs per `glyph_node` on DejaVu
-Sans (about 1 500×), 0.09 µs with the outline cache. What is left per
-glyph is the outline walk itself (and, for colour emoji, the PNG
-decode + resample of the strike).
+call per glyph per frame: 520 µs → 0.33 µs per `glyph_node` on DejaVu
+Sans (about 1 600×), 0.10 µs with the outline cache. What is left per
+glyph is the outline walk itself; with a cache, a copy-and-scale of the
+kept path (and, for colour emoji, a resample of the kept strike instead
+of a PNG decode).
+
+Shaping no longer rebuilds lookup or feature lists per call (a per-face
+layout plan keeps them): thirty short labels through `FaceChain::shape`
+take 152 µs instead of 204 µs on DejaVu Sans. What remains in shaping
+is the per-glyph `GSUB` / `GPOS` lookup matching inside the font
+parser — about 85 % of a shaping call in a sampling profile (ligature
+lookup, chained-context matching, pair kerning, coverage search).
+
+Face construction is unchanged (about 0.19 ms for DejaVu Sans, 0.11 ms
+for Inter Variable with `oxideav-ttf` 0.1.8, which parses every table
+up front); it is paid once per face.
 
 ### The outline cache
 
