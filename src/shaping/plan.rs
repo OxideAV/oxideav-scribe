@@ -31,12 +31,18 @@ pub(crate) struct PlannedFeature {
 pub(crate) struct GposPlan {
     /// SinglePos (type 1) lookups, in lookup-list order.
     pub(crate) single: Vec<u16>,
-    /// Whether any cursive-attachment (type 3) lookup exists.
-    pub(crate) has_cursive: bool,
+    /// Cursive-attachment (type 3) lookups as `(lookup index, whether
+    /// the lookup's RIGHT_TO_LEFT flag is set)`, in lookup-list order.
+    pub(crate) cursive: Vec<(u16, bool)>,
     /// Contextual / chained-contextual (type 7 / 8) lookups as
     /// `(lookup index, type)`, in lookup-list order.
     pub(crate) contextual: Vec<(u16, u16)>,
 }
+
+/// `lookupFlag` bit 0x0001 — used only by cursive attachment (GPOS
+/// lookup type 3): the last glyph of a connected sequence stays on the
+/// baseline and the preceding ones are adjusted.
+const RIGHT_TO_LEFT: u16 = 0x0001;
 
 /// Script tags the always-on `ccmp` / `calt` passes probe, in priority
 /// order; the first one publishing the feature wins.
@@ -83,7 +89,9 @@ impl LayoutPlan {
             for (index, ty, _) in font.gpos_lookup_list() {
                 match ty {
                     1 => plan.single.push(index),
-                    3 => plan.has_cursive = true,
+                    3 => plan
+                        .cursive
+                        .push((index, font.gpos_lookup_flags(index) & RIGHT_TO_LEFT != 0)),
                     7 | 8 => plan.contextual.push((index, ty)),
                     _ => {}
                 }
@@ -209,7 +217,13 @@ mod tests {
                     planned.single,
                     of_type(&[1]).iter().map(|p| p.0).collect::<Vec<_>>()
                 );
-                assert_eq!(planned.has_cursive, !of_type(&[3]).is_empty());
+                assert_eq!(
+                    planned.cursive.iter().map(|c| c.0).collect::<Vec<_>>(),
+                    of_type(&[3]).iter().map(|p| p.0).collect::<Vec<_>>()
+                );
+                for &(index, rtl) in &planned.cursive {
+                    assert_eq!(rtl, font.gpos_lookup_flags(index) & 1 != 0);
+                }
                 assert_eq!(planned.contextual, of_type(&[7, 8]));
 
                 for tag in [*b"latn", *b"cyrl", *b"arab", *b"DFLT", *b"zzzz"] {

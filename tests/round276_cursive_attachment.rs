@@ -92,7 +92,7 @@ fn table_checksum(data: &[u8]) -> u32 {
 /// LookupList with one LookupType-3 lookup whose CursivePosFormat1
 /// subtable covers gids `1..=anchors.len()` with the supplied
 /// per-glyph `(entry, exit)` anchor pairs.
-fn build_gpos_cursive(anchors: &[(Anchor, Anchor)]) -> Vec<u8> {
+fn build_gpos_cursive(anchors: &[(Anchor, Anchor)], lookup_flag: u16) -> Vec<u8> {
     let n = anchors.len() as u16;
 
     // ----- CursivePosFormat1 subtable -------------------------------------
@@ -146,7 +146,7 @@ fn build_gpos_cursive(anchors: &[(Anchor, Anchor)]) -> Vec<u8> {
     // ----- Lookup: type 3, flag 0 (RIGHT_TO_LEFT clear), 1 subtable. ------
     let mut lookup = Vec::new();
     lookup.extend_from_slice(&3u16.to_be_bytes()); // lookupType = 3 (CursivePos)
-    lookup.extend_from_slice(&0u16.to_be_bytes()); // lookupFlag
+    lookup.extend_from_slice(&lookup_flag.to_be_bytes()); // lookupFlag
     lookup.extend_from_slice(&1u16.to_be_bytes()); // subTableCount
     lookup.extend_from_slice(&8u16.to_be_bytes()); // subTableOffsets[0]
     lookup.extend_from_slice(&sub);
@@ -210,6 +210,12 @@ fn build_gpos_cursive(anchors: &[(Anchor, Anchor)]) -> Vec<u8> {
 /// when `cursive` is `Some` — a GPOS table from [`build_gpos_cursive`]
 /// whose per-glyph anchors apply to gids 1..=3 in order.
 fn build_synthetic_ttf(cursive: Option<&[(Anchor, Anchor)]>) -> Vec<u8> {
+    build_synthetic_ttf_flagged(cursive, 0)
+}
+
+/// [`build_synthetic_ttf`] with the cursive lookup's `lookupFlag` set
+/// to `lookup_flag` (bit `0x0001` is RIGHT_TO_LEFT).
+fn build_synthetic_ttf_flagged(cursive: Option<&[(Anchor, Anchor)]>, lookup_flag: u16) -> Vec<u8> {
     // ----- glyf: empty (all glyphs zero-length via all-zero loca). --------
     let glyf: Vec<u8> = Vec::new();
 
@@ -321,7 +327,7 @@ fn build_synthetic_ttf(cursive: Option<&[(Anchor, Anchor)]>) -> Vec<u8> {
     // ----- sfnt assembly (tags in ascending order). ---------------------------
     let mut tables_meta: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
     if let Some(anchors) = cursive {
-        tables_meta.push((b"GPOS", build_gpos_cursive(anchors)));
+        tables_meta.push((b"GPOS", build_gpos_cursive(anchors, lookup_flag)));
     }
     tables_meta.push((b"cmap", cmap));
     tables_meta.push((b"glyf", glyf));
@@ -460,4 +466,83 @@ fn font_without_gpos_is_a_no_op() {
         assert_eq!(g.x_offset, 0.0);
         assert_eq!(g.y_offset, 0.0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// RIGHT_TO_LEFT lookup flag
+// ---------------------------------------------------------------------------
+
+/// `lookupFlag` bit `0x0001`. Per the GPOS chapter: "if the
+/// RIGHT_TO_LEFT flag is set, the first glyph is adjusted to align
+/// anchors with the second glyph", and "the last glyph in the
+/// connected sequence keeps its initial position in the cross-stream
+/// direction relative to the baseline, and the cross-stream positions
+/// of the preceding, connected glyphs are adjusted".
+const RIGHT_TO_LEFT: u16 = 0x0001;
+
+#[test]
+fn right_to_left_flag_hangs_the_chain_from_the_last_glyph() {
+    let bytes = build_synthetic_ttf_flagged(Some(&test_anchors()), RIGHT_TO_LEFT);
+    let face = Face::from_ttf_bytes(bytes).expect("parse synthetic TTF");
+    let glyphs = shape(&face, "abc", 1000.0);
+    assert_eq!(
+        glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+
+    // The line-layout direction is unaffected by the flag: the first
+    // glyph of each pair still gets its advance rewritten.
+    assert_eq!(glyphs[0].x_advance, 400.0);
+    assert_eq!(glyphs[1].x_advance, 450.0);
+    assert_eq!(glyphs[2].x_advance, 500.0);
+
+    // Cross-stream: the LAST glyph keeps the baseline.
+    assert_eq!(glyphs[2].y_offset, 0.0);
+    // Pair (b, c): b's exit sits 200 below b's origin and must meet
+    // c's entry on the baseline → b rises 200 (raster Y grows down).
+    assert_eq!(glyphs[1].y_offset, -200.0);
+    // Pair (a, b): b's entry is 300 above b's origin, i.e. 500 above
+    // the baseline; a's exit is 100 above a's origin → a rises 400.
+    assert_eq!(glyphs[0].y_offset, -400.0);
+
+    // Whatever the flag, the anchors of every pair coincide: with
+    // font Y-up heights (−y_offset + anchor), exit == entry.
+    let anchors = test_anchors();
+    for (first, second) in [(0usize, 1usize), (1, 2)] {
+        let exit = anchors[first].1.unwrap();
+        let entry = anchors[second].0.unwrap();
+        assert_eq!(
+            -glyphs[first].y_offset + f32::from(exit.1),
+            -glyphs[second].y_offset + f32::from(entry.1)
+        );
+    }
+}
+
+#[test]
+fn right_to_left_flag_scales_and_skips_unanchored_pairs() {
+    let bytes = build_synthetic_ttf_flagged(Some(&test_anchors()), RIGHT_TO_LEFT);
+    let face = Face::from_ttf_bytes(bytes).expect("parse synthetic TTF");
+    let glyphs = shape(&face, "abc", 500.0);
+    assert_eq!(glyphs[0].y_offset, -200.0);
+    assert_eq!(glyphs[1].y_offset, -100.0);
+    assert_eq!(glyphs[2].y_offset, 0.0);
+    assert_eq!(glyphs[0].x_advance, 200.0);
+
+    // "ca": c has no exit anchor → the pair is skipped entirely.
+    let glyphs = shape(&face, "ca", 1000.0);
+    for g in &glyphs {
+        assert_eq!((g.y_offset, g.x_advance), (0.0, 500.0));
+    }
+    // "abab": the chain breaks at (b, a) — a has no entry — so each
+    // "ab" hangs from its own b.
+    let glyphs = shape(&face, "abab", 1000.0);
+    let ys: Vec<f32> = glyphs.iter().map(|g| g.y_offset).collect();
+    assert_eq!(ys, [-200.0, 0.0, -200.0, 0.0]);
+
+    // The other lookup-flag bits do not select the flag-set walk.
+    let bytes = build_synthetic_ttf_flagged(Some(&test_anchors()), 0x0008);
+    let face = Face::from_ttf_bytes(bytes).expect("parse synthetic TTF");
+    let glyphs = shape(&face, "abc", 1000.0);
+    let ys: Vec<f32> = glyphs.iter().map(|g| g.y_offset).collect();
+    assert_eq!(ys, [0.0, 200.0, 400.0]);
 }
