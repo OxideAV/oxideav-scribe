@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.10...v0.2.0) - 2026-11-13
+
+### Other
+
+- layout plan: bound the kept per-script feature lists; FaceChain::with_outline_cache
+- measure each accepted candidate once; feature queries read the layout plan
+- GPOS cursive attachment: honour the RIGHT_TO_LEFT lookup flag
+- COLR version 0 layered colour glyphs
+- keep decoded colour-bitmap strikes
+- per-face layout plan — lookup and feature lists resolved once
+- parse the font once for the life of the face; optional outline cache
+- parse each face once per shaping call ([#17](https://github.com/OxideAV/oxideav-scribe/pull/17))
+- API hygiene: non_exhaustive Error/FaceKind/Script and output records
+- edition 2024, MSRV 1.95
+- README examples use the current registry API
+- ureq without default features — drop the flate2/miniz_oxide gzip layer
+
 ### Added
 
 - `OutlineCache` (`OutlineCacheStats`, `DEFAULT_BUDGET_BYTES`): an optional, bounded, thread-safe memo of glyph outlines in font units keyed by (face id, glyph id, variation instance). Attach it with `Face::set_outline_cache` / `Face::with_outline_cache` / `FaceChain::set_outline_cache` / `FaceChain::with_outline_cache`; `Face::glyph_path_shared` returns the cached `Arc<Path>`. Off by default; output is identical with and without it. Byte-budgeted in two generations; no invalidation needed when a face changes instance. The same cache keeps decoded colour-bitmap strikes (keyed by face id, glyph id and the strike image's position in the file), so a colour glyph's PNG is inflated once and only resampled per draw: 16 emoji through `glyph_node` take 12 µs instead of 330 µs.
