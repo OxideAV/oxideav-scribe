@@ -211,6 +211,24 @@ fn colour_emoji_nodes_are_identical() {
         return;
     };
     let face = Face::from_ttf_bytes(bytes).unwrap();
+    check("NotoColorEmoji nodes", emoji_digest(&face), EMOJI_DIGEST);
+    // And through a cache, cold then warm.
+    let face = face.with_outline_cache(Arc::new(OutlineCache::default()));
+    check(
+        "NotoColorEmoji nodes (cold cache)",
+        emoji_digest(&face),
+        EMOJI_DIGEST,
+    );
+    check(
+        "NotoColorEmoji nodes (warm cache)",
+        emoji_digest(&face),
+        EMOJI_DIGEST,
+    );
+}
+
+const EMOJI_DIGEST: u64 = 0xe2bf_db99_f6ec_baa6;
+
+fn emoji_digest(face: &Face) -> u64 {
     let mut h = Fnv::new();
     for ch in ['🎉', '😀', '😂', 'A', ' '] {
         let gid = face.with_font(|f| f.glyph_index(ch)).unwrap().unwrap_or(0);
@@ -222,7 +240,7 @@ fn colour_emoji_nodes_are_identical() {
     }
     h.feed(&face.has_color_bitmaps());
     h.feed(&face.color_strike_sizes());
-    check("NotoColorEmoji nodes", h.0, 0xe2bf_db99_f6ec_baa6);
+    h.0
 }
 
 #[test]

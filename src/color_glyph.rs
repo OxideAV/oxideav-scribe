@@ -43,6 +43,7 @@ use crate::Error;
 use crate::face::Face;
 
 use oxideav_core::VideoFrame;
+use std::sync::Arc;
 
 /// A grayscale-irrelevant straight-alpha RGBA8 bitmap. Stride is
 /// `width * 4`. Used internally to carry the decoded colour-glyph
@@ -231,6 +232,22 @@ impl Face {
         glyph_id: u16,
         size_px: f32,
     ) -> Result<Option<ColorGlyphBitmap>, Error> {
+        Ok(self
+            .native_color_strike(glyph_id, size_px)?
+            // Uncached, the decode is ours alone and moves out; cached,
+            // the caller gets a copy of the kept strike.
+            .map(|strike| Arc::try_unwrap(strike).unwrap_or_else(|kept| (*kept).clone())))
+    }
+
+    /// The native-size decoded strike for `glyph_id` nearest
+    /// `size_px` — from the attached [`crate::OutlineCache`] when
+    /// there is one (decoded once per strike), freshly decoded
+    /// otherwise.
+    fn native_color_strike(
+        &self,
+        glyph_id: u16,
+        size_px: f32,
+    ) -> Result<Option<Arc<ColorGlyphBitmap>>, Error> {
         if size_px <= 0.0 || !size_px.is_finite() {
             return Err(Error::InvalidSize);
         }
@@ -241,42 +258,17 @@ impl Face {
         let Some(cb) = font.glyph_color_bitmap(glyph_id, target_ppem) else {
             return Ok(None);
         };
-        // The PNG payload is read straight out of the face's bytes.
-        let png_bytes = cb.png_bytes;
-        let (bx, by, adv, ppem) = (cb.bearing_x, cb.bearing_y, cb.advance, cb.ppem);
-        let frame = match oxideav_png::decode_png_to_frame(png_bytes, None) {
-            Ok(f) => f,
-            Err(_) => return Ok(None),
-        };
-        // Recover the true PNG image dimensions from the IHDR chunk
-        // (frame metadata doesn't carry width/height — see VideoFrame
-        // doc-comment in oxideav-core). CBDT metrics CAN round-down
-        // vs the PNG's true pixel grid (legal per spec — metrics are
-        // the layout box, the PNG can be larger and is drawn into
-        // that box).
-        let (png_w, png_h) = match read_png_dimensions(png_bytes) {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-        // Noto Color Emoji ships PLTE-encoded (colour type 3) PNGs —
-        // smaller payload than direct RGBA. `oxideav_png::decode_png_to_frame`
-        // hands those back as a 1-byte-per-pixel `Pal8` plane, with the
-        // PLTE/tRNS chunks NOT exposed through the `VideoFrame`. We
-        // re-parse those two tiny chunks here at the boundary (same
-        // pattern as `read_png_dimensions` already does for IHDR) and
-        // splice them into the conversion. Direct RGBA strikes (Apple
-        // Color Emoji, EmojiOne) skip the palette path entirely —
-        // `read_png_palette` returns `None` and we fall through to the
-        // existing colour-type sniff in `videoframe_to_rgba`.
-        let palette = read_png_palette(png_bytes);
-        let bitmap = videoframe_to_rgba(&frame, png_w, png_h, palette.as_ref());
-        Ok(Some(ColorGlyphBitmap {
-            bitmap,
-            bearing_x: bx as i32,
-            bearing_y: by as i32,
-            advance: adv as u32,
-            ppem,
-        }))
+        Ok(match self.outline_cache() {
+            Some(cache) => {
+                // Where the strike's image sits in the font file: the
+                // identity of exactly what would be decoded.
+                let offset = (cb.png_bytes.as_ptr() as usize)
+                    .wrapping_sub(self.raw_bytes().as_ptr() as usize);
+                let image = (offset, cb.png_bytes.len());
+                cache.get_or_decode_strike(self.id(), glyph_id, image, || decode_color_strike(&cb))
+            }
+            None => decode_color_strike(&cb).map(Arc::new),
+        })
     }
 
     /// Rasterise the colour bitmap for `glyph_id`, **bilinearly
@@ -299,12 +291,14 @@ impl Face {
         glyph_id: u16,
         size_px: f32,
     ) -> Result<Option<ColorGlyphBitmap>, Error> {
-        let native = match self.raster_color_glyph(glyph_id, size_px)? {
+        let native = match self.native_color_strike(glyph_id, size_px)? {
             Some(c) => c,
             None => return Ok(None),
         };
         if native.bitmap.is_empty() || native.ppem == 0 {
-            return Ok(Some(native));
+            return Ok(Some(
+                Arc::try_unwrap(native).unwrap_or_else(|kept| (*kept).clone()),
+            ));
         }
         let strike_scale = size_px / native.ppem as f32;
         let new_w = (native.bitmap.width as f32 * strike_scale).round().max(1.0) as u32;
@@ -327,6 +321,39 @@ impl Face {
             ppem: reported_ppem,
         }))
     }
+}
+
+/// Decode one CBDT strike entry (an embedded PNG) to straight-alpha
+/// RGBA8 at its native size. `None` when the PNG does not decode.
+fn decode_color_strike(cb: &oxideav_ttf::ColorBitmap<'_>) -> Option<ColorGlyphBitmap> {
+    // The PNG payload is read straight out of the face's bytes.
+    let png_bytes = cb.png_bytes;
+    let frame = oxideav_png::decode_png_to_frame(png_bytes, None).ok()?;
+    // Recover the true PNG image dimensions from the IHDR chunk
+    // (frame metadata doesn't carry width/height — see VideoFrame
+    // doc-comment in oxideav-core). CBDT metrics CAN round-down
+    // vs the PNG's true pixel grid (legal per spec — metrics are
+    // the layout box, the PNG can be larger and is drawn into
+    // that box).
+    let (png_w, png_h) = read_png_dimensions(png_bytes)?;
+    // Noto Color Emoji ships PLTE-encoded (colour type 3) PNGs —
+    // smaller payload than direct RGBA. `oxideav_png::decode_png_to_frame`
+    // hands those back as a 1-byte-per-pixel `Pal8` plane, with the
+    // PLTE/tRNS chunks NOT exposed through the `VideoFrame`. We
+    // re-parse those two tiny chunks here at the boundary (same
+    // pattern as `read_png_dimensions` already does for IHDR) and
+    // splice them into the conversion. Direct RGBA strikes skip the
+    // palette path entirely — `read_png_palette` returns `None` and we
+    // fall through to the colour-type sniff in `videoframe_to_rgba`.
+    let palette = read_png_palette(png_bytes);
+    let bitmap = videoframe_to_rgba(&frame, png_w, png_h, palette.as_ref());
+    Some(ColorGlyphBitmap {
+        bitmap,
+        bearing_x: cb.bearing_x as i32,
+        bearing_y: cb.bearing_y as i32,
+        advance: cb.advance as u32,
+        ppem: cb.ppem,
+    })
 }
 
 /// Convert a VideoFrame from `oxideav-png` into a straight-alpha RGBA8

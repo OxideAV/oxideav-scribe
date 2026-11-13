@@ -66,8 +66,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `FaceChain::set_outline_cache` and each *(face, glyph id, variation
   instance)* is decoded once; drawing it again at any size or position
   scales the kept font-unit path. `Face::glyph_path_shared` hands out
-  the cached `Arc<Path>` without copying. Off by default; output is
-  identical with and without it. See [Performance](#performance).
+  the cached `Arc<Path>` without copying. The same cache keeps decoded
+  colour-bitmap strikes, so an emoji's PNG is inflated once and only
+  resampled per draw. Off by default; output is identical with and
+  without it. See [Performance](#performance).
 - **PostScript glyph names** — `Face::glyph_name(gid)` (and the lower
   level `Face::post()` / `crate::post::PostTable`) resolve a glyph ID to
   its `post`-table PostScript name. The 258 standard Macintosh names are
@@ -377,7 +379,12 @@ println!("{:?}", cache.stats()); // hits, misses, entries, bytes
   another instance's outline, and changing a face's variation
   coordinates needs no flush: the new instance misses, the old one's
   entries are found again if the face returns to it.
-- **Memory bound** — entries are charged for their path commands plus
+- **Colour strikes** — the decoded native-size RGBA of a colour-bitmap
+  glyph is kept under the same budget, keyed by face id, glyph id and
+  the position of the strike's embedded image in the font file;
+  `glyph_node` / `raster_color_glyph_at` resample from it.
+- **Memory bound** — entries are charged for their path commands (or
+  RGBA bytes — about 70 KiB for a 136 × 128 strike) plus
   a fixed 96-byte allowance and kept in two generations of at most
   half the budget each; when the young one fills, the old one is
   dropped and entries still in use are carried forward. The charged

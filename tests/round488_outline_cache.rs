@@ -7,6 +7,8 @@ use oxideav_core::PathCommand;
 use oxideav_scribe::{Face, FaceChain, FaceKind, OutlineCache, Shaper};
 use std::sync::Arc;
 
+mod font_fixtures;
+
 const DEJAVU: &[u8] = include_bytes!("fixtures/DejaVuSans.ttf");
 const DEJAVU_MONO: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 const INTER: &[u8] = include_bytes!("fixtures/InterVariable.ttf");
@@ -364,4 +366,57 @@ fn mutated_fonts_through_a_shared_cache_match_their_uncached_twins() {
         cache.forget_face(c.id());
         assert_eq!(gp(c, 1), gp(p, 1));
     }
+}
+
+/// Colour-bitmap glyphs through the cache: the decoded strike is kept
+/// once per (glyph, strike) and resampled per size; nodes and bitmaps
+/// are identical to the uncached face's. (Needs the pinned emoji
+/// fixture; skipped when it is not cached.)
+#[test]
+fn colour_strikes_are_decoded_once_and_identical() {
+    let Some(bytes) = font_fixtures::load_fixture(&font_fixtures::NOTO_COLOR_EMOJI_TTF) else {
+        return;
+    };
+    let cache = Arc::new(OutlineCache::new(8 << 20));
+    let plain = Face::from_ttf_bytes(bytes.clone()).unwrap();
+    let cached = Face::from_ttf_bytes(bytes)
+        .unwrap()
+        .with_outline_cache(cache.clone());
+    let gids: Vec<u16> = "🎉😀😂🥰👍"
+        .chars()
+        .map(|c| plain.with_font(|f| f.glyph_index(c)).unwrap().unwrap_or(0))
+        .collect();
+    let sizes = [12.0_f32, 16.0, 31.5, 64.0, 109.0, 200.0];
+    for pass in 0..2 {
+        for &gid in &gids {
+            for size in sizes {
+                assert_eq!(
+                    format!("{:?}", cached.glyph_node(gid, size)),
+                    format!("{:?}", plain.glyph_node(gid, size)),
+                    "pass {pass} glyph {gid} size {size}"
+                );
+                assert_eq!(
+                    format!("{:?}", cached.raster_color_glyph(gid, size)),
+                    format!("{:?}", plain.raster_color_glyph(gid, size)),
+                );
+                assert_eq!(
+                    format!("{:?}", cached.raster_color_glyph_at(gid, size)),
+                    format!("{:?}", plain.raster_color_glyph_at(gid, size)),
+                );
+            }
+        }
+    }
+    let s = cache.stats();
+    // One decode per distinct (glyph, strike); everything else hits.
+    let strikes = plain.color_strike_sizes().len().max(1) as u64;
+    assert!(
+        s.misses <= gids.len() as u64 * (strikes + 1),
+        "decoded more than once per strike: {s:?}"
+    );
+    assert!(s.hits > 10 * s.misses, "{s:?}");
+    assert!(s.bytes <= cache.budget_bytes());
+    assert!(matches!(
+        cached.raster_color_glyph(gids[0], 0.0),
+        Err(oxideav_scribe::Error::InvalidSize)
+    ));
 }

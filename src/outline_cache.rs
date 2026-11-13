@@ -8,6 +8,13 @@
 //! the same few hundred glyphs every frame, at several sizes, can
 //! decode each once and reuse the font-unit path.
 //!
+//! Colour-bitmap glyphs get the same treatment: the decoded strike
+//! (the embedded PNG inflated to straight-alpha RGBA at the strike's
+//! native size) depends only on *(face, glyph id, strike)*, and
+//! decoding it costs far more than resampling it to the size being
+//! drawn. The cache keeps decoded strikes next to the outlines, under
+//! the same byte budget.
+//!
 //! [`OutlineCache`] is that memo. It is **off by default**: a
 //! [`crate::Face`] only consults a cache the caller attached with
 //! [`crate::Face::set_outline_cache`] (or
@@ -22,10 +29,14 @@
 //!   that is never reused, so two faces can never alias, not even two
 //!   faces built from the same bytes, and not after one is dropped;
 //! * the glyph id;
-//! * the face's variation instance — the exact bit patterns of the
-//!   installed user-space coordinates (absent for the default
-//!   instance). The whole vector is compared on every lookup; there is
-//!   no lossy digest that two instances could share.
+//! * for an outline, the face's variation instance — the exact bit
+//!   patterns of the installed user-space coordinates (absent for the
+//!   default instance). The whole vector is compared on every lookup;
+//!   there is no lossy digest that two instances could share;
+//! * for a decoded colour strike, the position and length of the
+//!   strike's embedded image inside the font file — the identity of
+//!   the very bytes that were decoded (colour bitmaps do not vary with
+//!   the instance).
 //!
 //! Because the instance is part of the key, changing a face's
 //! variation coordinates needs **no invalidation**: the new instance
@@ -37,7 +48,8 @@
 //! The cache is bounded by a byte budget
 //! ([`OutlineCache::new`]; [`DEFAULT_BUDGET_BYTES`] for
 //! [`OutlineCache::default`]). Each entry is charged for its path
-//! commands plus a fixed bookkeeping allowance. Entries live in two
+//! commands (or its RGBA bytes — a 136 × 128 strike is about 70 KiB)
+//! plus a fixed bookkeeping allowance. Entries live in two
 //! generations, each capped at half the budget: new entries (and
 //! entries hit in the old generation) go to the young one; when it is
 //! full the old generation is dropped wholesale and the young one
@@ -46,7 +58,7 @@
 //! per-entry bookkeeping. A single outline larger than half the budget
 //! is returned to the caller but not retained.
 //!
-//! The paths are handed out as `Arc<Path>`; a caller that keeps one
+//! The outlines are handed out as `Arc<Path>`; a caller that keeps one
 //! keeps that allocation alive after the cache has evicted it — such
 //! memory is the caller's, not counted against the budget.
 //!
@@ -57,6 +69,7 @@
 //! threads that miss on the same glyph at the same time both decode it
 //! (and store identical results) rather than one blocking the other.
 
+use crate::color_glyph::ColorGlyphBitmap;
 use oxideav_core::{Path, PathCommand};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,18 +100,35 @@ impl InstanceKey {
     }
 }
 
+/// Which per-glyph resource an entry holds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Resource {
+    /// The outline at a variation instance.
+    Outline(InstanceKey),
+    /// The decoded colour strike whose embedded image occupies this
+    /// `(offset, length)` of the font file.
+    Strike(usize, usize),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Key {
     face: u64,
     glyph: u16,
-    instance: InstanceKey,
+    resource: Resource,
+}
+
+/// A kept resource. `None` records "this glyph has none" (whitespace,
+/// bitmap only, out of range, undecodable strike) so that is not
+/// re-derived either.
+#[derive(Debug, Clone)]
+enum Kept {
+    Outline(Option<Arc<Path>>),
+    Strike(Option<Arc<ColorGlyphBitmap>>),
 }
 
 #[derive(Debug, Clone)]
 struct Slot {
-    /// `None` records "this glyph has no outline" (whitespace, bitmap
-    /// only, out of range) so that is not re-derived either.
-    path: Option<Arc<Path>>,
+    kept: Kept,
     cost: usize,
 }
 
@@ -137,7 +167,7 @@ impl Generations {
 pub struct OutlineCacheStats {
     /// Lookups answered from the cache.
     pub hits: u64,
-    /// Lookups that had to decode the outline.
+    /// Lookups that had to decode the outline or strike.
     pub misses: u64,
     /// Entries currently held (both generations).
     pub entries: usize,
@@ -146,8 +176,9 @@ pub struct OutlineCacheStats {
 }
 
 /// Bounded, thread-safe memo of glyph outlines in font units, keyed by
-/// *(face, glyph id, variation instance)*. See the [module
-/// docs](self) for the key, the memory bound and the threading rules.
+/// *(face, glyph id, variation instance)*, and of decoded colour
+/// strikes, keyed by *(face, glyph id, strike)*. See the [module
+/// docs](self) for the keys, the memory bound and the threading rules.
 ///
 /// ```no_run
 /// # use oxideav_scribe::{Face, FaceChain, OutlineCache};
@@ -175,8 +206,9 @@ impl Default for OutlineCache {
 }
 
 impl OutlineCache {
-    /// A cache that retains at most `budget_bytes` of outlines. A
-    /// budget of `0` retains nothing (every lookup decodes).
+    /// A cache that retains at most `budget_bytes` of outlines and
+    /// decoded strikes. A budget of `0` retains nothing (every lookup
+    /// decodes).
     pub fn new(budget_bytes: usize) -> Self {
         Self {
             generations: Mutex::new(Generations::default()),
@@ -235,6 +267,31 @@ impl OutlineCache {
         self.generations.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The entry under `key`, refreshing its generation.
+    fn lookup(&self, key: &Key) -> Option<Kept> {
+        let mut g = self.lock();
+        let kept = if let Some(slot) = g.young.get(key) {
+            slot.kept.clone()
+        } else {
+            // Still in use: carry it over to the young generation.
+            let slot = g.old.remove(key)?;
+            g.old_bytes -= slot.cost;
+            let kept = slot.kept.clone();
+            g.admit(key.clone(), slot, self.half_budget);
+            kept
+        };
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        Some(kept)
+    }
+
+    fn store(&self, key: Key, kept: Kept, payload_bytes: usize) {
+        let slot = Slot {
+            kept,
+            cost: ENTRY_OVERHEAD_BYTES + payload_bytes,
+        };
+        self.lock().admit(key, slot, self.half_budget);
+    }
+
     /// The outline of `(face, glyph, instance)`, decoding it with
     /// `decode` on a miss. `decode` runs without the lock held.
     pub(crate) fn get_or_decode(
@@ -247,35 +304,44 @@ impl OutlineCache {
         let key = Key {
             face,
             glyph,
-            instance: instance.clone(),
+            resource: Resource::Outline(instance.clone()),
         };
-        {
-            let mut g = self.lock();
-            if let Some(slot) = g.young.get(&key) {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return slot.path.clone();
-            }
-            if let Some(slot) = g.old.remove(&key) {
-                // Still in use: carry it over to the young generation.
-                g.old_bytes -= slot.cost;
-                let path = slot.path.clone();
-                g.admit(key, slot, self.half_budget);
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return path;
-            }
+        if let Some(Kept::Outline(path)) = self.lookup(&key) {
+            return path;
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         let path = decode().map(Arc::new);
-        let cost = ENTRY_OVERHEAD_BYTES
-            + path
-                .as_ref()
-                .map_or(0, |p| p.commands.len() * std::mem::size_of::<PathCommand>());
-        let slot = Slot {
-            path: path.clone(),
-            cost,
-        };
-        self.lock().admit(key, slot, self.half_budget);
+        let bytes = path
+            .as_ref()
+            .map_or(0, |p| p.commands.len() * std::mem::size_of::<PathCommand>());
+        self.store(key, Kept::Outline(path.clone()), bytes);
         path
+    }
+
+    /// The decoded native-size colour strike of `face`'s `glyph` whose
+    /// embedded image is the `image` = `(offset, length)` span of the
+    /// font file, decoding it with `decode` on a miss (outside the
+    /// lock).
+    pub(crate) fn get_or_decode_strike(
+        &self,
+        face: u64,
+        glyph: u16,
+        image: (usize, usize),
+        decode: impl FnOnce() -> Option<ColorGlyphBitmap>,
+    ) -> Option<Arc<ColorGlyphBitmap>> {
+        let key = Key {
+            face,
+            glyph,
+            resource: Resource::Strike(image.0, image.1),
+        };
+        if let Some(Kept::Strike(strike)) = self.lookup(&key) {
+            return strike;
+        }
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        let strike = decode().map(Arc::new);
+        let bytes = strike.as_ref().map_or(0, |s| s.bitmap.data.len());
+        self.store(key, Kept::Strike(strike.clone()), bytes);
+        strike
     }
 }
 
@@ -418,6 +484,95 @@ mod tests {
         let s = c.stats();
         assert_eq!((s.entries, s.bytes), (0, 0));
         assert_eq!(c.budget_bytes(), 1 << 16);
+    }
+
+    fn strike(side: u32, fill: u8) -> ColorGlyphBitmap {
+        ColorGlyphBitmap {
+            bitmap: crate::color_glyph::RgbaBitmap {
+                width: side,
+                height: side,
+                data: vec![fill; (side * side * 4) as usize],
+            },
+            bearing_x: 1,
+            bearing_y: 2,
+            advance: side,
+            ppem: side as u8,
+        }
+    }
+
+    /// Strikes and outlines of the same (face, glyph) are separate
+    /// entries, strikes are keyed by their image span, and both share
+    /// the budget.
+    #[test]
+    fn strikes_are_keyed_by_image_span_and_share_the_budget() {
+        let c = OutlineCache::new(1 << 20);
+        let outline = c.get_or_decode(1, 7, &inst(&[]), || Some(path(2, 9.0)));
+        let small = c.get_or_decode_strike(1, 7, (3200, 40), || Some(strike(32, 0xAA)));
+        let large = c.get_or_decode_strike(1, 7, (10900, 40), || Some(strike(109, 0xBB)));
+        let other_face = c.get_or_decode_strike(2, 7, (3200, 40), || Some(strike(32, 0xCC)));
+        let absent = c.get_or_decode_strike(1, 8, (3200, 40), || None);
+        assert!(absent.is_none());
+        let s = c.stats();
+        assert_eq!((s.misses, s.entries), (5, 5));
+        assert_eq!(
+            s.bytes,
+            5 * ENTRY_OVERHEAD_BYTES
+                + 2 * std::mem::size_of::<PathCommand>()
+                + 2 * 32 * 32 * 4
+                + 109 * 109 * 4
+        );
+        let no = || -> Option<ColorGlyphBitmap> { panic!("strike hit expected") };
+        assert!(Arc::ptr_eq(
+            small.as_ref().unwrap(),
+            c.get_or_decode_strike(1, 7, (3200, 40), no)
+                .as_ref()
+                .unwrap()
+        ));
+        assert_eq!(
+            c.get_or_decode_strike(1, 7, (10900, 40), no)
+                .unwrap()
+                .bitmap
+                .data[0],
+            0xBB
+        );
+        assert_eq!(
+            c.get_or_decode_strike(2, 7, (3200, 40), no)
+                .unwrap()
+                .bitmap
+                .data[0],
+            0xCC
+        );
+        assert!(c.get_or_decode_strike(1, 8, (3200, 40), no).is_none());
+        let again = c.get_or_decode(1, 7, &inst(&[]), || panic!("outline hit expected"));
+        assert!(Arc::ptr_eq(
+            outline.as_ref().unwrap(),
+            again.as_ref().unwrap()
+        ));
+        drop((large, other_face));
+
+        // A strike larger than half the budget is handed back but not
+        // kept; the budget holds while strikes churn.
+        let tight = OutlineCache::new(3 * (ENTRY_OVERHEAD_BYTES + 16 * 16 * 4));
+        assert!(
+            tight
+                .get_or_decode_strike(1, 1, (6400, 40), || Some(strike(64, 1)))
+                .is_some()
+        );
+        assert_eq!(tight.stats().entries, 0);
+        for gid in 0..50u16 {
+            tight.get_or_decode_strike(1, gid, (1600, 40), || Some(strike(16, gid as u8)));
+            assert!(tight.stats().bytes <= tight.budget_bytes());
+        }
+        assert_eq!(
+            tight
+                .get_or_decode_strike(1, 49, (1600, 40), || panic!("recent strike evicted"))
+                .unwrap()
+                .bitmap
+                .data[0],
+            49
+        );
+        c.forget_face(1);
+        assert_eq!(c.stats().entries, 1);
     }
 
     #[test]

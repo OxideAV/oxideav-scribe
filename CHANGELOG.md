@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `OutlineCache` (`OutlineCacheStats`, `DEFAULT_BUDGET_BYTES`): an optional, bounded, thread-safe memo of glyph outlines in font units keyed by (face id, glyph id, variation instance). Attach it with `Face::set_outline_cache` / `Face::with_outline_cache` / `FaceChain::set_outline_cache`; `Face::glyph_path_shared` returns the cached `Arc<Path>`. Off by default; output is identical with and without it. Byte-budgeted in two generations; no invalidation needed when a face changes instance.
+- `OutlineCache` (`OutlineCacheStats`, `DEFAULT_BUDGET_BYTES`): an optional, bounded, thread-safe memo of glyph outlines in font units keyed by (face id, glyph id, variation instance). Attach it with `Face::set_outline_cache` / `Face::with_outline_cache` / `FaceChain::set_outline_cache`; `Face::glyph_path_shared` returns the cached `Arc<Path>`. Off by default; output is identical with and without it. Byte-budgeted in two generations; no invalidation needed when a face changes instance. The same cache keeps decoded colour-bitmap strikes (keyed by face id, glyph id and the strike image's position in the file), so a colour glyph's PNG is inflated once and only resampled per draw: 16 emoji through `glyph_node` take 15 µs instead of 410 µs.
 - `benches/hot_paths.rs` (`cargo bench --bench hot_paths`, std-only timing): per-glyph draw and per-paragraph shape timings for Latin, Arabic, CJK, colour emoji and a UI-frame workload.
 
 ### Fixed
