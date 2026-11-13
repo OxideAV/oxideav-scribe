@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `OutlineCache` (`OutlineCacheStats`, `DEFAULT_BUDGET_BYTES`): an optional, bounded, thread-safe memo of glyph outlines in font units keyed by (face id, glyph id, variation instance). Attach it with `Face::set_outline_cache` / `Face::with_outline_cache` / `FaceChain::set_outline_cache`; `Face::glyph_path_shared` returns the cached `Arc<Path>`. Off by default; output is identical with and without it. Byte-budgeted in two generations; no invalidation needed when a face changes instance.
+- `benches/hot_paths.rs` (`cargo bench --bench hot_paths`, std-only timing): per-glyph draw and per-paragraph shape timings for Latin, Arabic, CJK, colour emoji and a UI-frame workload.
+
 ### Fixed
 
+- A `Face` parses its font once, at construction, and every entry point reuses that parsed view. `Face::glyph_node` used to parse the whole font on every call — twice for a TrueType face (the colour-bitmap check, then the outline) — as did `glyph_path`, the colour-bitmap queries, `is_variable` / `variation_axes` / `named_instances`, the feature and baseline queries and every `shape_text*` / `position_text*` call. 486 `glyph_node` calls (a text field plus thirty buttons) on DejaVu Sans drop from 253 ms to 0.17 ms (0.045 ms with the outline cache); `Shaper::shape` on a 196-glyph Latin paragraph from 0.20 ms to 0.06 ms. `with_font` / `with_otf_font` keep their signatures and are now plain borrows. Variation instances are installed on the kept view in place.
+- `h_advance_delta` / `v_advance_delta` / `metric_delta` / `glyph_name` / `name_id` / `stat_axes` / `stat_axis_values` no longer re-parse `HVAR` / `VVAR` / `MVAR` / `post` / `name` / `STAT` (and re-normalise the variation coordinates) on every call: each table is parsed on first use and kept for the life of the face.
+- `Face::stable_id` is computed once instead of hashing the font header on every call (`shape_to_paths` asks once per glyph).
+- `raster_color_glyph` decodes the strike PNG straight from the face's bytes instead of copying it first; `glyph_node` moves the resampled bitmap into the node instead of cloning it.
 - `FaceChain::shape` / `shape_styled` / `shape_with_features` parse each face at most once per call instead of once per codepoint per face tried (and again per cluster GSUB lookup and per run): the fallback walk, the reph / cluster-position / cluster-context GSUB passes and run positioning share one parsed view per face. A 56-character Latin line on a two-face chain shapes in 0.21 ms instead of 4.3 ms (release; 36 → 3.3 ms in debug); a fallback-heavy line 5.4 → 0.34 ms (#17).
 
 ### Changed

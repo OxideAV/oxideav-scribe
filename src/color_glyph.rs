@@ -197,23 +197,16 @@ impl Face {
     /// `true` when this face ships CBDT/CBLC tables. Wraps
     /// [`oxideav_ttf::Font::has_color_bitmaps`].
     pub fn has_color_bitmaps(&self) -> bool {
-        // OTF (CFF) faces don't ship CBDT in any font we've seen;
-        // short-circuit to avoid the re-parse.
-        match self.kind() {
-            crate::FaceKind::Otf => false,
-            crate::FaceKind::Ttf => self.with_font(|f| f.has_color_bitmaps()).unwrap_or(false),
-        }
+        // OTF (CFF) faces don't ship CBDT in any font we've seen.
+        self.ttf().map(|f| f.has_color_bitmaps()).unwrap_or(false)
     }
 
     /// All `(ppem_x, ppem_y)` strikes the face's CBDT/CBLC tables ship.
     /// Empty when the face has no colour bitmaps.
     pub fn color_strike_sizes(&self) -> Vec<(u8, u8)> {
-        match self.kind() {
-            crate::FaceKind::Otf => Vec::new(),
-            crate::FaceKind::Ttf => self
-                .with_font(|f| f.color_strike_sizes())
-                .unwrap_or_default(),
-        }
+        self.ttf()
+            .map(|f| f.color_strike_sizes())
+            .unwrap_or_default()
     }
 
     /// Rasterise the colour bitmap for `glyph_id` at the strike whose
@@ -241,28 +234,17 @@ impl Face {
         if size_px <= 0.0 || !size_px.is_finite() {
             return Err(Error::InvalidSize);
         }
-        if self.kind() != crate::FaceKind::Ttf {
+        let Ok(font) = self.ttf() else {
             return Ok(None);
-        }
-        let target_ppem = size_px.round().clamp(1.0, 255.0) as u8;
-        let bitmap_descriptor = self.with_font(|f| {
-            f.glyph_color_bitmap(glyph_id, target_ppem).map(|cb| {
-                (
-                    cb.png_bytes.to_vec(),
-                    cb.width,
-                    cb.height,
-                    cb.bearing_x,
-                    cb.bearing_y,
-                    cb.advance,
-                    cb.ppem,
-                )
-            })
-        })?;
-        let (png_bytes, _meta_w, _meta_h, bx, by, adv, ppem) = match bitmap_descriptor {
-            Some(t) => t,
-            None => return Ok(None),
         };
-        let frame = match oxideav_png::decode_png_to_frame(&png_bytes, None) {
+        let target_ppem = size_px.round().clamp(1.0, 255.0) as u8;
+        let Some(cb) = font.glyph_color_bitmap(glyph_id, target_ppem) else {
+            return Ok(None);
+        };
+        // The PNG payload is read straight out of the face's bytes.
+        let png_bytes = cb.png_bytes;
+        let (bx, by, adv, ppem) = (cb.bearing_x, cb.bearing_y, cb.advance, cb.ppem);
+        let frame = match oxideav_png::decode_png_to_frame(png_bytes, None) {
             Ok(f) => f,
             Err(_) => return Ok(None),
         };
@@ -272,7 +254,7 @@ impl Face {
         // vs the PNG's true pixel grid (legal per spec — metrics are
         // the layout box, the PNG can be larger and is drawn into
         // that box).
-        let (png_w, png_h) = match read_png_dimensions(&png_bytes) {
+        let (png_w, png_h) = match read_png_dimensions(png_bytes) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -286,7 +268,7 @@ impl Face {
         // Color Emoji, EmojiOne) skip the palette path entirely —
         // `read_png_palette` returns `None` and we fall through to the
         // existing colour-type sniff in `videoframe_to_rgba`.
-        let palette = read_png_palette(&png_bytes);
+        let palette = read_png_palette(png_bytes);
         let bitmap = videoframe_to_rgba(&frame, png_w, png_h, palette.as_ref());
         Ok(Some(ColorGlyphBitmap {
             bitmap,

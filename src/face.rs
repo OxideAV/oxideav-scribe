@@ -4,11 +4,18 @@
 //!
 //! `Font<'a>` (in either underlying crate) borrows from the input
 //! bytes which makes it awkward to pass around in a higher-level
-//! renderer. `Face` owns the bytes via a boxed slice and re-parses
-//! on demand through [`Face::with_font`] / [`Face::with_otf_font`].
-//! We deliberately avoid `Pin` / self-referential structs (no
-//! third-party deps allowed); the cost of a one-line re-parse on
-//! each call is ~microseconds and dwarfed by glyph rasterisation.
+//! renderer. `Face` owns the bytes **and the view parsed from them**:
+//! the font is parsed exactly once, when the `Face` is constructed
+//! (and once more each time a variation instance is installed), and
+//! every per-glyph entry point — outlines, colour bitmaps, metrics,
+//! shaping — borrows that one view through [`Face::with_font`] /
+//! [`Face::with_otf_font`]. Nothing is re-parsed per call. The
+//! scribe-side table snapshots (`post`, `MVAR`, `HVAR`, `VVAR`,
+//! `STAT`, `name`) are likewise parsed on first use and kept for the
+//! life of the face.
+//!
+//! A `Face` is `Send + Sync`; all of its `&self` entry points may be
+//! called from several threads at once.
 //!
 //! TTF and OTF cohabit through a [`FaceKind`] tag. The TTF path
 //! returns quadratic-Bezier outlines (`oxideav_ttf::TtOutline`); the
@@ -18,17 +25,14 @@
 //! the face holds into the unified `FlatOutline` polyline.
 
 use crate::Error;
+use crate::outline_cache::{InstanceKey, OutlineCache};
+use crate::parsed::ParsedFont;
 use oxideav_core::{
     FillRule, ImageRef, Node, Paint, Path, PathCommand, PathNode, Point, Rect, Rgba, Transform2D,
     VideoFrame, VideoPlane,
 };
 use oxideav_ttf::{NamedInstance, VariationAxis};
-
-#[cfg(test)]
-thread_local! {
-    /// Parses performed by [`Face::parse_ttf`] on this thread (tests only).
-    pub(crate) static PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+use std::sync::{Arc, OnceLock};
 
 /// Which underlying parser this face wraps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,14 +66,43 @@ fn next_face_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// An owning, re-parseable wrapper around either an
-/// `oxideav_ttf::Font` or an `oxideav_otf::Font`. The discriminant
+/// Scribe-side table snapshots, each parsed on first use and kept for
+/// the life of the face (the tables do not depend on the variation
+/// instance).
+#[derive(Default)]
+struct LazyTables {
+    post: OnceLock<Option<crate::post::PostTable>>,
+    mvar: OnceLock<Option<crate::variations::MvarTable>>,
+    hvar: OnceLock<Option<crate::variations::AdvanceVariationTable>>,
+    vvar: OnceLock<Option<crate::variations::AdvanceVariationTable>>,
+    stat: OnceLock<Option<crate::variations::StatTable>>,
+    names: OnceLock<Option<crate::variations::NameTableSnapshot>>,
+}
+
+impl std::fmt::Debug for LazyTables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyTables")
+            .field("post", &self.post.get().is_some())
+            .field("mvar", &self.mvar.get().is_some())
+            .field("hvar", &self.hvar.get().is_some())
+            .field("vvar", &self.vvar.get().is_some())
+            .field("stat", &self.stat.get().is_some())
+            .field("names", &self.names.get().is_some())
+            .finish()
+    }
+}
+
+/// An owning wrapper around either an `oxideav_ttf::Font` or an
+/// `oxideav_otf::Font`, parsed once at construction. The discriminant
 /// is recorded in [`Face::kind`] so callers can pick the right
 /// outline path.
 #[derive(Debug)]
 pub struct Face {
-    bytes: Box<[u8]>,
+    /// The font bytes and the view parsed from them.
+    font: ParsedFont,
     id: u64,
+    /// Content-derived identity, computed once (see [`Face::stable_id`]).
+    stable_id: u64,
     kind: FaceKind,
     units_per_em: u16,
     ascent: i16,
@@ -79,73 +112,110 @@ pub struct Face {
     italic_angle: f32,
     weight_class: u16,
     /// `Some(i)` when this face was constructed from a TTC subfont via
-    /// `from_ttc_bytes`. `with_font` re-parses through the TTC entry
-    /// point so the right subfont is selected each time. `None` for
-    /// plain sfnt-flavour faces (the common case).
+    /// `from_ttc_bytes`. `None` for plain sfnt-flavour faces (the
+    /// common case).
     subfont_index: Option<u32>,
+    /// Byte offset of this face's sfnt header inside the file (`0`
+    /// unless the face is a collection member).
+    subfont_offset: usize,
     /// Current variation coordinates (one entry per `fvar` axis, in
     /// declaration order, in user-space units). Empty for static fonts
-    /// or until [`Face::set_variation_coords`] is called. When non-empty
-    /// and the font is variable, [`Face::with_font`] re-applies the
-    /// vector to every freshly-parsed `Font<'_>` so glyph outline
-    /// lookups consume the gvar-blended outline.
+    /// or until [`Face::set_variation_coords`] is called. The parsed
+    /// view always has exactly this instance installed.
     var_coords: Vec<f32>,
+    /// Normalised (avar-mapped) form of `var_coords`; empty whenever
+    /// `var_coords` is.
+    norm_coords: Vec<f32>,
+    /// The per-axis default coordinates (what a freshly parsed view
+    /// reports); empty for static and CFF faces.
+    default_coords: Vec<f32>,
+    /// `var_coords` as an outline-cache key component.
+    instance: InstanceKey,
+    tables: LazyTables,
+    /// Shared outline cache, when the caller attached one.
+    outline_cache: Option<Arc<OutlineCache>>,
+}
+
+/// Content-derived identity: a digest of the font's leading bytes (up
+/// to 256) plus the byte length, the flavour and the collection index.
+fn compute_stable_id(bytes: &[u8], kind: FaceKind, subfont_index: Option<u32>) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    // Tag the discriminant + subfont so a TTC's subfont 0 and
+    // subfont 1 (which share the outer byte buffer) end up with
+    // different ids without us having to hash the entire TTC twice.
+    (kind as u8).hash(&mut h);
+    subfont_index.hash(&mut h);
+    // Include the total byte length so two fonts that share a
+    // common header prefix (rare but possible across stripped
+    // variants of the same family) still distinguish.
+    (bytes.len() as u64).hash(&mut h);
+    // Hash the leading bytes — the sfnt header + the table
+    // directory both live here and are highly font-specific.
+    let prefix = &bytes[..bytes.len().min(256)];
+    prefix.hash(&mut h);
+    h.finish()
+}
+
+/// Byte offset of collection member `index`'s sfnt header, or `0` when
+/// the buffer is not a collection or the index is out of range.
+fn collection_member_offset(bytes: &[u8], index: Option<u32>) -> usize {
+    let Some(i) = index else {
+        return 0;
+    };
+    // The TTC header layout is: 'ttcf'(4) + version(4) + numFonts(4) + u32 offsets.
+    if bytes.len() < 12 || &bytes[0..4] != b"ttcf" {
+        return 0;
+    }
+    let off = 12 + (i as usize) * 4;
+    match bytes.get(off..off + 4) {
+        Some(b) => u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize,
+        None => 0,
+    }
 }
 
 impl Face {
     /// Parse a TTF from owned bytes.
     pub fn from_ttf_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
-        let bytes: Box<[u8]> = bytes.into_boxed_slice();
-        // Snapshot the metadata while we have the borrow.
-        let (units_per_em, ascent, descent, line_gap, family, italic_angle, weight_class) = {
-            let font = oxideav_ttf::Font::from_bytes(&bytes).map_err(Error::from)?;
-            (
-                font.units_per_em(),
-                font.ascent(),
-                font.descent(),
-                font.line_gap(),
-                font.family_name().map(|s| s.to_string()),
-                font.italic_angle(),
-                font.weight_class(),
-            )
-        };
-        Ok(Self {
-            bytes,
-            id: next_face_id(),
-            kind: FaceKind::Ttf,
-            units_per_em,
-            ascent,
-            descent,
-            line_gap,
-            family,
-            italic_angle,
-            weight_class,
-            subfont_index: None,
-            var_coords: Vec::new(),
-        })
+        Self::new_ttf(bytes, None)
     }
 
     /// Parse the `index`-th subfont out of an owned TrueType Collection
     /// (`.ttc` / `'ttcf'`) byte buffer. Convenience wrapper around
-    /// `oxideav_ttf::Font::from_collection_bytes`. Index is recorded on
-    /// the face so [`Face::with_font`] can re-parse the right subfont.
+    /// `oxideav_ttf::Font::from_collection_bytes`.
     pub fn from_ttc_bytes(bytes: Vec<u8>, index: u32) -> Result<Self, Error> {
-        let bytes: Box<[u8]> = bytes.into_boxed_slice();
-        let (units_per_em, ascent, descent, line_gap, family, italic_angle, weight_class) = {
-            let font =
-                oxideav_ttf::Font::from_collection_bytes(&bytes, index).map_err(Error::from)?;
+        Self::new_ttf(bytes, Some(index))
+    }
+
+    fn new_ttf(bytes: Vec<u8>, subfont_index: Option<u32>) -> Result<Self, Error> {
+        let font = ParsedFont::new_ttf(bytes, subfont_index)?;
+        // Snapshot the metadata from the parsed view.
+        let (
+            units_per_em,
+            ascent,
+            descent,
+            line_gap,
+            family,
+            italic_angle,
+            weight_class,
+            default_coords,
+        ) = {
+            let f = font.ttf().expect("constructed as TrueType");
             (
-                font.units_per_em(),
-                font.ascent(),
-                font.descent(),
-                font.line_gap(),
-                font.family_name().map(|s| s.to_string()),
-                font.italic_angle(),
-                font.weight_class(),
+                f.units_per_em(),
+                f.ascent(),
+                f.descent(),
+                f.line_gap(),
+                f.family_name().map(|s| s.to_string()),
+                f.italic_angle(),
+                f.weight_class(),
+                f.variation_coords().to_vec(),
             )
         };
         Ok(Self {
-            bytes,
+            stable_id: compute_stable_id(font.bytes(), FaceKind::Ttf, subfont_index),
+            subfont_offset: collection_member_offset(font.bytes(), subfont_index),
+            font,
             id: next_face_id(),
             kind: FaceKind::Ttf,
             units_per_em,
@@ -155,8 +225,13 @@ impl Face {
             family,
             italic_angle,
             weight_class,
-            subfont_index: Some(index),
+            subfont_index,
             var_coords: Vec::new(),
+            norm_coords: Vec::new(),
+            default_coords,
+            instance: InstanceKey::default(),
+            tables: LazyTables::default(),
+            outline_cache: None,
         })
     }
 
@@ -165,19 +240,21 @@ impl Face {
     /// outlines come back as cubic Beziers via the cubic flattener
     /// in [`crate::outline`].
     pub fn from_otf_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
-        let bytes: Box<[u8]> = bytes.into_boxed_slice();
+        let font = ParsedFont::new_otf(bytes)?;
         let (units_per_em, ascent, descent, line_gap, family) = {
-            let font = oxideav_otf::Font::from_bytes(&bytes).map_err(Error::from)?;
+            let f = font.otf().expect("constructed as CFF");
             (
-                font.units_per_em(),
-                font.ascent(),
-                font.descent(),
-                font.line_gap(),
-                font.family_name().map(|s| s.to_string()),
+                f.units_per_em(),
+                f.ascent(),
+                f.descent(),
+                f.line_gap(),
+                f.family_name().map(|s| s.to_string()),
             )
         };
         Ok(Self {
-            bytes,
+            stable_id: compute_stable_id(font.bytes(), FaceKind::Otf, None),
+            subfont_offset: 0,
+            font,
             id: next_face_id(),
             kind: FaceKind::Otf,
             units_per_em,
@@ -198,8 +275,13 @@ impl Face {
             subfont_index: None,
             // OTF / CFF2 variation support is out of scope for the
             // initial round; any caller setting variation coords on an
-            // OTF face is a no-op (with_otf_font does not reapply).
+            // OTF face gets `WrongFaceKind`.
             var_coords: Vec::new(),
+            norm_coords: Vec::new(),
+            default_coords: Vec::new(),
+            instance: InstanceKey::default(),
+            tables: LazyTables::default(),
+            outline_cache: None,
         })
     }
 
@@ -226,24 +308,10 @@ impl Face {
     /// bytes (up to 256) plus the byte length, plus the TTC subfont
     /// index when applicable. Two faces parsed from the same bytes get
     /// the same `stable_id`; two distinct fonts almost certainly do
-    /// not.
+    /// not. Computed once at construction; this accessor is a field
+    /// read.
     pub fn stable_id(&self) -> u64 {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        // Tag the discriminant + subfont so a TTC's subfont 0 and
-        // subfont 1 (which share the outer byte buffer) end up with
-        // different ids without us having to hash the entire TTC twice.
-        (self.kind as u8).hash(&mut h);
-        self.subfont_index.hash(&mut h);
-        // Include the total byte length so two fonts that share a
-        // common header prefix (rare but possible across stripped
-        // variants of the same family) still distinguish.
-        (self.bytes.len() as u64).hash(&mut h);
-        // Hash the leading bytes — the sfnt header + the table
-        // directory both live here and are highly font-specific.
-        let prefix = &self.bytes[..self.bytes.len().min(256)];
-        prefix.hash(&mut h);
-        h.finish()
+        self.stable_id
     }
 
     /// Family name from the font's `name` table. May be `None` for
@@ -290,51 +358,32 @@ impl Face {
         self.weight_class
     }
 
-    /// Run a closure with a freshly-parsed `oxideav_ttf::Font<'_>`
-    /// view of the owned bytes. We re-parse on each call instead of
-    /// storing a self-referential `Font<'static>` (which would
-    /// require unsafe or a third-party crate like `ouroboros`, both
-    /// of which we avoid). Each call pays one parse, so callers that
-    /// make many lookups should batch them inside one closure.
+    /// Run a closure with the face's parsed `oxideav_ttf::Font<'_>`
+    /// view. The view was built when the face was constructed (with
+    /// the current variation instance installed), so this is a borrow,
+    /// not a parse — calling it once per glyph is fine.
     ///
     /// Returns `Error::WrongFaceKind` if this face was constructed
     /// from OTF bytes; use [`Face::with_otf_font`] in that case.
     pub fn with_font<R>(&self, f: impl FnOnce(&oxideav_ttf::Font<'_>) -> R) -> Result<R, Error> {
-        let font = self.parse_ttf()?;
-        Ok(f(&font))
+        Ok(f(self.ttf()?))
     }
 
-    /// Parse the owned bytes into an `oxideav_ttf::Font<'_>` borrowing
-    /// this face, with the face's variation coordinates applied — the
-    /// work [`Face::with_font`] does before running its closure.
-    ///
-    /// Shaping paths that consult the same face many times in one
-    /// call (per-codepoint chain fallback, per-cluster GSUB passes)
-    /// parse once through this and reuse the view, instead of paying
-    /// a parse per lookup.
-    pub(crate) fn parse_ttf(&self) -> Result<oxideav_ttf::Font<'_>, Error> {
-        #[cfg(test)]
-        PARSE_COUNT.with(|c| c.set(c.get() + 1));
-        if self.kind != FaceKind::Ttf {
-            return Err(Error::WrongFaceKind {
-                expected: FaceKind::Ttf,
-                actual: self.kind,
-            });
-        }
-        let mut font = match self.subfont_index {
-            Some(i) => {
-                oxideav_ttf::Font::from_collection_bytes(&self.bytes, i).map_err(Error::from)?
-            }
-            None => oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?,
-        };
-        // Re-apply any caller-set variation coords after the parse so
-        // glyph_outline (and downstream advances / kerning that consume
-        // it) reflect the gvar-blended outline. No-op for static fonts
-        // (the underlying setter short-circuits when there is no fvar).
-        if !self.var_coords.is_empty() {
-            font.set_variation_coords(&self.var_coords);
-        }
-        Ok(font)
+    /// The face's parsed TrueType view, with the face's variation
+    /// coordinates installed. A plain borrow: nothing is parsed.
+    pub(crate) fn ttf(&self) -> Result<&oxideav_ttf::Font<'_>, Error> {
+        self.font.ttf().ok_or(Error::WrongFaceKind {
+            expected: FaceKind::Ttf,
+            actual: self.kind,
+        })
+    }
+
+    /// The face's parsed OpenType-CFF view. A plain borrow.
+    pub(crate) fn otf(&self) -> Result<&oxideav_otf::Font<'_>, Error> {
+        self.font.otf().ok_or(Error::WrongFaceKind {
+            expected: FaceKind::Otf,
+            actual: self.kind,
+        })
     }
 
     /// True if this face is the `i`-th subfont of a TrueType Collection
@@ -350,10 +399,7 @@ impl Face {
     /// exposes one or more variation axes. `false` for OTF faces and
     /// for static TTF faces.
     pub fn is_variable(&self) -> bool {
-        if self.kind != FaceKind::Ttf {
-            return false;
-        }
-        self.with_font(|f| f.is_variable()).unwrap_or(false)
+        self.ttf().map(|f| f.is_variable()).unwrap_or(false)
     }
 
     /// All variation axes the font publishes, cloned out of the
@@ -362,10 +408,8 @@ impl Face {
     /// `tag` (`b"wght"` / `b"wdth"` / `b"opsz"` / …) and the `name_id`
     /// for the human-readable axis label.
     pub fn variation_axes(&self) -> Vec<VariationAxis> {
-        if self.kind != FaceKind::Ttf {
-            return Vec::new();
-        }
-        self.with_font(|f| f.variation_axes().to_vec())
+        self.ttf()
+            .map(|f| f.variation_axes().to_vec())
             .unwrap_or_default()
     }
 
@@ -383,10 +427,8 @@ impl Face {
     /// scribe deliberately doesn't surface a bespoke
     /// `name_id → string` accessor.
     pub fn named_instances(&self) -> Vec<NamedInstance> {
-        if self.kind != FaceKind::Ttf {
-            return Vec::new();
-        }
-        self.with_font(|f| f.named_instances().to_vec())
+        self.ttf()
+            .map(|f| f.named_instances().to_vec())
             .unwrap_or_default()
     }
 
@@ -397,11 +439,10 @@ impl Face {
         &self.var_coords
     }
 
-    /// Set the user-space variation coordinates that scribe will
-    /// re-apply on every [`Self::with_font`] re-parse, so subsequent
-    /// glyph outline lookups consume the gvar-blended outline at those
-    /// coords. Each entry is in **user-space** units (e.g. `wght` is
-    /// 100..900 on Inter).
+    /// Set the user-space variation coordinates of this face, so
+    /// subsequent glyph outline lookups (and shaping) consume the
+    /// gvar-blended outline at those coords. Each entry is in
+    /// **user-space** units (e.g. `wght` is 100..900 on Inter).
     ///
     /// The vector is silently length-normalised against the axis count
     /// — shorter vectors leave the trailing axes at their previous
@@ -411,58 +452,59 @@ impl Face {
     /// on a subsequent [`Self::variation_coords`] call may differ from
     /// what was passed in. No-op for static / OTF faces.
     ///
+    /// The instance is installed on the face's parsed view in place —
+    /// nothing is re-parsed. An attached [`OutlineCache`] needs no
+    /// flushing: its keys carry the instance, so outlines of the
+    /// previous instance are simply not found under the new one (and
+    /// are found again if the face returns to it).
+    ///
     /// Pre-condition: this method works for [`FaceKind::Ttf`] faces
     /// only. Calling it on an OTF face returns `Err(WrongFaceKind)`
     /// (variable CFF2 / OTF is out of scope for the initial round).
     pub fn set_variation_coords(&mut self, coords: &[f32]) -> Result<(), Error> {
-        if self.kind != FaceKind::Ttf {
-            return Err(Error::WrongFaceKind {
+        let (installed, normalised) = self
+            .font
+            .edit_ttf(|font| {
+                // The view's current vector is the axis defaults on a
+                // fresh face, or the previously-installed instance.
+                // Overlay the caller-supplied entries and let the
+                // parser clamp + length-cap.
+                let mut working = font.variation_coords().to_vec();
+                for (slot, &v) in working.iter_mut().zip(coords.iter()) {
+                    *slot = v;
+                }
+                font.set_variation_coords(&working);
+                let installed = font.variation_coords().to_vec();
+                let normalised = if installed.is_empty() {
+                    Vec::new()
+                } else {
+                    font.normalised_coords()
+                };
+                (installed, normalised)
+            })
+            .ok_or(Error::WrongFaceKind {
                 expected: FaceKind::Ttf,
                 actual: self.kind,
-            });
-        }
-        // Round-trip through a freshly-parsed parser so the per-axis
-        // length cap + `[min, max]` clamp the underlying setter applies
-        // is preserved on round-trip. The freshly-parsed `Font` is
-        // discarded after the round-trip — we only persist the clamped
-        // f32 vector so subsequent `with_font` re-applies it.
-        let mut font = match self.subfont_index {
-            Some(i) => {
-                oxideav_ttf::Font::from_collection_bytes(&self.bytes, i).map_err(Error::from)?
-            }
-            None => oxideav_ttf::Font::from_bytes(&self.bytes).map_err(Error::from)?,
-        };
-        // Seed with whatever the parser exposes as the current vector
-        // (axis defaults on a fresh face; the previously-set vector if
-        // we re-set with a partial `coords` argument). Then merge the
-        // caller-supplied entries on top, then call the parser to
-        // clamp + length-cap.
-        let mut working = font.variation_coords().to_vec();
-        if !self.var_coords.is_empty() {
-            for (i, &v) in self.var_coords.iter().enumerate() {
-                if i >= working.len() {
-                    break;
-                }
-                working[i] = v;
-            }
-        }
-        for (i, &v) in coords.iter().enumerate() {
-            if i >= working.len() {
-                break;
-            }
-            working[i] = v;
-        }
-        font.set_variation_coords(&working);
-        self.var_coords = font.variation_coords().to_vec();
+            })?;
+        self.instance = InstanceKey::from_coords(&installed);
+        self.var_coords = installed;
+        self.norm_coords = normalised;
         Ok(())
     }
 
-    /// Reset the variation coordinates to the empty vector — i.e.
-    /// subsequent `with_font` re-parses fall back to each axis's
-    /// `default` value (the static-font baseline). No-op when no
-    /// coords were ever set.
+    /// Reset the variation coordinates to the empty vector — i.e. the
+    /// face goes back to each axis's `default` value (the static-font
+    /// baseline). No-op when no coords were ever set.
     pub fn clear_variation_coords(&mut self) {
+        if self.var_coords.is_empty() {
+            return;
+        }
+        let defaults = &self.default_coords;
+        self.font
+            .edit_ttf(|font| font.set_variation_coords(defaults));
         self.var_coords.clear();
+        self.norm_coords.clear();
+        self.instance = InstanceKey::default();
     }
 
     /// Borrow the raw font bytes the face was constructed from. Used
@@ -472,7 +514,7 @@ impl Face {
     /// slice is the WHOLE file (including the sfnt header) so the
     /// caller can call `variations::find_table` against it.
     pub fn raw_bytes(&self) -> &[u8] {
-        &self.bytes
+        self.font.bytes()
     }
 
     /// Resolve a `name` table id to its highest-ranked Unicode string
@@ -488,105 +530,118 @@ impl Face {
     /// font bytes. Owned `String` rather than `&str` because the
     /// underlying snapshot decodes UTF-16-BE on the fly.
     pub fn name_id(&self, name_id: u16) -> Option<String> {
-        let name_bytes = match self.kind {
-            FaceKind::Ttf => {
-                crate::variations::find_table(&self.bytes, b"name", self.subfont_offset())?
-            }
-            FaceKind::Otf => crate::variations::find_table(&self.bytes, b"name", 0)?,
-        };
-        let snap = crate::variations::NameTableSnapshot::parse(name_bytes)?;
+        let snap = self
+            .tables
+            .names
+            .get_or_init(|| crate::variations::NameTableSnapshot::parse(self.table(b"name")?))
+            .as_ref()?;
         snap.find(name_id).map(|s| s.to_string())
     }
 
-    /// Compute the table-relative offset of the sfnt header for this
-    /// face. Plain sfnt fonts return `0`; TTC subfonts walk the
-    /// collection header for the per-subfont offset.
-    fn subfont_offset(&self) -> usize {
-        let i = match self.subfont_index {
-            Some(i) => i,
-            None => return 0,
-        };
-        // The TTC header layout is: 'ttcf'(4) + version(4) + numFonts(4) + u32 offsets.
-        if self.bytes.len() < 12 {
-            return 0;
-        }
-        if &self.bytes[0..4] != b"ttcf" {
-            return 0;
-        }
-        let off = 12 + (i as usize) * 4;
-        if off + 4 > self.bytes.len() {
-            return 0;
-        }
-        u32::from_be_bytes([
-            self.bytes[off],
-            self.bytes[off + 1],
-            self.bytes[off + 2],
-            self.bytes[off + 3],
-        ]) as usize
+    /// The raw bytes of table `tag` in this face's table directory.
+    fn table(&self, tag: &[u8; 4]) -> Option<&[u8]> {
+        crate::variations::find_table(self.font.bytes(), tag, self.subfont_offset)
     }
 
-    /// Parse and return the `MVAR` (Metrics Variations) table, if
-    /// present. Returns `None` for static fonts and for fonts that
-    /// don't ship MVAR (most static fonts and many simpler variable
-    /// fonts).
+    fn mvar_ref(&self) -> Option<&crate::variations::MvarTable> {
+        self.tables
+            .mvar
+            .get_or_init(|| crate::variations::MvarTable::parse(self.table(b"MVAR")?))
+            .as_ref()
+    }
+
+    fn hvar_ref(&self) -> Option<&crate::variations::AdvanceVariationTable> {
+        self.tables
+            .hvar
+            .get_or_init(|| crate::variations::AdvanceVariationTable::parse(self.table(b"HVAR")?))
+            .as_ref()
+    }
+
+    fn vvar_ref(&self) -> Option<&crate::variations::AdvanceVariationTable> {
+        self.tables
+            .vvar
+            .get_or_init(|| crate::variations::AdvanceVariationTable::parse(self.table(b"VVAR")?))
+            .as_ref()
+    }
+
+    fn stat_ref(&self) -> Option<&crate::variations::StatTable> {
+        self.tables
+            .stat
+            .get_or_init(|| crate::variations::StatTable::parse(self.table(b"STAT")?))
+            .as_ref()
+    }
+
+    fn post_ref(&self) -> Option<&crate::post::PostTable> {
+        self.tables
+            .post
+            .get_or_init(|| crate::post::PostTable::parse(self.table(b"post")?))
+            .as_ref()
+    }
+
+    /// Return the `MVAR` (Metrics Variations) table, if present.
+    /// Returns `None` for static fonts and for fonts that don't ship
+    /// MVAR (most static fonts and many simpler variable fonts).
+    ///
+    /// The table is parsed on first use and kept; this accessor hands
+    /// back a copy. [`Self::metric_delta`] reads the kept table
+    /// directly.
     pub fn mvar(&self) -> Option<crate::variations::MvarTable> {
-        let bytes = crate::variations::find_table(&self.bytes, b"MVAR", self.subfont_offset())?;
-        crate::variations::MvarTable::parse(bytes)
+        self.mvar_ref().cloned()
     }
 
-    /// Parse and return the `HVAR` (Horizontal Metrics Variations)
-    /// table, if present. Returns `None` for fonts that don't ship
-    /// HVAR (every static font and many variable fonts whose advance
-    /// widths don't change with the variation coords).
+    /// Return the `HVAR` (Horizontal Metrics Variations) table, if
+    /// present. Returns `None` for fonts that don't ship HVAR (every
+    /// static font and many variable fonts whose advance widths don't
+    /// change with the variation coords). Parsed on first use and
+    /// kept; this accessor hands back a copy.
     pub fn hvar(&self) -> Option<crate::variations::AdvanceVariationTable> {
-        let bytes = crate::variations::find_table(&self.bytes, b"HVAR", self.subfont_offset())?;
-        crate::variations::AdvanceVariationTable::parse(bytes)
+        self.hvar_ref().cloned()
     }
 
-    /// Parse and return the `VVAR` (Vertical Metrics Variations)
-    /// table, if present. Returns `None` for horizontal-only fonts
-    /// (the common case — Inter Variable, Roboto Flex, almost every
-    /// Latin variable font).
+    /// Return the `VVAR` (Vertical Metrics Variations) table, if
+    /// present. Returns `None` for horizontal-only fonts (the common
+    /// case — Inter Variable, Roboto Flex, almost every Latin variable
+    /// font). Parsed on first use and kept; this accessor hands back a
+    /// copy.
     pub fn vvar(&self) -> Option<crate::variations::AdvanceVariationTable> {
-        let bytes = crate::variations::find_table(&self.bytes, b"VVAR", self.subfont_offset())?;
-        crate::variations::AdvanceVariationTable::parse(bytes)
+        self.vvar_ref().cloned()
     }
 
-    /// Parse and return the `STAT` (Style Attributes) table, if
-    /// present. Returns `None` for fonts that don't ship STAT (every
-    /// static font and a handful of older variable fonts).
+    /// Return the `STAT` (Style Attributes) table, if present. Returns
+    /// `None` for fonts that don't ship STAT (every static font and a
+    /// handful of older variable fonts). Parsed on first use and kept;
+    /// this accessor hands back a copy.
     pub fn stat(&self) -> Option<crate::variations::StatTable> {
-        let bytes = crate::variations::find_table(&self.bytes, b"STAT", self.subfont_offset())?;
-        crate::variations::StatTable::parse(bytes)
+        self.stat_ref().cloned()
     }
 
     /// Parse and return the `CFF2` table, if present. Returns `None`
     /// for TT-flavoured faces and for OTF faces that don't ship CFF2
     /// (every static OTF — they all carry plain `CFF ` instead).
     pub fn cff2(&self) -> Option<crate::variations::Cff2Table> {
-        let bytes = crate::variations::find_table(&self.bytes, b"CFF2", 0)?;
+        let bytes = crate::variations::find_table(self.font.bytes(), b"CFF2", 0)?;
         crate::variations::Cff2Table::parse(bytes)
     }
 
-    /// Parse and return the `post` (PostScript) table, if present.
-    /// Returns `None` for fonts that ship no `post` table, or whose
-    /// `post` table is too short to parse. A format-3.0 `post` parses
+    /// Return the `post` (PostScript) table, if present. Returns
+    /// `None` for fonts that ship no `post` table, or whose `post`
+    /// table is too short to parse. A format-3.0 `post` parses
     /// successfully but supplies no glyph names — see
     /// [`crate::post::PostTable::has_names`].
+    ///
+    /// The table is parsed on first use and kept; this accessor hands
+    /// back a copy (every glyph name), so prefer [`Self::glyph_name`]
+    /// for single lookups.
     pub fn post(&self) -> Option<crate::post::PostTable> {
-        let offset = match self.kind {
-            FaceKind::Ttf => self.subfont_offset(),
-            FaceKind::Otf => 0,
-        };
-        let bytes = crate::variations::find_table(&self.bytes, b"post", offset)?;
-        crate::post::PostTable::parse(bytes)
+        self.post_ref().cloned()
     }
 
     /// Resolve a glyph ID to its PostScript name via the `post` table.
     /// Returns `None` when the font has no `post` table, the table
     /// supplies no names (format 3.0), or the glyph ID is unnamed.
+    /// The table is parsed once per face, on the first call.
     pub fn glyph_name(&self, gid: u16) -> Option<String> {
-        self.post()?.glyph_name(gid).map(|s| s.to_string())
+        self.post_ref()?.glyph_name(gid).map(|s| s.to_string())
     }
 
     /// Apply MVAR + the current variation coords (set via
@@ -601,12 +656,10 @@ impl Face {
     /// offset), `b"unds"` (underline size). The full list is in
     /// the OpenType spec §"MVAR — Metrics Variations Table".
     pub fn metric_delta(&self, tag: &[u8; 4]) -> f32 {
-        let mvar = match self.mvar() {
-            Some(m) => m,
-            None => return 0.0,
-        };
-        let coords = self.normalised_coords();
-        mvar.delta(tag, &coords)
+        match self.mvar_ref() {
+            Some(mvar) => mvar.delta(tag, &self.norm_coords),
+            None => 0.0,
+        }
     }
 
     /// Apply HVAR + the current variation coords to compute a
@@ -614,42 +667,35 @@ impl Face {
     /// `0.0` when the font has no HVAR or the coords are at the
     /// per-axis defaults.
     pub fn h_advance_delta(&self, gid: u16) -> f32 {
-        let hvar = match self.hvar() {
-            Some(h) => h,
-            None => return 0.0,
-        };
-        let coords = self.normalised_coords();
-        hvar.advance_delta(gid, &coords)
+        match self.hvar_ref() {
+            Some(hvar) => hvar.advance_delta(gid, &self.norm_coords),
+            None => 0.0,
+        }
     }
 
     /// Apply VVAR + the current variation coords to compute a
     /// vertical-advance delta in font units for `gid`. Returns
     /// `0.0` for horizontal-only fonts.
     pub fn v_advance_delta(&self, gid: u16) -> f32 {
-        let vvar = match self.vvar() {
-            Some(v) => v,
-            None => return 0.0,
-        };
-        let coords = self.normalised_coords();
-        vvar.advance_delta(gid, &coords)
+        match self.vvar_ref() {
+            Some(vvar) => vvar.advance_delta(gid, &self.norm_coords),
+            None => 0.0,
+        }
     }
 
     /// Compute the normalised coord vector for the current variation
     /// coords. Empty for static / OTF faces. The returned vector has
     /// the avar piecewise-linear remap applied (when the font ships
-    /// one).
+    /// one). Computed once, when the instance is installed; this
+    /// accessor copies the kept vector.
     pub fn normalised_coords(&self) -> Vec<f32> {
-        if self.kind != FaceKind::Ttf || self.var_coords.is_empty() {
-            return Vec::new();
-        }
-        self.with_font(|f| f.normalised_coords())
-            .unwrap_or_default()
+        self.norm_coords.clone()
     }
 
     /// All STAT design axes, in declaration order. Empty for static
     /// fonts or fonts without STAT.
     pub fn stat_axes(&self) -> Vec<crate::variations::StatAxis> {
-        match self.stat() {
+        match self.stat_ref() {
             Some(s) => s.axes().to_vec(),
             None => Vec::new(),
         }
@@ -659,7 +705,7 @@ impl Face {
     /// / multi-axis combination), in declaration order. Empty for
     /// static fonts or fonts without STAT.
     pub fn stat_axis_values(&self) -> Vec<crate::variations::StatAxisValue> {
-        match self.stat() {
+        match self.stat_ref() {
             Some(s) => s.axis_values().to_vec(),
             None => Vec::new(),
         }
@@ -1398,9 +1444,9 @@ impl Face {
             .collect()
     }
 
-    /// Run a closure with a freshly-parsed `oxideav_otf::Font<'_>`
-    /// view of the owned bytes. Mirrors [`Face::with_font`] for the
-    /// CFF / cubic-Bezier path.
+    /// Run a closure with the face's parsed `oxideav_otf::Font<'_>`
+    /// view. Mirrors [`Face::with_font`] for the CFF / cubic-Bezier
+    /// path: a borrow of the view built at construction, not a parse.
     ///
     /// Returns `Error::WrongFaceKind` if this face was constructed
     /// from TTF bytes.
@@ -1408,14 +1454,7 @@ impl Face {
         &self,
         f: impl FnOnce(&oxideav_otf::Font<'_>) -> R,
     ) -> Result<R, Error> {
-        if self.kind != FaceKind::Otf {
-            return Err(Error::WrongFaceKind {
-                expected: FaceKind::Otf,
-                actual: self.kind,
-            });
-        }
-        let font = oxideav_otf::Font::from_bytes(&self.bytes).map_err(Error::from)?;
-        Ok(f(&font))
+        Ok(f(self.otf()?))
     }
 
     /// Returns the raw glyph outline as vector commands in the font's
@@ -1440,26 +1479,78 @@ impl Face {
     /// `Transform2D::scale(scale, -scale)` and an appropriate
     /// translation, or use [`Face::glyph_node`] which bakes that flip
     /// into a render-ready `Node`.
+    ///
+    /// With an [`OutlineCache`] attached the outline is decoded once
+    /// per *(glyph, variation instance)* and this returns a copy of
+    /// the kept path; use [`Face::glyph_path_shared`] to share it
+    /// without copying.
     pub fn glyph_path(&self, glyph_id: u16) -> Option<Path> {
-        match self.kind {
-            FaceKind::Ttf => {
-                // CBDT-only glyphs (e.g. emoji) parse as empty outlines.
-                let outline = self.with_font(|f| f.glyph_outline(glyph_id)).ok()?.ok()?;
-                if outline.contours.is_empty() {
-                    return None;
-                }
-                Some(tt_outline_to_path(&outline))
+        match &self.outline_cache {
+            Some(cache) => self
+                .cached_outline(cache, glyph_id)
+                .map(|shared| Path::clone(&shared)),
+            None => self.decode_outline(glyph_id),
+        }
+    }
+
+    /// [`Face::glyph_path`] behind an `Arc`: with an [`OutlineCache`]
+    /// attached this hands out the cache's own allocation (no copy of
+    /// the commands); without one it decodes the outline and wraps it.
+    /// The path is in the same Y-up font-unit space.
+    pub fn glyph_path_shared(&self, glyph_id: u16) -> Option<Arc<Path>> {
+        match &self.outline_cache {
+            Some(cache) => self.cached_outline(cache, glyph_id),
+            None => self.decode_outline(glyph_id).map(Arc::new),
+        }
+    }
+
+    /// Attach (or, with `None`, detach) a shared [`OutlineCache`].
+    /// While one is attached, [`Face::glyph_path`],
+    /// [`Face::glyph_path_shared`] and the outline branch of
+    /// [`Face::glyph_node`] decode each *(glyph, variation instance)*
+    /// once and reuse the font-unit path at every size and position.
+    /// Output is identical with and without a cache.
+    ///
+    /// No cache is attached by default. See [`crate::outline_cache`]
+    /// for the key, the memory bound and the threading rules.
+    pub fn set_outline_cache(&mut self, cache: Option<Arc<OutlineCache>>) {
+        self.outline_cache = cache;
+    }
+
+    /// Builder form of [`Face::set_outline_cache`].
+    #[must_use]
+    pub fn with_outline_cache(mut self, cache: Arc<OutlineCache>) -> Self {
+        self.outline_cache = Some(cache);
+        self
+    }
+
+    /// The attached [`OutlineCache`], if any.
+    pub fn outline_cache(&self) -> Option<&Arc<OutlineCache>> {
+        self.outline_cache.as_ref()
+    }
+
+    fn cached_outline(&self, cache: &OutlineCache, glyph_id: u16) -> Option<Arc<Path>> {
+        cache.get_or_decode(self.id, glyph_id, &self.instance, || {
+            self.decode_outline(glyph_id)
+        })
+    }
+
+    /// Decode `glyph_id`'s outline from the parsed view (at the
+    /// installed variation instance) into a font-unit path.
+    fn decode_outline(&self, glyph_id: u16) -> Option<Path> {
+        if let Some(font) = self.font.ttf() {
+            // CBDT-only glyphs (e.g. emoji) parse as empty outlines.
+            let outline = font.glyph_outline(glyph_id).ok()?;
+            if outline.contours.is_empty() {
+                return None;
             }
-            FaceKind::Otf => {
-                let outline = self
-                    .with_otf_font(|f| f.glyph_outline(glyph_id))
-                    .ok()?
-                    .ok()?;
-                if outline.contours.is_empty() {
-                    return None;
-                }
-                Some(cff_outline_to_path(&outline))
+            Some(tt_outline_to_path(&outline))
+        } else {
+            let outline = self.font.otf()?.glyph_outline(glyph_id).ok()?;
+            if outline.contours.is_empty() {
+                return None;
             }
+            Some(cff_outline_to_path(&outline))
         }
     }
 
@@ -1502,8 +1593,7 @@ impl Face {
         // a 32 px bitmap derived from the 109 px strike is the same
         // every time and can be memoised by callers via the wrapping
         // `Group::cache_key` from `Shaper::shape_to_paths`.)
-        if matches!(self.kind, FaceKind::Ttf)
-            && self.has_color_bitmaps()
+        if self.has_color_bitmaps()
             && let Ok(Some(cgb)) = self.raster_color_glyph_at(glyph_id, size_px)
             && !cgb.bitmap.is_empty()
         {
@@ -1515,7 +1605,7 @@ impl Face {
                 pts: None,
                 planes: vec![VideoPlane {
                     stride,
-                    data: cgb.bitmap.data.clone(),
+                    data: cgb.bitmap.data,
                 }],
             };
             // bearing_x / bearing_y / advance from
@@ -1543,10 +1633,22 @@ impl Face {
         // `Group { transform: scale(scale, -scale), .. }` instead;
         // baking the transform keeps the Node leaf-shaped and lets
         // shape_to_paths emit a pure translation per glyph.)
-        let raw = self.glyph_path(glyph_id)?;
         let upem = self.units_per_em.max(1) as f32;
         let scale = size_px / upem;
-        let path = scale_and_flip_path(&raw, scale);
+        let path = match &self.outline_cache {
+            // The kept font-unit path is shared; scale a copy of it.
+            Some(cache) => {
+                let shared = self.cached_outline(cache, glyph_id)?;
+                scale_and_flip_path(&shared, scale)
+            }
+            // Nobody else sees the freshly decoded path: scale it
+            // where it is.
+            None => {
+                let mut raw = self.decode_outline(glyph_id)?;
+                scale_and_flip_in_place(&mut raw, scale);
+                raw
+            }
+        };
         Some(Node::Path(PathNode {
             path,
             fill: Some(Paint::Solid(Rgba::opaque(0, 0, 0))),
@@ -1563,33 +1665,44 @@ impl Face {
 /// returned outline so the `Path` is in raster pixels (Y-down) ready to
 /// blit, without an enclosing `Group::transform`.
 fn scale_and_flip_path(src: &Path, scale: f32) -> Path {
-    let mut out = Path {
-        commands: Vec::with_capacity(src.commands.len()),
-    };
-    let map = |p: Point| Point::new(p.x * scale, -p.y * scale);
-    for cmd in &src.commands {
-        // Glyph outlines never emit ArcTo (TT/CFF have no arc primitive
-        // — TT's quadratics + CFF's cubics are it), so the match arms
-        // below cover every variant we'll ever see. The wildcard is a
-        // forward-compat safety net for the `#[non_exhaustive]` enum.
-        let new = match *cmd {
-            PathCommand::MoveTo(p) => PathCommand::MoveTo(map(p)),
-            PathCommand::LineTo(p) => PathCommand::LineTo(map(p)),
-            PathCommand::QuadCurveTo { control, end } => PathCommand::QuadCurveTo {
-                control: map(control),
-                end: map(end),
-            },
-            PathCommand::CubicCurveTo { c1, c2, end } => PathCommand::CubicCurveTo {
-                c1: map(c1),
-                c2: map(c2),
-                end: map(end),
-            },
-            PathCommand::Close => PathCommand::Close,
-            other => other,
-        };
-        out.commands.push(new);
+    Path {
+        commands: src
+            .commands
+            .iter()
+            .map(|cmd| scale_and_flip_command(*cmd, scale))
+            .collect(),
     }
-    out
+}
+
+/// [`scale_and_flip_path`] over a path the caller owns, reusing its
+/// allocation.
+fn scale_and_flip_in_place(path: &mut Path, scale: f32) {
+    for cmd in &mut path.commands {
+        *cmd = scale_and_flip_command(*cmd, scale);
+    }
+}
+
+fn scale_and_flip_command(cmd: PathCommand, scale: f32) -> PathCommand {
+    let map = |p: Point| Point::new(p.x * scale, -p.y * scale);
+    // Glyph outlines never emit ArcTo (TT/CFF have no arc primitive
+    // — TT's quadratics + CFF's cubics are it), so the match arms
+    // below cover every variant we'll ever see. The wildcard is a
+    // forward-compat safety net for the `#[non_exhaustive]` enum.
+    match cmd {
+        PathCommand::MoveTo(p) => PathCommand::MoveTo(map(p)),
+        PathCommand::LineTo(p) => PathCommand::LineTo(map(p)),
+        PathCommand::QuadCurveTo { control, end } => PathCommand::QuadCurveTo {
+            control: map(control),
+            end: map(end),
+        },
+        PathCommand::CubicCurveTo { c1, c2, end } => PathCommand::CubicCurveTo {
+            c1: map(c1),
+            c2: map(c2),
+            end: map(end),
+        },
+        PathCommand::Close => PathCommand::Close,
+        other => other,
+    }
 }
 
 /// Convert a TrueType outline (quadratic Beziers in font-unit Y-up
@@ -1608,42 +1721,41 @@ fn scale_and_flip_path(src: &Path, scale: f32) -> Path {
 ///   point.
 /// - Each contour terminates with `PathCommand::Close`.
 fn tt_outline_to_path(outline: &oxideav_ttf::TtOutline) -> Path {
-    let mut out = Path::new();
+    // Every point yields at most one command, plus MoveTo, a possible
+    // closing curve and Close per contour.
+    let capacity: usize = outline.contours.iter().map(|c| c.points.len() + 3).sum();
+    let mut out = Path {
+        commands: Vec::with_capacity(capacity),
+    };
+    let xy = |p: &oxideav_ttf::Point| Point::new(p.x as f32, p.y as f32);
     for contour in &outline.contours {
         let pts = &contour.points;
         if pts.is_empty() {
             continue;
         }
         let n = pts.len();
-        // Find the first on-curve point; if none, synthesise a start at
-        // the midpoint of pts[0]..pts[1] (Apple-TT phantom on-curve).
-        let start_idx = pts.iter().position(|p| p.on_curve);
-        let (start_xy, ordered): (Point, Vec<(Point, bool)>) = if let Some(s) = start_idx {
-            let mut ord: Vec<(Point, bool)> = Vec::with_capacity(n);
-            for i in 0..n {
-                let p = pts[(s + i) % n];
-                ord.push((Point::new(p.x as f32, p.y as f32), p.on_curve));
+        // Start at the first on-curve point and walk the remaining
+        // points cyclically from there; if there is none, synthesise a
+        // start at the midpoint of pts[0]..pts[1] (Apple-TT phantom
+        // on-curve) and walk every point.
+        let (start_xy, first, count) = match pts.iter().position(|p| p.on_curve) {
+            Some(s) => (xy(&pts[s]), s + 1, n - 1),
+            None => {
+                let p0 = pts[0];
+                let p1 = pts[1 % n];
+                let mid = Point::new(
+                    (p0.x as f32 + p1.x as f32) * 0.5,
+                    (p0.y as f32 + p1.y as f32) * 0.5,
+                );
+                (mid, 0, n)
             }
-            (ord[0].0, ord)
-        } else {
-            let p0 = pts[0];
-            let p1 = pts[1 % n];
-            let mid = Point::new(
-                (p0.x as f32 + p1.x as f32) * 0.5,
-                (p0.y as f32 + p1.y as f32) * 0.5,
-            );
-            let mut ord: Vec<(Point, bool)> = Vec::with_capacity(n + 1);
-            ord.push((mid, true));
-            for p in pts.iter().take(n) {
-                ord.push((Point::new(p.x as f32, p.y as f32), p.on_curve));
-            }
-            (mid, ord)
         };
 
         out.commands.push(PathCommand::MoveTo(start_xy));
         let mut prev_off: Option<Point> = None;
-        for &(xy, on) in ordered.iter().skip(1) {
-            if on {
+        for p in pts.iter().cycle().skip(first).take(count) {
+            let xy = xy(p);
+            if p.on_curve {
                 if let Some(c) = prev_off.take() {
                     out.commands.push(PathCommand::QuadCurveTo {
                         control: c,
@@ -1682,7 +1794,10 @@ fn tt_outline_to_path(outline: &oxideav_ttf::TtOutline) -> Path {
 /// of MoveTo / LineTo / CubicCurveTo / Close. The CFF segment IR is
 /// already explicit, so this is a 1:1 mapping — no on/off-curve dance.
 fn cff_outline_to_path(outline: &oxideav_otf::CubicOutline) -> Path {
-    let mut out = Path::new();
+    let capacity: usize = outline.contours.iter().map(|c| c.segments.len()).sum();
+    let mut out = Path {
+        commands: Vec::with_capacity(capacity),
+    };
     for contour in &outline.contours {
         for seg in &contour.segments {
             match *seg {
@@ -1706,4 +1821,157 @@ fn cff_outline_to_path(outline: &oxideav_otf::CubicOutline) -> Path {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod parse_once_tests {
+    use super::*;
+    use crate::parsed::PARSE_COUNT;
+
+    fn parses_during(f: impl FnOnce()) -> usize {
+        let before = PARSE_COUNT.with(|c| c.get());
+        f();
+        PARSE_COUNT.with(|c| c.get()) - before
+    }
+
+    #[test]
+    fn face_is_send_and_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<Face>();
+        check::<crate::FaceChain>();
+    }
+
+    /// Construction is the only parse: drawing, colour queries,
+    /// metrics, feature queries, shaping and installing variation
+    /// instances all reuse the view the face already holds.
+    #[test]
+    fn nothing_parses_after_construction() {
+        let mut face = None;
+        let n = parses_during(|| {
+            face = Some(
+                Face::from_ttf_bytes(
+                    include_bytes!("../tests/fixtures/InterVariable.ttf").to_vec(),
+                )
+                .unwrap(),
+            );
+        });
+        assert_eq!(n, 1, "construction parses exactly once");
+        let mut face = face.unwrap();
+
+        let n = parses_during(|| {
+            for round in 0..3 {
+                for gid in 0..200u16 {
+                    let _ = face.glyph_node(gid, 14.0);
+                    let _ = face.glyph_path(gid);
+                    let _ = face.glyph_path_shared(gid);
+                    let _ = face.raster_color_glyph(gid, 14.0);
+                    let _ = face.h_advance_delta(gid);
+                    let _ = face.v_advance_delta(gid);
+                    let _ = face.glyph_name(gid);
+                }
+                let _ = face.has_color_bitmaps();
+                let _ = face.color_strike_sizes();
+                let _ = face.is_variable();
+                let _ = face.variation_axes();
+                let _ = face.named_instances();
+                let _ = face.normalised_coords();
+                let _ = face.metric_delta(b"xhgt");
+                let _ = face.stat_axes();
+                let _ = face.name_id(1);
+                let _ = face.has_base_table();
+                let _ = face.baseline_coord(BaselineAxis::Horizontal, *b"latn", *b"romn");
+                let _ = face.default_baseline_tag(BaselineAxis::Horizontal, *b"latn");
+                let _ = face.gsub_features_for_script(*b"latn", None);
+                let _ = face.layout_features_for_script(*b"latn", None);
+                let _ = face.resolve_ot_script_tag(intl::unicode::script::Script::Latin);
+                let _ = face.shape_text("office", &[*b"liga"]);
+                let _ = face.position_text_itemized("Hello \u{0939}\u{093F}", 16.0, &[]);
+                let _ = crate::Shaper::shape(&face, "Hello", 16.0);
+                let _ = face.with_font(|f| f.glyph_index('A'));
+                if round == 0 {
+                    face.set_variation_coords(&[20.0, 650.0]).unwrap();
+                    face.set_outline_cache(Some(Arc::new(OutlineCache::default())));
+                } else {
+                    face.clear_variation_coords();
+                }
+            }
+        });
+        assert_eq!(n, 0, "{n} font parses after construction");
+    }
+
+    #[test]
+    fn cff_face_parses_once_too() {
+        let mut face = None;
+        let n = parses_during(|| {
+            face = Some(
+                Face::from_otf_bytes(
+                    include_bytes!("../tests/fixtures/SourceSans3-Regular.otf").to_vec(),
+                )
+                .unwrap(),
+            );
+        });
+        assert_eq!(n, 1);
+        let face = face.unwrap();
+        let n = parses_during(|| {
+            for gid in 0..200u16 {
+                let _ = face.glyph_node(gid, 14.0);
+                let _ = face.glyph_path(gid);
+            }
+            let _ = face.has_base_table();
+            let _ = face.baseline_coord(BaselineAxis::Horizontal, *b"latn", *b"romn");
+            let _ = face.glyph_name(5);
+            let _ = face.with_otf_font(|f| f.glyph_index('A'));
+        });
+        assert_eq!(n, 0);
+    }
+
+    /// The variation setters keep their observable contract: partial
+    /// vectors overlay the installed instance, values clamp, and
+    /// clearing returns to the default instance.
+    #[test]
+    fn instance_install_overlays_clamps_and_clears() {
+        let mut face =
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/InterVariable.ttf").to_vec())
+                .unwrap();
+        let axes = face.variation_axes();
+        assert_eq!(axes.len(), 2);
+        assert!(face.variation_coords().is_empty());
+        assert!(face.normalised_coords().is_empty());
+
+        face.set_variation_coords(&[20.0, 700.0]).unwrap();
+        assert_eq!(face.variation_coords(), &[20.0, 700.0]);
+        assert_eq!(face.normalised_coords().len(), 2);
+        // A shorter vector leaves the trailing axis where it was.
+        face.set_variation_coords(&[24.0]).unwrap();
+        assert_eq!(face.variation_coords(), &[24.0, 700.0]);
+        // Out-of-range values clamp to the axis range.
+        face.set_variation_coords(&[1.0e6, -5.0]).unwrap();
+        assert_eq!(face.variation_coords(), &[axes[0].max, axes[1].min]);
+
+        let commands = |f: &Face| f.glyph_path(40).map(|p| p.commands);
+        let bold_a = commands(&face);
+        face.clear_variation_coords();
+        assert!(face.variation_coords().is_empty());
+        assert!(face.normalised_coords().is_empty());
+        let fresh =
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/InterVariable.ttf").to_vec())
+                .unwrap();
+        assert_eq!(commands(&face), commands(&fresh));
+        assert_ne!(commands(&face), bold_a);
+
+        // Static and CFF faces: a no-op and a typed error.
+        let mut fixed =
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/DejaVuSans.ttf").to_vec())
+                .unwrap();
+        fixed.set_variation_coords(&[700.0]).unwrap();
+        assert!(fixed.variation_coords().is_empty());
+        let mut cff = Face::from_otf_bytes(
+            include_bytes!("../tests/fixtures/SourceSans3-Regular.otf").to_vec(),
+        )
+        .unwrap();
+        assert!(matches!(
+            cff.set_variation_coords(&[700.0]),
+            Err(Error::WrongFaceKind { .. })
+        ));
+    }
 }

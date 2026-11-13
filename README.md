@@ -51,6 +51,23 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   charstrings decode cubics 1:1. `Face::glyph_node(gid, size_px)` bakes
   the Y-flip + scale into a render-ready `Node::Path` (or `Node::Image`
   for CBDT colour glyphs).
+- **Parse-once faces** — a `Face` parses its font exactly once, at
+  construction, and keeps the parsed view next to the bytes for its
+  whole life. Every per-glyph entry point (`glyph_path`, `glyph_node`,
+  the colour-bitmap queries, advance / metric deltas, `glyph_name`,
+  feature queries, shaping) borrows that view; `with_font` /
+  `with_otf_font` are borrows, not parses, so calling them per glyph is
+  fine. Installing a variation instance adjusts the view in place. The
+  `post` / `MVAR` / `HVAR` / `VVAR` / `STAT` / `name` snapshots are
+  parsed on first use and kept. `Face` and `FaceChain` are
+  `Send + Sync`.
+- **Outline cache (optional)** — attach a shared, bounded
+  `OutlineCache` with `Face::set_outline_cache` /
+  `FaceChain::set_outline_cache` and each *(face, glyph id, variation
+  instance)* is decoded once; drawing it again at any size or position
+  scales the kept font-unit path. `Face::glyph_path_shared` hands out
+  the cached `Arc<Path>` without copying. Off by default; output is
+  identical with and without it. See [Performance](#performance).
 - **PostScript glyph names** — `Face::glyph_name(gid)` (and the lower
   level `Face::post()` / `crate::post::PostTable`) resolve a glyph ID to
   its `post`-table PostScript name. The 258 standard Macintosh names are
@@ -303,6 +320,74 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `reset_trailing_levels` / `reorder_line` (L1/L2),
   `reorder_combining_marks` (L3), and `mirrored_glyph` /
   `apply_mirroring` (L4, `Bidi_Mirroring_Glyph` via the `intl` crate).
+
+## Performance
+
+A `Face` never re-parses its font. Before this was so, every
+`glyph_node` call parsed the whole font (twice for a TrueType face —
+once to ask about colour bitmaps, once for the outline), so a frame's
+cost was the glyph count times the font's table-parsing time.
+
+`cargo bench --bench hot_paths` (std-only timing, release, median of 9
+batches on a shared build machine; "before" is the previous
+parse-per-call implementation built against the same released
+`oxideav-ttf` 0.1.8 / `oxideav-otf` 0.1.5):
+
+| case | before | now | now, outline cache |
+|------|-------:|----:|-------------------:|
+| UI frame, 486 × `glyph_node`, DejaVu Sans (5 800 glyphs) | 252.8 ms | 0.171 ms | 0.045 ms |
+| UI frame, 486 × `glyph_node`, Inter Variable | 109.4 ms | 0.147 ms | 0.057 ms |
+| UI frame, 486 × `glyph_node`, Source Sans 3 (CFF) | 1.14 ms | 0.280 ms | 0.037 ms |
+| UI frame, 31 × `shape_to_paths`, DejaVu Sans | 179.0 ms | 0.661 ms | 0.275 ms |
+| Latin paragraph (196 glyphs) draw, DejaVu Sans | 60.1 ms | 0.049 ms | 0.017 ms |
+| Arabic paragraph (153 glyphs) draw, DejaVu Sans | 51.4 ms | 0.066 ms | 0.013 ms |
+| Latin paragraph draw, Inter Variable `wght=700` | 42.9 ms | 0.162 ms | 0.020 ms |
+| CJK line (68 glyphs) draw, DejaVu Sans + Noto Sans CJK | 9.32 ms | 0.152 ms | 0.015 ms |
+| Colour emoji (16 glyphs) draw, Noto Color Emoji | 6.36 ms | 0.461 ms | 0.298 ms |
+| Latin paragraph shape, DejaVu Sans | 0.203 ms | 0.062 ms | — |
+
+The "UI frame" rows are a text field plus thirty labelled buttons, one
+call per glyph per frame: 520 µs → 0.35 µs per `glyph_node` on DejaVu
+Sans (about 1 500×), 0.09 µs with the outline cache. What is left per
+glyph is the outline walk itself (and, for colour emoji, the PNG
+decode + resample of the strike).
+
+### The outline cache
+
+`OutlineCache::new(budget_bytes)` (or `OutlineCache::default()`, 4 MiB)
+is a thread-safe memo of font-unit outlines shared by any number of
+faces:
+
+```rust
+use oxideav_scribe::{Face, FaceChain, OutlineCache};
+use std::sync::Arc;
+
+# fn demo(face: Face) {
+let cache = Arc::new(OutlineCache::default());
+let mut chain = FaceChain::new(face);
+chain.set_outline_cache(Some(cache.clone()));
+// glyph_path / glyph_node / shape_to_paths now decode each glyph once.
+println!("{:?}", cache.stats()); // hits, misses, entries, bytes
+# }
+```
+
+- **Key** — the face's process-unique `Face::id()` (never reused), the
+  glyph id, and the exact bit pattern of the installed variation
+  coordinates. A hit can therefore never be another face's glyph or
+  another instance's outline, and changing a face's variation
+  coordinates needs no flush: the new instance misses, the old one's
+  entries are found again if the face returns to it.
+- **Memory bound** — entries are charged for their path commands plus
+  a fixed 96-byte allowance and kept in two generations of at most
+  half the budget each; when the young one fills, the old one is
+  dropped and entries still in use are carried forward. The charged
+  total never exceeds the budget. An outline larger than half the
+  budget is returned but not kept.
+- **Invalidation** — none is needed for correctness. `clear()` empties
+  the cache; `forget_face(id)` releases a dropped face's entries sooner
+  than ageing would.
+- **Threads** — `OutlineCache: Send + Sync`; the decode runs outside
+  the internal lock.
 
 ## Out of scope
 

@@ -174,6 +174,8 @@ pub mod color_glyph;
 pub mod face;
 pub mod face_chain;
 pub mod layout;
+pub mod outline_cache;
+mod parsed;
 pub mod post;
 pub mod script;
 pub mod shaper;
@@ -198,6 +200,7 @@ pub use layout::{
     ShapedParagraph, ShapedVisualLine, VisualLine, reorder_line_visual, run_width,
     shape_paragraphs, shape_visual_line, wrap_and_shape_lines, wrap_lines,
 };
+pub use outline_cache::{DEFAULT_BUDGET_BYTES, OutlineCache, OutlineCacheStats};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
 pub use post::{PostTable, STANDARD_MAC_GLYPH_NAMES, standard_mac_glyph_name};
 pub use script::{

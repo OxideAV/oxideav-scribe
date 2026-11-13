@@ -37,30 +37,23 @@ use crate::shaping::indic::{
 };
 use crate::style::Style;
 
-/// The chain's faces, each parsed at most once for the duration of one
-/// shaping call. A `FaceChain` call consults the same face once per
-/// codepoint (fallback walk), per cluster (GSUB passes) and per run
-/// (positioning); parsing on first use and reusing the view keeps the
-/// cost at one parse per face actually consulted.
+/// The chain's faces as parsed views. Each face keeps the view it
+/// parsed at construction, so resolving one is a borrow; a shaping
+/// call that consults the same face once per codepoint (fallback
+/// walk), per cluster (GSUB passes) and per run (positioning) parses
+/// nothing.
 struct ParsedFaces<'a> {
     faces: &'a [Face],
-    fonts: Vec<Option<oxideav_ttf::Font<'a>>>,
 }
 
 impl<'a> ParsedFaces<'a> {
     fn new(faces: &'a [Face]) -> Self {
-        Self {
-            faces,
-            fonts: faces.iter().map(|_| None).collect(),
-        }
+        Self { faces }
     }
 
-    /// The parsed view of face `idx`, parsing it on first use.
-    fn font(&mut self, idx: usize) -> Result<&oxideav_ttf::Font<'a>, Error> {
-        if self.fonts[idx].is_none() {
-            self.fonts[idx] = Some(self.faces[idx].parse_ttf()?);
-        }
-        Ok(self.fonts[idx].as_ref().expect("parsed above"))
+    /// The parsed view of face `idx`.
+    fn font(&mut self, idx: usize) -> Result<&'a oxideav_ttf::Font<'a>, Error> {
+        self.faces[idx].ttf()
     }
 }
 
@@ -110,6 +103,16 @@ impl FaceChain {
     /// Borrow the primary face — useful for size/metric queries.
     pub fn primary(&self) -> &Face {
         &self.faces[0]
+    }
+
+    /// Attach (or, with `None`, detach) one shared
+    /// [`crate::OutlineCache`] on **every** face of the chain — see
+    /// [`Face::set_outline_cache`]. Faces pushed afterwards are not
+    /// covered; attach again (or set it on the face before pushing).
+    pub fn set_outline_cache(&mut self, cache: Option<std::sync::Arc<crate::OutlineCache>>) {
+        for face in &mut self.faces {
+            face.set_outline_cache(cache.clone());
+        }
     }
 
     /// Mutably borrow face at `idx`. Used to flip per-face state like
@@ -1539,7 +1542,7 @@ mod tests {
 #[cfg(test)]
 mod parse_once_tests {
     use super::*;
-    use crate::face::PARSE_COUNT;
+    use crate::parsed::PARSE_COUNT;
 
     fn chain() -> FaceChain {
         let primary =
@@ -1557,9 +1560,9 @@ mod parse_once_tests {
         PARSE_COUNT.with(|c| c.get()) - before
     }
 
-    /// One shaping call parses each consulted face once, however many
-    /// codepoints, clusters and runs it has (issue #17: it used to
-    /// parse once per codepoint per face tried).
+    /// Shaping parses nothing: every face keeps the view it parsed at
+    /// construction (issue #17 — shaping used to parse once per
+    /// codepoint per face tried, then once per face per call).
     #[test]
     fn shape_parses_each_face_at_most_once() {
         let chain = chain();
@@ -1568,22 +1571,14 @@ mod parse_once_tests {
             let glyphs = chain.shape(text, 16.0).expect("shapes");
             assert_eq!(glyphs.len(), text.chars().count());
         });
-        assert!(
-            n <= chain.len(),
-            "{n} parses for a {}-face chain",
-            chain.len()
-        );
+        assert_eq!(n, 0, "{n} parses for a {}-face chain", chain.len());
 
         let n = parses_during(|| {
             chain
                 .shape_with_features(text, 16.0, &[*b"liga", *b"kern"])
                 .expect("shapes");
         });
-        assert!(
-            n <= chain.len(),
-            "{n} parses for a {}-face chain",
-            chain.len()
-        );
+        assert_eq!(n, 0, "{n} parses for a {}-face chain", chain.len());
 
         // An Indic cluster run drives the reph / cluster GSUB passes.
         let n = parses_during(|| {
@@ -1594,10 +1589,6 @@ mod parse_once_tests {
                 )
                 .expect("shapes");
         });
-        assert!(
-            n <= chain.len(),
-            "{n} parses for a {}-face chain",
-            chain.len()
-        );
+        assert_eq!(n, 0, "{n} parses for a {}-face chain", chain.len());
     }
 }

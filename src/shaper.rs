@@ -154,7 +154,7 @@ impl Shaper {
         if text.is_empty() || size_px <= 0.0 {
             return Ok(Vec::new());
         }
-        face.with_font(|font| shape_with_font(font, text, size_px))
+        Ok(shape_with_font(face.ttf()?, text, size_px))
     }
 
     /// Shape a text run and return positioned **vector glyphs** —

@@ -47,3 +47,10 @@ intl = { version = "0.4", default-features = false, features = ["bidi", "full"] 
 # miniz_oxide); the workspace uses compcol for compression and the
 # fixtures are fetched uncompressed. `rustls` keeps https working.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# `cargo bench --bench hot_paths` — std-only wall-clock timings of the
+# per-glyph draw and per-paragraph shape entry points (see README
+# "Performance").
+[[bench]]
+name = "hot_paths"
+harness = false
