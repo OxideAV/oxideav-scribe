@@ -1501,9 +1501,9 @@ impl Face {
     /// - Bitmap-only glyphs (CBDT/sbix where the face has no outline
     ///   table) return `None`. Use [`Face::glyph_node`] for a vector
     ///   wrapper that handles the bitmap-vs-outline dispatch.
-    /// - COLRv1 layered glyphs (round-6 work) return the *base* outline
-    ///   here; the layered group is exposed via [`Face::glyph_node`] in
-    ///   round 6.
+    /// - Layered colour glyphs (`COLR`) return the *base* glyph's own
+    ///   outline here; the coloured layer group comes from
+    ///   [`Face::glyph_node`] / [`Face::color_glyph_node`].
     ///
     /// The Y-axis convention deliberately stays Y-up so the returned
     /// `Path` is "what the font says". Callers that want Y-down
@@ -1561,6 +1561,27 @@ impl Face {
         self.outline_cache.as_ref()
     }
 
+    /// `glyph_id`'s outline in Y-down pixels at `size_px` (the
+    /// font-unit path scaled by `size_px / unitsPerEm` and flipped).
+    pub(crate) fn scaled_outline(&self, glyph_id: u16, size_px: f32) -> Option<Path> {
+        let upem = self.units_per_em.max(1) as f32;
+        let scale = size_px / upem;
+        match &self.outline_cache {
+            // The kept font-unit path is shared; scale a copy of it.
+            Some(cache) => {
+                let shared = self.cached_outline(cache, glyph_id)?;
+                Some(scale_and_flip_path(&shared, scale))
+            }
+            // Nobody else sees the freshly decoded path: scale it
+            // where it is.
+            None => {
+                let mut raw = self.decode_outline(glyph_id)?;
+                scale_and_flip_in_place(&mut raw, scale);
+                Some(raw)
+            }
+        }
+    }
+
     fn cached_outline(&self, cache: &OutlineCache, glyph_id: u16) -> Option<Arc<Path>> {
         cache.get_or_decode(self.id, glyph_id, &self.instance, || {
             self.decode_outline(glyph_id)
@@ -1601,9 +1622,14 @@ impl Face {
     ///   are sized to the bitmap's CBDT-declared placement at the
     ///   strike's native ppem (caller scales via the outer
     ///   `Transform2D` when blitting at a non-strike size).
-    /// - **COLRv1 layered glyph** (round 6 — not yet implemented) — for
-    ///   now, falls through to the outline path. Round 6 will return a
-    ///   `Group` of `PathNode`s here, one per COLR layer.
+    /// - **Layered colour glyph** (`COLR` version 0) →
+    ///   `Node::Group` of one filled `Node::Path` per layer, bottom
+    ///   layer first, coloured from the default palette with black
+    ///   standing in for the text foreground colour. Use
+    ///   [`Face::color_glyph_node`] to pick the palette and foreground.
+    ///   Version-1 paint graphs are not rendered: such a glyph is drawn
+    ///   from its version-0 layer stack when it has one, else as its
+    ///   plain outline.
     ///
     /// Returns `None` for empty / non-rendering glyphs (e.g. SPACE).
     pub fn glyph_node(&self, glyph_id: u16, size_px: f32) -> Option<Node> {
@@ -1659,28 +1685,23 @@ impl Face {
             }));
         }
 
+        // Layered colour glyph (COLR version 0): one filled path per
+        // layer, default palette, black where the font asks for the
+        // text foreground colour. Faces without colour layers skip
+        // this with one field check.
+        if self.has_color_layers()
+            && let Some(node) = self.color_glyph_node(glyph_id, size_px, 0, [0, 0, 0, 255])
+        {
+            return Some(node);
+        }
+
         // Outline path: take the Y-up native Path and bake in
         // `scale * (1, -1)` so the resulting Path lives directly in
         // Y-down raster pixels at `size_px`. (We could ship a wrapping
         // `Group { transform: scale(scale, -scale), .. }` instead;
         // baking the transform keeps the Node leaf-shaped and lets
         // shape_to_paths emit a pure translation per glyph.)
-        let upem = self.units_per_em.max(1) as f32;
-        let scale = size_px / upem;
-        let path = match &self.outline_cache {
-            // The kept font-unit path is shared; scale a copy of it.
-            Some(cache) => {
-                let shared = self.cached_outline(cache, glyph_id)?;
-                scale_and_flip_path(&shared, scale)
-            }
-            // Nobody else sees the freshly decoded path: scale it
-            // where it is.
-            None => {
-                let mut raw = self.decode_outline(glyph_id)?;
-                scale_and_flip_in_place(&mut raw, scale);
-                raw
-            }
-        };
+        let path = self.scaled_outline(glyph_id, size_px)?;
         Some(Node::Path(PathNode {
             path,
             fill: Some(Paint::Solid(Rgba::opaque(0, 0, 0))),

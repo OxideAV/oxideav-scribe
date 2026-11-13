@@ -88,6 +88,14 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   Bold face).
 - **Face chain** — multi-face fallback for missing codepoints; per-glyph
   `face_idx` tells the consumer which face owns each glyph.
+- **COLR / CPAL layered colour glyphs** — a `COLR` version 0 colour
+  glyph comes back from `Face::glyph_node` as a `Node::Group` of one
+  filled path per layer (bottom layer first), coloured from the default
+  `CPAL` palette with black standing in for the text foreground colour.
+  `Face::color_glyph_node(gid, size_px, palette, foreground)` picks the
+  palette and foreground; `Face::color_glyph_layers` /
+  `has_color_layers` / `color_palette_count` expose the resolved layer
+  list. Version 1 paint graphs are not rendered (see Out of scope).
 - **CBDT/CBLC colour bitmaps** — Noto Color Emoji and friends decode to
   `Node::Image` carrying a `VideoFrame`; resampling to the requested
   size happens in scribe (bilinear, straight-alpha).
@@ -403,6 +411,10 @@ println!("{:?}", cache.stats()); // hits, misses, entries, bytes
   [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
 - **Bidi HL1..HL6 higher-level-protocol overrides** — the rule pipeline
   itself is complete; HL overrides remain caller responsibility.
+- **COLR version 1 paint graphs** — gradients, transforms and
+  composites are not rendered; a glyph with a paint graph is drawn from
+  its version 0 layer stack when the font also carries one, else as its
+  plain outline.
 - **CFF2 variable charstrings** — the `blend` operator is not yet
   emitted (the INDEX walker is parsed for table metadata only).
 - **TrueType bytecode hinting**, **subpixel LCD filtering**, and the

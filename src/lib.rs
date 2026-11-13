@@ -171,6 +171,7 @@
 pub mod bidi;
 pub mod color;
 pub mod color_glyph;
+pub mod color_layers;
 pub mod face;
 pub mod face_chain;
 pub mod layout;
@@ -194,6 +195,7 @@ pub use bidi::{
 };
 pub use color::{Rgba, TRANSPARENT, WHITE};
 pub use color_glyph::ColorGlyphBitmap;
+pub use color_layers::{ColorGlyphLayer, LayerColor};
 pub use face::{BaselineAxis, Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{
