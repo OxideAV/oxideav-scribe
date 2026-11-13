@@ -76,6 +76,7 @@
 use crate::Error;
 use crate::face::Face;
 use crate::face_chain::FaceChain;
+use crate::shaping::plan::LayoutPlan;
 use oxideav_core::{Group, Node, Transform2D};
 
 /// Compute the producer-side `Group::cache_key` for one positioned
@@ -154,7 +155,19 @@ impl Shaper {
         if text.is_empty() || size_px <= 0.0 {
             return Ok(Vec::new());
         }
-        Ok(shape_with_font(face.ttf()?, text, size_px))
+        let font = face.ttf()?;
+        // Step 1: cmap.
+        let raw_glyphs: Vec<u16> = text
+            .chars()
+            .map(|ch| font.glyph_index(ch).unwrap_or(0))
+            .collect();
+        Ok(shape_run_planned(
+            font,
+            face.layout_plan(),
+            &raw_glyphs,
+            size_px,
+            0,
+        ))
     }
 
     /// Shape a text run and return positioned **vector glyphs** —
@@ -386,16 +399,6 @@ impl ShaperBuilder {
     }
 }
 
-fn shape_with_font(font: &oxideav_ttf::Font<'_>, text: &str, size_px: f32) -> Vec<PositionedGlyph> {
-    // Step 1: cmap.
-    let raw_glyphs: Vec<u16> = text
-        .chars()
-        .map(|ch| font.glyph_index(ch).unwrap_or(0))
-        .collect();
-
-    shape_run_with_font(font, &raw_glyphs, size_px, 0)
-}
-
 /// Shape a *pre-cmap'd* run of glyph ids through GSUB + GPOS using
 /// `font`. Used by [`crate::FaceChain`] which performs cmap fallback
 /// at chain-walk time, then hands a per-face run to this entry point.
@@ -404,6 +407,18 @@ fn shape_with_font(font: &oxideav_ttf::Font<'_>, text: &str, size_px: f32) -> Ve
 /// which face to fetch the outline from.
 pub fn shape_run_with_font(
     font: &oxideav_ttf::Font<'_>,
+    raw_glyphs: &[u16],
+    size_px: f32,
+    face_idx: u16,
+) -> Vec<PositionedGlyph> {
+    shape_run_planned(font, &LayoutPlan::new(), raw_glyphs, size_px, face_idx)
+}
+
+/// [`shape_run_with_font`] with the font's kept [`LayoutPlan`], so the
+/// lookup lists and feature tables are not rebuilt per call.
+pub(crate) fn shape_run_planned(
+    font: &oxideav_ttf::Font<'_>,
+    plan: &LayoutPlan,
     raw_glyphs: &[u16],
     size_px: f32,
     face_idx: u16,
@@ -424,7 +439,7 @@ pub fn shape_run_with_font(
     // `DFLT` script tags in order and applies every `ccmp` lookup the
     // chosen script publishes. Coverage tables decide per-glyph
     // whether each lookup fires; fonts without `ccmp` are a no-op.
-    let ccmp_gids: Vec<u16> = crate::shaping::general::apply_ccmp(font, raw_glyphs);
+    let ccmp_gids: Vec<u16> = crate::shaping::general::apply_ccmp_planned(font, plan, raw_glyphs);
     let raw_glyphs: &[u16] = &ccmp_gids;
 
     // Step 2: ligature substitution. Walk through and let the font
@@ -463,7 +478,7 @@ pub fn shape_run_with_font(
     // the general-script feature dispatcher. Coverage misses are
     // silent no-ops.
     let pre_calt_len = shaped_gids.len();
-    shaped_gids = crate::shaping::general::apply_calt(font, &shaped_gids);
+    shaped_gids = crate::shaping::general::apply_calt_planned(font, plan, &shaped_gids);
     // `calt` may itself reshape the run (rare contextual ligatures /
     // splits). When it changes the glyph count the per-glyph component
     // tally no longer lines up positionally, so fall back to treating
@@ -474,7 +489,7 @@ pub fn shape_run_with_font(
     }
 
     // Steps 3..7: GPOS positioning on the now-substituted glyph run.
-    position_run_with_font(font, &shaped_gids, &component_counts, scale, face_idx)
+    position_run_planned(font, plan, &shaped_gids, &component_counts, scale, face_idx)
 }
 
 /// Run the full GPOS positioning pass (steps 3..7 of the shaping
@@ -508,6 +523,26 @@ pub fn position_run_with_font(
     scale: f32,
     face_idx: u16,
 ) -> Vec<PositionedGlyph> {
+    position_run_planned(
+        font,
+        &LayoutPlan::new(),
+        shaped_gids,
+        component_counts,
+        scale,
+        face_idx,
+    )
+}
+
+/// [`position_run_with_font`] with the font's kept [`LayoutPlan`].
+pub(crate) fn position_run_planned(
+    font: &oxideav_ttf::Font<'_>,
+    plan: &LayoutPlan,
+    shaped_gids: &[u16],
+    component_counts: &[u16],
+    scale: f32,
+    face_idx: u16,
+) -> Vec<PositionedGlyph> {
+    let gpos = plan.gpos(font);
     // Step 3: kerning. A GPOS PairPos (LookupType 2) / legacy `kern`
     // pair adjustment is, per OFF §6.4 (ISO/IEC 14496-22:2019), a
     // change to the **xAdvance of the first glyph in the pair** — the
@@ -577,15 +612,10 @@ pub fn position_run_with_font(
     // lookup-list scan. Every type-1 lookup is applied to every glyph
     // in lookup-list order; coverage misses return `None` and leave
     // the glyph untouched.
-    let single_pos_lookups: Vec<u16> = font
-        .gpos_lookup_list()
-        .iter()
-        .filter(|&&(_, ty, _)| ty == 1)
-        .map(|&(idx, _, _)| idx)
-        .collect();
+    let single_pos_lookups = &gpos.single;
     if !single_pos_lookups.is_empty() {
         for g in out.iter_mut() {
-            for &lookup_index in &single_pos_lookups {
+            for &lookup_index in single_pos_lookups {
                 if let Some(v) = font.gpos_apply_lookup_type_1(lookup_index, g.glyph_id) {
                     g.x_offset += f32::from(v.x_placement) * scale;
                     g.y_offset -= f32::from(v.y_placement) * scale;
@@ -779,8 +809,7 @@ pub fn position_run_with_font(
     // are skipped. Cross-stream adjustments accumulate naturally down
     // the chain because each second glyph is placed relative to the
     // (already-adjusted) first.
-    let has_cursive = font.gpos_lookup_list().iter().any(|&(_, ty, _)| ty == 3);
-    if has_cursive {
+    if gpos.has_cursive {
         let mut prev_base: Option<usize> = None;
         for i in 0..out.len() {
             if font.is_mark_glyph(out[i].glyph_id) {
@@ -844,7 +873,7 @@ pub fn position_run_with_font(
     // positioning adjustments layered on the already-positioned run.
     // Gated internally on the font publishing at least one type-7/8
     // GPOS lookup, so plain Latin faces pay a single lookup-list scan.
-    crate::shaping::contextual_pos::apply_contextual_pos(font, &mut out, scale);
+    crate::shaping::contextual_pos::apply_contextual_pos_planned(font, plan, &mut out, scale);
 
     out
 }

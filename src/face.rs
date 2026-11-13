@@ -27,6 +27,7 @@
 use crate::Error;
 use crate::outline_cache::{InstanceKey, OutlineCache};
 use crate::parsed::ParsedFont;
+use crate::shaping::plan::LayoutPlan;
 use oxideav_core::{
     FillRule, ImageRef, Node, Paint, Path, PathCommand, PathNode, Point, Rect, Rgba, Transform2D,
     VideoFrame, VideoPlane,
@@ -132,6 +133,9 @@ pub struct Face {
     /// `var_coords` as an outline-cache key component.
     instance: InstanceKey,
     tables: LazyTables,
+    /// Lookup-list / feature-list facts shaping asks for on every
+    /// call, filled on first use (they do not depend on the instance).
+    plan: LayoutPlan,
     /// Shared outline cache, when the caller attached one.
     outline_cache: Option<Arc<OutlineCache>>,
 }
@@ -231,6 +235,7 @@ impl Face {
             default_coords,
             instance: InstanceKey::default(),
             tables: LazyTables::default(),
+            plan: LayoutPlan::new(),
             outline_cache: None,
         })
     }
@@ -281,6 +286,7 @@ impl Face {
             default_coords: Vec::new(),
             instance: InstanceKey::default(),
             tables: LazyTables::default(),
+            plan: LayoutPlan::new(),
             outline_cache: None,
         })
     }
@@ -376,6 +382,12 @@ impl Face {
             expected: FaceKind::Ttf,
             actual: self.kind,
         })
+    }
+
+    /// The face's kept shaping plan (only meaningful together with
+    /// [`Self::ttf`]'s view).
+    pub(crate) fn layout_plan(&self) -> &LayoutPlan {
+        &self.plan
     }
 
     /// The face's parsed OpenType-CFF view. A plain borrow.
@@ -1064,8 +1076,7 @@ impl Face {
     /// # }
     /// ```
     pub fn shape_text(&self, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
-        self.with_font(|font| crate::shaping::shape_text_with_font(font, text, features))
-            .unwrap_or_default()
+        self.shape_text_planned(text, features, None, &[])
     }
 
     /// Shape `text` with the caller-specified GSUB feature tags
@@ -1119,10 +1130,7 @@ impl Face {
         script_tag: [u8; 4],
         features: &[[u8; 4]],
     ) -> Vec<u16> {
-        self.with_font(|font| {
-            crate::shaping::shape_text_with_script_with_font(font, text, script_tag, features)
-        })
-        .unwrap_or_default()
+        self.shape_text_planned(text, features, Some(script_tag), &[])
     }
 
     /// Round 183 — shape `text` with caller-specified GSUB feature
@@ -1185,10 +1193,8 @@ impl Face {
         text: &str,
         feature_alternates: &[([u8; 4], u16)],
     ) -> Vec<u16> {
-        self.with_font(|font| {
-            crate::shaping::shape_text_with_alternates_with_font(font, text, feature_alternates)
-        })
-        .unwrap_or_default()
+        let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
+        self.shape_text_planned(text, &features, None, feature_alternates)
     }
 
     /// Round 183 — explicit-script-tag mirror of
@@ -1219,15 +1225,8 @@ impl Face {
         script_tag: [u8; 4],
         feature_alternates: &[([u8; 4], u16)],
     ) -> Vec<u16> {
-        self.with_font(|font| {
-            crate::shaping::shape_text_with_script_and_alternates_with_font(
-                font,
-                text,
-                script_tag,
-                feature_alternates,
-            )
-        })
-        .unwrap_or_default()
+        let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
+        self.shape_text_planned(text, &features, Some(script_tag), feature_alternates)
     }
 
     /// Round 362 — shape `text` with the caller-requested GSUB features
@@ -1270,10 +1269,7 @@ impl Face {
         size_px: f32,
         features: &[[u8; 4]],
     ) -> Vec<crate::shaper::PositionedGlyph> {
-        self.with_font(|font| {
-            crate::shaping::position_text_with_features_with_font(font, text, size_px, features, 0)
-        })
-        .unwrap_or_default()
+        self.position_text_planned(text, size_px, features, None)
     }
 
     /// Round 362 — explicit-script-tag mirror of [`Self::position_text`].
@@ -1291,12 +1287,53 @@ impl Face {
         script_tag: [u8; 4],
         features: &[[u8; 4]],
     ) -> Vec<crate::shaper::PositionedGlyph> {
-        self.with_font(|font| {
-            crate::shaping::position_text_with_script_and_features_with_font(
-                font, text, size_px, script_tag, features, 0,
-            )
-        })
-        .unwrap_or_default()
+        self.position_text_planned(text, size_px, features, Some(script_tag))
+    }
+
+    /// GSUB feature substitution over the kept view and plan; empty
+    /// for a CFF face.
+    fn shape_text_planned(
+        &self,
+        text: &str,
+        features: &[[u8; 4]],
+        script_tag: Option<[u8; 4]>,
+        feature_alternates: &[([u8; 4], u16)],
+    ) -> Vec<u16> {
+        match self.ttf() {
+            Ok(font) => crate::shaping::feature_subst::shape_text_inner(
+                font,
+                &self.plan,
+                text,
+                features,
+                script_tag,
+                feature_alternates,
+            ),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// GSUB feature substitution + GPOS positioning over the kept view
+    /// and plan; empty for a CFF face.
+    fn position_text_planned(
+        &self,
+        text: &str,
+        size_px: f32,
+        features: &[[u8; 4]],
+        script_tag: Option<[u8; 4]>,
+    ) -> Vec<crate::shaper::PositionedGlyph> {
+        match self.ttf() {
+            Ok(font) => crate::shaping::feature_subst::position_text_inner(
+                font,
+                &self.plan,
+                text,
+                size_px,
+                features,
+                script_tag,
+                &[],
+                0,
+            ),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Round 377 — resolve a Unicode [`intl::unicode::script::Script`] to
@@ -1322,20 +1359,15 @@ impl Face {
     /// degradation.
     pub fn resolve_ot_script_tag(&self, script: intl::unicode::script::Script) -> [u8; 4] {
         let tags = crate::script::ot_script_tags(script);
-        // OTF (CFF) faces don't expose GSUB through `with_font`; return
-        // the primary tag and let cmap-only shaping handle it.
-        if self.kind != FaceKind::Ttf {
+        // OTF (CFF) faces don't expose GSUB here; return the primary
+        // tag and let cmap-only shaping handle it.
+        let Ok(font) = self.ttf() else {
             return tags[0];
-        }
-        self.with_font(|font| {
-            for &tag in tags {
-                if !font.gsub_features_for_script(tag, None).is_empty() {
-                    return tag;
-                }
-            }
-            tags[0]
-        })
-        .unwrap_or(tags[0])
+        };
+        tags.iter()
+            .copied()
+            .find(|&tag| !self.plan.gsub_features(font, tag).is_empty())
+            .unwrap_or(tags[0])
     }
 
     /// Round 377 — shape a **mixed-script** string by itemising it into

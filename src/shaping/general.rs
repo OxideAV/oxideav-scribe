@@ -64,6 +64,7 @@
 //! for the required-feature / feature-ordering semantics, plus the
 //! registered-feature catalogue under `docs/text/opentype/registries/`.
 
+use crate::shaping::plan::LayoutPlan;
 use oxideav_ttf::Font;
 
 /// Apply `ccmp` (Glyph Composition / Decomposition) substitutions to
@@ -78,7 +79,12 @@ use oxideav_ttf::Font;
 /// because the lookups are designed to fire at most once per glyph
 /// (coverage table excludes the post-substitution glyph).
 pub fn apply_ccmp(font: &Font<'_>, gids: &[u16]) -> Vec<u16> {
-    apply_feature(font, gids, b"ccmp")
+    apply_feature(font, &LayoutPlan::new(), gids, b"ccmp")
+}
+
+/// [`apply_ccmp`] with the font's kept [`LayoutPlan`].
+pub(crate) fn apply_ccmp_planned(font: &Font<'_>, plan: &LayoutPlan, gids: &[u16]) -> Vec<u16> {
+    apply_feature(font, plan, gids, b"ccmp")
 }
 
 /// Apply `calt` (Contextual Alternates) substitutions to `gids`.
@@ -89,7 +95,12 @@ pub fn apply_ccmp(font: &Font<'_>, gids: &[u16]) -> Vec<u16> {
 /// See [`apply_ccmp`] for the script-tag probing strategy and the
 /// no-op-when-absent contract.
 pub fn apply_calt(font: &Font<'_>, gids: &[u16]) -> Vec<u16> {
-    apply_feature(font, gids, b"calt")
+    apply_feature(font, &LayoutPlan::new(), gids, b"calt")
+}
+
+/// [`apply_calt`] with the font's kept [`LayoutPlan`].
+pub(crate) fn apply_calt_planned(font: &Font<'_>, plan: &LayoutPlan, gids: &[u16]) -> Vec<u16> {
+    apply_feature(font, plan, gids, b"calt")
 }
 
 /// Generic feature-tag dispatcher used by [`apply_ccmp`] / [`apply_calt`].
@@ -97,7 +108,12 @@ pub fn apply_calt(font: &Font<'_>, gids: &[u16]) -> Vec<u16> {
 /// script publishes for `feature_tag`. Each lookup is dispatched
 /// according to its declared GSUB LookupType — types 1, 2, 4, 5, 6
 /// are all covered.
-fn apply_feature(font: &Font<'_>, gids: &[u16], feature_tag: &[u8; 4]) -> Vec<u16> {
+fn apply_feature(
+    font: &Font<'_>,
+    plan: &LayoutPlan,
+    gids: &[u16],
+    feature_tag: &[u8; 4],
+) -> Vec<u16> {
     if gids.is_empty() {
         return Vec::new();
     }
@@ -106,39 +122,19 @@ fn apply_feature(font: &Font<'_>, gids: &[u16], feature_tag: &[u8; 4]) -> Vec<u1
     // are applied, the rest of the list is ignored. This matches
     // production shapers' "one script per run" semantics without
     // requiring scribe to know the codepoint script for each glyph.
-    let script_tags: [[u8; 4]; 4] = [*b"latn", *b"cyrl", *b"grek", *b"DFLT"];
-    let mut chosen_lookups: Vec<u16> = Vec::new();
-    for tag in script_tags {
-        let features = font.gsub_features_for_script(tag, None);
-        for feat in features {
-            if &feat.tag == feature_tag {
-                chosen_lookups.extend_from_slice(&feat.lookup_indices);
-            }
-        }
-        if !chosen_lookups.is_empty() {
-            break;
-        }
-    }
+    // The plan keeps the answer (and each lookup's type) per font.
+    let chosen_lookups = plan.general_lookups(font, feature_tag);
     if chosen_lookups.is_empty() {
         return gids.to_vec();
     }
 
-    // Resolve each chosen lookup's type once.
-    let lookup_list = font.gsub_lookup_list();
-    let lookup_type = |idx: u16| -> Option<u16> {
-        lookup_list
-            .iter()
-            .find(|(i, _, _)| *i == idx)
-            .map(|(_, ty, _)| *ty)
-    };
-
     let mut current: Vec<u16> = gids.to_vec();
-    for lookup_idx in chosen_lookups {
-        let ty = match lookup_type(lookup_idx) {
+    for &lookup_idx in chosen_lookups.iter() {
+        let ty = match plan.gsub_lookup_type(font, lookup_idx) {
             Some(t) => t,
             None => continue,
         };
-        current = apply_one_lookup(font, lookup_idx, ty, &current);
+        current = apply_one_lookup(font, lookup_idx, ty, current);
     }
     current
 }
@@ -161,8 +157,8 @@ fn apply_feature(font: &Font<'_>, gids: &[u16], feature_tag: &[u8; 4]) -> Vec<u1
 /// position so that a follow-on rule can match the new glyph. Iteration
 /// is bounded by `4 * gids.len() + 8` to prevent pathological loops in
 /// fonts whose chained-context rules might otherwise be self-feeding.
-fn apply_one_lookup(font: &Font<'_>, lookup_idx: u16, ty: u16, gids: &[u16]) -> Vec<u16> {
-    let mut current: Vec<u16> = gids.to_vec();
+fn apply_one_lookup(font: &Font<'_>, lookup_idx: u16, ty: u16, gids: Vec<u16>) -> Vec<u16> {
+    let mut current = gids;
     if current.is_empty() {
         return current;
     }

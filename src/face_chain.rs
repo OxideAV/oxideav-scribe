@@ -26,7 +26,7 @@
 
 use crate::Error;
 use crate::face::Face;
-use crate::shaper::{PositionedGlyph, shape_run_with_font};
+use crate::shaper::{PositionedGlyph, shape_run_planned};
 use crate::shaping::arabic::{Script, compute_forms, script_of};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::indic::{
@@ -35,6 +35,7 @@ use crate::shaping::indic::{
     SINHALA_RULES, TAMIL_RULES, TELUGU_RULES, THAI_RULES, cluster_boundaries_with,
     reorder_cluster_with, script_indic_tags,
 };
+use crate::shaping::plan::LayoutPlan;
 use crate::style::Style;
 
 /// The chain's faces as parsed views. Each face keeps the view it
@@ -54,6 +55,11 @@ impl<'a> ParsedFaces<'a> {
     /// The parsed view of face `idx`.
     fn font(&mut self, idx: usize) -> Result<&'a oxideav_ttf::Font<'a>, Error> {
         self.faces[idx].ttf()
+    }
+
+    /// The kept shaping plan of face `idx`.
+    fn plan(&self, idx: usize) -> &'a LayoutPlan {
+        self.faces[idx].layout_plan()
     }
 }
 
@@ -198,7 +204,8 @@ impl FaceChain {
             }
             let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
             let font = parsed.font(face_idx as usize)?;
-            let mut run_glyphs = shape_run_with_font(font, &gids, size_px, face_idx);
+            let plan = parsed.plan(face_idx as usize);
+            let mut run_glyphs = shape_run_planned(font, plan, &gids, size_px, face_idx);
             out.append(&mut run_glyphs);
             run_start = run_end;
         }
@@ -265,8 +272,13 @@ impl FaceChain {
             let font = parsed.font(face_idx as usize)?;
             let upem = font.units_per_em().max(1) as f32;
             let scale = size_px / upem;
-            let mut run_glyphs = crate::shaping::position_gids_with_features_with_font(
-                font, &gids, scale, features, face_idx,
+            let mut run_glyphs = crate::shaping::feature_subst::position_gids_with_features_planned(
+                font,
+                parsed.plan(face_idx as usize),
+                &gids,
+                scale,
+                features,
+                face_idx,
             );
             out.append(&mut run_glyphs);
             run_start = run_end;
@@ -505,10 +517,10 @@ impl FaceChain {
             let new_ra = {
                 let mut substitute: Option<u16> = None;
                 for tag in [modern, legacy] {
-                    let features = font.gsub_features_for_script(tag, None);
-                    for feat in features {
+                    let features = parsed.plan(ra_face_idx as usize).gsub_features(font, tag);
+                    for feat in features.iter() {
                         if feat.tag == *b"rphf" {
-                            for &lookup_idx in &feat.lookup_indices {
+                            for &lookup_idx in &feat.lookups {
                                 if let Some(g) = font.gsub_apply_lookup_type_1(lookup_idx, ra_gid) {
                                     substitute = Some(g);
                                     break;
@@ -737,12 +749,12 @@ impl FaceChain {
                 let mut gids = gid_slice.clone();
                 for feat_tag in CONTEXT_FEATURES {
                     for tag in [modern, legacy] {
-                        let features = font.gsub_features_for_script(tag, None);
-                        for feat in &features {
+                        let features = parsed.plan(face_idx as usize).gsub_features(font, tag);
+                        for feat in features.iter() {
                             if &feat.tag != *feat_tag {
                                 continue;
                             }
-                            for &lookup_idx in &feat.lookup_indices {
+                            for &lookup_idx in &feat.lookups {
                                 // Try LookupType 5 then LookupType 6 at
                                 // every position inside the cluster.
                                 // The first successful rewrite wins per
@@ -813,10 +825,10 @@ impl FaceChain {
         let font = parsed.font(face_idx as usize)?;
         let new_gid = (|| {
             for tag in [modern, legacy] {
-                let features = font.gsub_features_for_script(tag, None);
-                for feat in features {
+                let features = parsed.plan(face_idx as usize).gsub_features(font, tag);
+                for feat in features.iter() {
                     if &feat.tag == feature_tag {
-                        for &lookup_idx in &feat.lookup_indices {
+                        for &lookup_idx in &feat.lookups {
                             if let Some(g) = font.gsub_apply_lookup_type_1(lookup_idx, gid) {
                                 return Some(g);
                             }

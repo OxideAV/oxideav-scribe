@@ -210,6 +210,7 @@
 //! coverage table determines per-glyph whether it fires. Lookups
 //! whose coverage doesn't match are a silent no-op.
 
+use crate::shaping::plan::LayoutPlan;
 use oxideav_ttf::Font;
 
 /// Shape `text` against `font` with the caller-specified GSUB
@@ -236,7 +237,7 @@ use oxideav_ttf::Font;
 /// See the module-level docs for the lookup-type and script-tag
 /// scoping rules.
 pub fn shape_text_with_font(font: &Font<'_>, text: &str, features: &[[u8; 4]]) -> Vec<u16> {
-    shape_text_inner(font, text, features, None, &[])
+    shape_text_inner(font, &LayoutPlan::new(), text, features, None, &[])
 }
 
 /// Round 183 — shape `text` against `font` with the caller-specified
@@ -276,7 +277,14 @@ pub fn shape_text_with_alternates_with_font(
     feature_alternates: &[([u8; 4], u16)],
 ) -> Vec<u16> {
     let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
-    shape_text_inner(font, text, &features, None, feature_alternates)
+    shape_text_inner(
+        font,
+        &LayoutPlan::new(),
+        text,
+        &features,
+        None,
+        feature_alternates,
+    )
 }
 
 /// Shape `text` against `font` with the caller-specified GSUB feature
@@ -316,7 +324,14 @@ pub fn shape_text_with_script_with_font(
     script_tag: [u8; 4],
     features: &[[u8; 4]],
 ) -> Vec<u16> {
-    shape_text_inner(font, text, features, Some(script_tag), &[])
+    shape_text_inner(
+        font,
+        &LayoutPlan::new(),
+        text,
+        features,
+        Some(script_tag),
+        &[],
+    )
 }
 
 /// Round 183 — explicit-script-tag mirror of
@@ -340,7 +355,14 @@ pub fn shape_text_with_script_and_alternates_with_font(
     feature_alternates: &[([u8; 4], u16)],
 ) -> Vec<u16> {
     let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
-    shape_text_inner(font, text, &features, Some(script_tag), feature_alternates)
+    shape_text_inner(
+        font,
+        &LayoutPlan::new(),
+        text,
+        &features,
+        Some(script_tag),
+        feature_alternates,
+    )
 }
 
 /// Round 362 — shape `text` against `font` with the caller-specified
@@ -383,7 +405,16 @@ pub fn position_text_with_features_with_font(
     features: &[[u8; 4]],
     face_idx: u16,
 ) -> Vec<crate::shaper::PositionedGlyph> {
-    position_text_inner(font, text, size_px, features, None, &[], face_idx)
+    position_text_inner(
+        font,
+        &LayoutPlan::new(),
+        text,
+        size_px,
+        features,
+        None,
+        &[],
+        face_idx,
+    )
 }
 
 /// Round 362 — explicit-script-tag mirror of
@@ -404,6 +435,7 @@ pub fn position_text_with_script_and_features_with_font(
 ) -> Vec<crate::shaper::PositionedGlyph> {
     position_text_inner(
         font,
+        &LayoutPlan::new(),
         text,
         size_px,
         features,
@@ -431,6 +463,7 @@ pub fn position_text_with_alternates_with_font(
     let features: Vec<[u8; 4]> = feature_alternates.iter().map(|(tag, _)| *tag).collect();
     position_text_inner(
         font,
+        &LayoutPlan::new(),
         text,
         size_px,
         &features,
@@ -455,8 +488,10 @@ pub fn position_text_with_alternates_with_font(
 /// returns an opaque rewritten run), so the whole component vector resets
 /// to all-1 — matching the `calt`-mutation fallback in
 /// [`crate::shaper::shape_run_with_font`].
-fn position_text_inner(
+#[allow(clippy::too_many_arguments)] // one positioning request, spelled out
+pub(crate) fn position_text_inner(
     font: &Font<'_>,
+    plan: &LayoutPlan,
     text: &str,
     size_px: f32,
     features: &[[u8; 4]],
@@ -478,13 +513,14 @@ fn position_text_inner(
 
     let (gids, comps) = substitute_features_tracking_components(
         font,
+        plan,
         &raw_gids,
         features,
         script_tag,
         feature_alternates,
     );
 
-    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+    crate::shaper::position_run_planned(font, plan, &gids, &comps, scale, face_idx)
 }
 
 /// Round 362 — position an **already-cmap'd** glyph run through the
@@ -508,12 +544,32 @@ pub fn position_gids_with_features_with_font(
     features: &[[u8; 4]],
     face_idx: u16,
 ) -> Vec<crate::shaper::PositionedGlyph> {
+    position_gids_with_features_planned(
+        font,
+        &LayoutPlan::new(),
+        raw_gids,
+        scale,
+        features,
+        face_idx,
+    )
+}
+
+/// [`position_gids_with_features_with_font`] with the font's kept
+/// [`LayoutPlan`].
+pub(crate) fn position_gids_with_features_planned(
+    font: &Font<'_>,
+    plan: &LayoutPlan,
+    raw_gids: &[u16],
+    scale: f32,
+    features: &[[u8; 4]],
+    face_idx: u16,
+) -> Vec<crate::shaper::PositionedGlyph> {
     if raw_gids.is_empty() {
         return Vec::new();
     }
     let (gids, comps) =
-        substitute_features_tracking_components(font, raw_gids, features, None, &[]);
-    crate::shaper::position_run_with_font(font, &gids, &comps, scale, face_idx)
+        substitute_features_tracking_components(font, plan, raw_gids, features, None, &[]);
+    crate::shaper::position_run_planned(font, plan, &gids, &comps, scale, face_idx)
 }
 
 /// Apply the caller-requested GSUB `features` to `raw_gids`, returning
@@ -536,6 +592,7 @@ pub fn position_gids_with_features_with_font(
 /// provides per-feature Type-3 alternate indices (default 0).
 fn substitute_features_tracking_components(
     font: &Font<'_>,
+    plan: &LayoutPlan,
     raw_gids: &[u16],
     features: &[[u8; 4]],
     script_tag: Option<[u8; 4]>,
@@ -550,18 +607,12 @@ fn substitute_features_tracking_components(
         return (gids, comps);
     }
 
-    let lookup_list = font.gsub_lookup_list();
-    let lookup_type_of = |idx: u16| -> Option<u16> {
-        lookup_list
-            .iter()
-            .find(|(i, _, _)| *i == idx)
-            .map(|(_, ty, _)| *ty)
-    };
+    let lookup_type_of = |idx: u16| plan.gsub_lookup_type(font, idx);
 
     for feature_tag in features {
         let lookups = match script_tag {
-            Some(tag) => resolve_feature_lookups_single_script(font, tag, feature_tag),
-            None => resolve_feature_lookups(font, feature_tag),
+            Some(tag) => plan.gsub_feature_lookups(font, tag, feature_tag),
+            None => resolve_feature_lookups(font, plan, feature_tag),
         };
         let alt_index: u16 = feature_alternates
             .iter()
@@ -675,8 +726,9 @@ fn substitute_features_tracking_components(
 /// for Type-3 lookups; otherwise the round-156 default `0` applies.
 /// The list is short in practice (typically 1-3 entries), so a linear
 /// search per feature is cheaper than building a hash map.
-fn shape_text_inner(
+pub(crate) fn shape_text_inner(
     font: &Font<'_>,
+    plan: &LayoutPlan,
     text: &str,
     features: &[[u8; 4]],
     script_tag: Option<[u8; 4]>,
@@ -696,18 +748,12 @@ fn shape_text_inner(
     }
 
     // Step 2: per-feature dispatch.
-    let lookup_list = font.gsub_lookup_list();
-    let lookup_type_of = |idx: u16| -> Option<u16> {
-        lookup_list
-            .iter()
-            .find(|(i, _, _)| *i == idx)
-            .map(|(_, ty, _)| *ty)
-    };
+    let lookup_type_of = |idx: u16| plan.gsub_lookup_type(font, idx);
 
     for feature_tag in features {
         let lookups = match script_tag {
-            Some(tag) => resolve_feature_lookups_single_script(font, tag, feature_tag),
-            None => resolve_feature_lookups(font, feature_tag),
+            Some(tag) => plan.gsub_feature_lookups(font, tag, feature_tag),
+            None => resolve_feature_lookups(font, plan, feature_tag),
         };
         // Round 183: per-feature Type-3 alternate index — defaults to
         // 0 (round-156 contract) when this feature isn't named in
@@ -962,34 +1008,14 @@ fn apply_reverse_chain_lookup(font: &Font<'_>, lookup_idx: u16, gids: &mut [u16]
 /// deterministic single-script resolution should drop to
 /// [`shape_text_with_script_with_font`] which takes an explicit
 /// script tag.
-fn resolve_feature_lookups(font: &Font<'_>, feature_tag: &[u8; 4]) -> Vec<u16> {
+fn resolve_feature_lookups(font: &Font<'_>, plan: &LayoutPlan, feature_tag: &[u8; 4]) -> Vec<u16> {
     for &tag in script_tag_probe_list() {
-        let hits = resolve_feature_lookups_single_script(font, tag, feature_tag);
+        let hits = plan.gsub_feature_lookups(font, tag, feature_tag);
         if !hits.is_empty() {
             return hits;
         }
     }
     Vec::new()
-}
-
-/// Resolve `feature_tag` against `script_tag` alone (no priority
-/// walk). Returns the lookup indices of every matching feature
-/// record on the script's DefaultLangSys, in declaration order.
-/// Empty when `script_tag` is unknown to the font or its feature
-/// list doesn't contain `feature_tag`.
-fn resolve_feature_lookups_single_script(
-    font: &Font<'_>,
-    script_tag: [u8; 4],
-    feature_tag: &[u8; 4],
-) -> Vec<u16> {
-    let mut hits: Vec<u16> = Vec::new();
-    let features = font.gsub_features_for_script(script_tag, None);
-    for feat in features {
-        if &feat.tag == feature_tag {
-            hits.extend_from_slice(&feat.lookup_indices);
-        }
-    }
-    hits
 }
 
 /// The script-tag priority list used by [`resolve_feature_lookups`].
@@ -1445,7 +1471,7 @@ mod tests {
                     break;
                 }
             }
-            let round175_hits = resolve_feature_lookups(font, b"smcp");
+            let round175_hits = resolve_feature_lookups(font, &LayoutPlan::new(), b"smcp");
             assert_eq!(
                 round15_hits, round175_hits,
                 "broadened probe must preserve the round-15 `smcp`/`latn` resolution"

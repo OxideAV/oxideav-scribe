@@ -52,6 +52,7 @@ pub mod contextual_pos;
 pub mod feature_subst;
 pub mod general;
 pub mod indic;
+pub(crate) mod plan;
 
 pub use arabic::{
     JoiningClass, JoiningForm, Script, compute_forms, feature_tags_for_run, joining_class,

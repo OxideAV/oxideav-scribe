@@ -59,6 +59,7 @@
 //!   horizontal pen (kept for parity with the rest of the pipeline).
 
 use crate::shaper::PositionedGlyph;
+use crate::shaping::plan::LayoutPlan;
 use oxideav_ttf::Font;
 
 /// Apply every GPOS contextual (LookupType 7) and chained-contextual
@@ -83,6 +84,16 @@ use oxideav_ttf::Font;
 /// is possible because positioning never changes the glyph ids the next
 /// lookup matches against.
 pub fn apply_contextual_pos(font: &Font<'_>, out: &mut [PositionedGlyph], scale: f32) {
+    apply_contextual_pos_planned(font, &LayoutPlan::new(), out, scale);
+}
+
+/// [`apply_contextual_pos`] with the font's kept [`LayoutPlan`].
+pub(crate) fn apply_contextual_pos_planned(
+    font: &Font<'_>,
+    plan: &LayoutPlan,
+    out: &mut [PositionedGlyph],
+    scale: f32,
+) {
     // An empty run has nothing to match against. A single-glyph run can
     // still match a one-glyph input context, so it is NOT short-circuited
     // here — it flows through the normal path below (where the lookup-list
@@ -96,12 +107,7 @@ pub fn apply_contextual_pos(font: &Font<'_>, out: &mut [PositionedGlyph], scale:
     // after ExtensionPos unwrap, which `gpos_lookup_list` reports) in
     // ascending lookup-index order. The list is already index-ordered;
     // we filter and preserve that order.
-    let ctx_lookups: Vec<(u16, u16)> = font
-        .gpos_lookup_list()
-        .into_iter()
-        .filter(|&(_, ty, _)| ty == 7 || ty == 8)
-        .map(|(idx, ty, _)| (idx, ty))
-        .collect();
+    let ctx_lookups = &plan.gpos(font).contextual;
     if ctx_lookups.is_empty() {
         return;
     }
@@ -110,7 +116,7 @@ pub fn apply_contextual_pos(font: &Font<'_>, out: &mut [PositionedGlyph], scale:
     // single buffer serves every lookup and every position.
     let gids: Vec<u16> = out.iter().map(|g| g.glyph_id).collect();
 
-    for (lookup_index, ty) in ctx_lookups {
+    for &(lookup_index, ty) in ctx_lookups {
         for pos in 0..gids.len() {
             let records = match ty {
                 7 => font.gpos_apply_lookup_type_7(lookup_index, &gids, pos),
