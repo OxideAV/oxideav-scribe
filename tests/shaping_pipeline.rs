@@ -442,3 +442,155 @@ fn emoji_presentation_selects_the_colour_face() {
     assert_eq!(g.len(), 2);
     assert_eq!((g[0].cluster, g[1].cluster), (0, 8));
 }
+
+/// Arbitrary character soup — lone marks, halant and joiner chains,
+/// unpaired jamo, selectors with nothing to select, mixed directions —
+/// through every entry point on every committed font: nothing panics,
+/// clusters stay inside the text, advances stay finite.
+#[test]
+fn arbitrary_text_shapes_without_panicking() {
+    const POOL: &[char] = &[
+        'a',
+        'f',
+        'i',
+        ' ',
+        '\t',
+        '-',
+        '(',
+        ')',
+        '1',
+        'Q',
+        '\u{301}',
+        '\u{323}',
+        '\u{308}',
+        '\u{34f}',
+        '\u{ad}',
+        '\u{200c}',
+        '\u{200d}',
+        '\u{200e}',
+        '\u{202e}',
+        '\u{2028}',
+        '\u{fe0f}',
+        '\u{fe0e}',
+        '\u{fe00}',
+        '\u{5d0}',
+        '\u{5e9}',
+        '\u{5bc}',
+        '\u{5c1}',
+        '\u{5b8}',
+        '\u{627}',
+        '\u{628}',
+        '\u{644}',
+        '\u{64e}',
+        '\u{651}',
+        '\u{640}',
+        '\u{661}',
+        '\u{6cc}',
+        '\u{915}',
+        '\u{930}',
+        '\u{94d}',
+        '\u{93f}',
+        '\u{93c}',
+        '\u{902}',
+        '\u{905}',
+        '\u{940}',
+        '\u{995}',
+        '\u{9cd}',
+        '\u{9c7}',
+        '\u{9cb}',
+        '\u{9be}',
+        '\u{9b0}',
+        '\u{c95}',
+        '\u{ccd}',
+        '\u{cc6}',
+        '\u{cca}',
+        '\u{e01}',
+        '\u{e33}',
+        '\u{e48}',
+        '\u{e40}',
+        '\u{1100}',
+        '\u{1161}',
+        '\u{11a8}',
+        '\u{ac00}',
+        '\u{65e5}',
+        '\u{3001}',
+        '\u{30fc}',
+        '\u{e0100}',
+        '\u{1f600}',
+        '\u{1f3fd}',
+        '\u{1f1ef}',
+        '\u{1f1f5}',
+        '\u{20e3}',
+        '\u{e007f}',
+        '\u{a0}',
+        '\u{2003}',
+        '\u{25cc}',
+        '\u{10ffff}',
+        '\u{0}',
+        '\n',
+        '\r',
+    ];
+    let chains = [
+        FaceChain::new(dejavu()),
+        FaceChain::new(source_sans()).push_fallback(dejavu()),
+        FaceChain::new(Face::from_ttf_bytes(INTER.to_vec()).unwrap()),
+        FaceChain::new(Face::from_ttf_bytes(NOTO_ARABIC.to_vec()).unwrap()).push_fallback(dejavu()),
+    ];
+    let vertical = ShapeOptions::new().with_vertical(true);
+    let featured = ShapeOptions::new()
+        .with_feature(*b"smcp", true)
+        .with_feature(*b"liga", false)
+        .with_feature_value(*b"salt", 3)
+        .with_language(Some(*b"URD "));
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for round in 0..1500 {
+        let len = 1 + (next() % 24) as usize;
+        let text: String = (0..len)
+            .map(|_| POOL[(next() % POOL.len() as u64) as usize])
+            .collect();
+        let chain = &chains[round % chains.len()];
+        let check = |glyphs: &[PositionedGlyph]| {
+            for g in glyphs {
+                assert!((g.cluster as usize) < text.len(), "{text:?}: {g:?}");
+                assert!(text.is_char_boundary(g.cluster as usize), "{text:?}: {g:?}");
+                assert!(g.x_advance.is_finite() && g.y_advance.is_finite());
+                assert!(g.x_offset.is_finite() && g.y_offset.is_finite());
+                assert!((g.face_idx as usize) < chain.len());
+            }
+        };
+        check(&chain.shape(&text, 16.0).unwrap());
+        check(&chain.shape_with_options(&text, 16.0, &vertical).unwrap());
+        check(&chain.shape_with_options(&text, 16.0, &featured).unwrap());
+        check(
+            &chain
+                .shape_visual_run(&text, 16.0, &featured, true)
+                .unwrap(),
+        );
+        check(
+            &oxideav_scribe::shape_visual_line(chain, &text, 16.0, None)
+                .unwrap()
+                .glyphs,
+        );
+        let _ = Shaper::shape(chain.primary(), &text, 16.0).unwrap();
+        for max in [0.0, 1.0, 40.0] {
+            let opts =
+                oxideav_scribe::LayoutOptions::new(max).with_align(oxideav_scribe::Align::Justify);
+            let lines = oxideav_scribe::layout_text(chain, &text, 16.0, &opts).unwrap();
+            let mut covered = 0usize;
+            for line in &lines {
+                check(&line.glyphs);
+                assert!(line.text_range.end <= text.len());
+                assert!(line.extent.is_finite() && line.offset.is_finite());
+                covered += line.text_range.len();
+            }
+            assert!(covered <= text.len(), "{text:?}");
+            let _ = oxideav_scribe::shape_paragraphs(chain, &text, 16.0, max, None).unwrap();
+        }
+    }
+}

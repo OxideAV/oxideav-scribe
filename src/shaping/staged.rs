@@ -110,6 +110,9 @@ const SKIP_FLAGS: u16 = 0xFF1E;
 const CONTEXT_BEFORE: usize = 32;
 const CONTEXT_AFTER: usize = 64;
 
+/// How many times its initial length substitution may grow a run.
+const MAX_GROWTH: usize = 16;
+
 /// The longest ligature a lookup is offered, in components.
 const LIGATURE_COMPONENTS: usize = 24;
 
@@ -176,6 +179,8 @@ pub(crate) fn plan_stage(
 #[derive(Debug, Default)]
 pub(crate) struct Buffer {
     pub(crate) glyphs: Vec<Glyph>,
+    /// Longest the buffer may become through substitution.
+    limit: usize,
     /// Lookups may not match across a change of [`Glyph::group`]
     /// (syllable-by-syllable shaping).
     pub(crate) bounded: bool,
@@ -200,6 +205,10 @@ pub(crate) struct Buffer {
 impl Buffer {
     pub(crate) fn new(glyphs: Vec<Glyph>) -> Self {
         Self {
+            // One-to-many substitutions may grow a run, but not without
+            // bound: a font whose lookups each multiply the glyphs
+            // would otherwise grow it exponentially.
+            limit: glyphs.len().saturating_mul(MAX_GROWTH).saturating_add(256),
             glyphs,
             bounded: false,
             joiners_block: false,
@@ -398,7 +407,7 @@ impl Buffer {
                         self.replace(font, plan, i, seq[0]);
                         i += 1;
                     }
-                    Some(seq) if !seq.is_empty() => {
+                    Some(seq) if !seq.is_empty() && self.glyphs.len() + seq.len() <= self.limit => {
                         let n = seq.len();
                         let expanded = seq.into_iter().map(|gid| Glyph {
                             gid,
@@ -555,6 +564,9 @@ impl Buffer {
                 self.ligate(font, plan, &targets, new_mid[0]);
                 self.dirty = true;
                 i = targets[0] + 1;
+            } else if self.glyphs.len() + new_mid.len() > self.limit {
+                // Growth bound reached: leave the glyphs as they are.
+                i += 1;
             } else if let Some(&at) = targets.first() {
                 // n glyphs become m: the new glyphs take the place of
                 // the first, the rest of the old ones go.
