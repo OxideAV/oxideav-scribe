@@ -52,7 +52,8 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   the Y-flip + scale into a render-ready `Node::Path` (or `Node::Image`
   for CBDT colour glyphs).
 - **Parse-once faces** — a `Face` parses its font exactly once, at
-  construction, and keeps the parsed view next to the bytes for its
+  construction (a CFF face builds two views of its bytes then: the
+  outline view and the layout view shaping reads), and keeps the parsed view next to the bytes for its
   whole life. Every per-glyph entry point (`glyph_path`, `glyph_node`,
   the colour-bitmap queries, advance / metric deltas, `glyph_name`,
   feature queries, shaping) borrows that view; `with_font` /
@@ -318,8 +319,46 @@ the byte offset of the glyph's cluster in the text). Per call:
   to the font's intent without hard-coding `romn`. Works for both TTF and
   OTF/CFF faces; `None` when the table, axis, script, or baseline tag is
   absent.
-- **Line layout** — line measurement + word-wrap. `layout::wrap_lines`
-  breaks logical text to a pixel width; `layout::wrap_and_shape_lines(
+- **Paragraph layout** — `layout_text(chain, text, size_px,
+  &LayoutOptions)` lays a whole text out as lines (`LaidOutLine`:
+  glyphs in visual order with clusters into the text, the line's byte
+  range, its offset in the measure and its extent):
+
+  ```rust
+  use oxideav_scribe::{Align, LayoutOptions, layout_text};
+  # fn demo(chain: &oxideav_scribe::FaceChain, text: &str) -> Result<(), oxideav_scribe::Error> {
+  let opts = LayoutOptions::new(480.0)        // measure, in pixels
+      .with_align(Align::Justify)
+      .with_tab_stops(vec![120.0, 240.0]);
+  for line in layout_text(chain, text, 16.0, &opts)? {
+      // pen starts at line.offset; paint line.glyphs left to right
+  }
+  # Ok(()) }
+  ```
+
+  - **Breaking** at the opportunities of UAX #14 (spaces, hyphens,
+    solidus, between ideographs, never before closing punctuation or
+    inside a grapheme cluster; line separators force a break), filled
+    greedily; white space at a line's end hangs outside the measure; a
+    segment longer than the measure is cut between grapheme clusters.
+  - **Paragraphs** split on the UAX #9 paragraph separators (CR LF
+    counted once), each with its own base direction (or a fixed one).
+  - **Alignment** `Start` / `End` (direction-relative), `Left` /
+    `Right`, `Center`, `Justify` (word spaces widened; the last line
+    and lines ended by a forced break stay ragged).
+  - **Tabs** advance the pen to the next explicit stop, then to
+    multiples of the tab interval (default eight space widths),
+    measured from the paragraph's start edge; a tab is drawn with the
+    space glyph.
+  - **Vertical** lines with `ShapeOptions::with_vertical(true)`: the
+    measure limits the column height and glyphs carry `y_advance`.
+  - Linear in the text length: each segment between two break
+    opportunities is shaped once and remembered, plus the pair
+    interaction at each joint.
+- **Line layout** — line measurement + word-wrap on white space only.
+  `layout::wrap_lines` breaks logical text to a pixel width (the same
+  lines as shaping every candidate whole, found in linear time);
+  `layout::wrap_and_shape_lines(
   chain, text, size_px, max_width, base_level)` is the one-call path that
   wraps **and** shapes each produced line into a `ShapedVisualLine`
   (bidi-ordered, render-ready), one per display line top-to-bottom.
@@ -468,16 +507,64 @@ glyph is the outline walk itself; with a cache, a copy-and-scale of the
 kept path (and, for colour emoji, a resample of the kept strike instead
 of a PNG decode).
 
-Shaping no longer rebuilds lookup or feature lists per call (a per-face
-layout plan keeps them): thirty short labels through `FaceChain::shape`
-take 152 µs instead of 204 µs on DejaVu Sans. What remains in shaping
-is the per-glyph `GSUB` / `GPOS` lookup matching inside the font
-parser — about 85 % of a shaping call in a sampling profile (ligature
-lookup, chained-context matching, pair kerning, coverage search).
-
 Face construction is unchanged (about 0.19 ms for DejaVu Sans, 0.11 ms
 for Inter Variable with `oxideav-ttf` 0.1.8, which parses every table
 up front); it is paid once per face.
+
+### Shaping and layout
+
+`cargo bench --bench shaping` (std-only timing, release, median of 9
+batches on a shared build machine; "before" is the previous release's
+pipeline built against the same `oxideav-ttf` 0.1.9):
+
+| case | before | now |
+|------|-------:|----:|
+| Latin paragraph shape, warm, DejaVu Sans (471 glyphs) | 133 µs — 0.28 µs/glyph | 17.5 µs — 0.037 µs/glyph |
+| Latin paragraph shape, warm, Inter Variable (479 glyphs) | 484 µs — 1.01 µs/glyph | 22.8 µs — 0.048 µs/glyph |
+| Latin paragraph shape, warm, Source Sans 3 (CFF) | not shapeable | 23.8 µs — 0.050 µs/glyph |
+| Latin paragraph shape, cold (new face + first call), DejaVu Sans | 313 µs | 152 µs |
+| Latin paragraph shape, cold, Inter Variable | 565 µs | 152 µs |
+| Latin, one call per word (79 calls, 390 glyphs), DejaVu Sans | 137 µs | 47.6 µs |
+| Arabic paragraph shape, warm, DejaVu Sans (350 glyphs) | 102 µs — 0.29 µs/glyph | 78.7 µs — 0.22 µs/glyph |
+| Arabic paragraph shape, warm, Noto Sans Arabic | 56.6 µs — 0.18 µs/glyph | 39.8 µs — 0.11 µs/glyph |
+| Arabic paragraph shape, cold, DejaVu Sans | 274 µs | 262 µs |
+| Arabic paragraph shape, cold, Noto Sans Arabic | 128 µs | 118 µs |
+| 100 000-character document, `shape_paragraphs` at 480 px, Latin, DejaVu Sans | 175 ms | 6.6 ms |
+| same, Inter Variable | 627 ms | 6.6 ms |
+| same, Arabic, Noto Sans Arabic | 82.7 ms | 20.5 ms |
+| 100 000-character document, `layout_text` justified, Latin, DejaVu Sans | — | 7.8 ms |
+| same, Arabic, Noto Sans Arabic | — | 21.8 ms |
+| `glyph_path`, 471 glyphs, DejaVu Sans | 97 µs — 0.21 µs/glyph | 101 µs — 0.21 µs/glyph |
+| `glyph_node`, 479 glyphs, Inter Variable | 129 µs — 0.27 µs/glyph | 125 µs — 0.26 µs/glyph |
+
+The "before" Arabic rows shaped through presentation-form code points
+with a fixed lookup sequence; "now" runs the font's own joining, mark
+and contextual lookups with per-glyph feature selection (see
+[Shaping conformance](#shaping-conformance)) and is still faster.
+
+Where the time went and what removed it:
+
+- **Lookup matching per glyph.** Latin-type runs are applied by the
+  font parser's engine, which resolves the feature set to a lookup plan
+  once per face and skips lookups whose first-glyph set the run cannot
+  hit. The staged engine (Arabic, Indic) builds, per lookup, one view
+  of the glyphs the lookup does not skip and hands context windows out
+  as slices of it; the `lookupFlag` skip answer and the GDEF mark class
+  of each glyph, the lookup list of each stage, and the consonant forms
+  the Indic procedure reads from the font are kept per face; single
+  substitutions go through a 4096-slot memo.
+- **Per-call feature resolution.** Script tags, feature lists and stage
+  plans are resolved once per face and script.
+- **Quadratic line filling.** Wrapping used to shape the whole
+  candidate line again for every word; it now adds remembered token
+  widths and joint interactions, and one width memo serves a whole
+  document. ASCII text skips the script-property lookups, and a line
+  with no character at or above U+0590 skips the bidi rules (every
+  such line is a single left-to-right run).
+- **No per-glyph font parsing.** `glyph_path` / `glyph_node` cost what
+  the outline walk costs (0.2–0.5 µs per glyph above); a unit test
+  counts parses and holds every drawing, shaping and layout entry
+  point to zero after construction.
 
 ### The outline cache
 

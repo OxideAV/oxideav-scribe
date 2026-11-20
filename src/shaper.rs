@@ -265,10 +265,9 @@ impl Shaper {
             })
             .collect();
         let plain: Vec<char> = chars.iter().map(|rc| rc.ch).collect();
-        let scripts = crate::script::resolve_scripts(&plain);
         let scale = size_px / f32::from(font.units_per_em().max(1));
         let mut out = Vec::with_capacity(chars.len());
-        for (start, end, script) in crate::shaping::engine::script_runs(&scripts) {
+        for (start, end, script) in crate::shaping::engine::runs_of(&plain) {
             let spec = crate::shaping::engine::RunSpec {
                 script,
                 rtl: false,

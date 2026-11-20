@@ -121,7 +121,7 @@ impl ParsedFont {
         // SAFETY: as in `new_ttf`.
         let font = oxideav_otf::Font::from_bytes(unsafe { extend(&bytes) }).map_err(Error::from)?;
         // SAFETY: as in `new_ttf`; a second view over the same bytes.
-        let layout = oxideav_ttf::Font::from_bytes(unsafe { extend(&bytes) })
+        let layout = parse_ttf(unsafe { extend(&bytes) }, None)
             .ok()
             .map(Box::new);
         Ok(Self {

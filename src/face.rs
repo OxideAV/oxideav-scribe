@@ -2001,9 +2001,14 @@ mod parse_once_tests {
                 .unwrap(),
             );
         });
-        assert_eq!(n, 1);
+        // Two views of the bytes, each built once: the CFF view
+        // (outlines) and the layout view (glyph mapping, metrics,
+        // GSUB / GPOS).
+        assert_eq!(n, 2);
         let face = face.unwrap();
         let n = parses_during(|| {
+            let _ = crate::Shaper::shape(&face, "office AV", 14.0);
+            let _ = face.is_color_font();
             for gid in 0..200u16 {
                 let _ = face.glyph_node(gid, 14.0);
                 let _ = face.glyph_path(gid);

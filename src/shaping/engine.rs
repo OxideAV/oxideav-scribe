@@ -388,6 +388,24 @@ pub(crate) fn script_runs(scripts: &[Script]) -> Vec<(usize, usize, Script)> {
     runs
 }
 
+/// The script runs of `chars` (see [`script_runs`]). Pure ASCII — the
+/// bulk of what a user interface shapes — needs no property lookups:
+/// it is one Latin run, or one Common run when it has no letter.
+pub(crate) fn runs_of(chars: &[char]) -> Vec<(usize, usize, Script)> {
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    if chars.iter().all(char::is_ascii) {
+        let script = if chars.iter().any(char::is_ascii_alphabetic) {
+            Script::Latin
+        } else {
+            Script::Common
+        };
+        return vec![(0, chars.len(), script)];
+    }
+    script_runs(&crate::script::resolve_scripts(chars))
+}
+
 /// Shape one run with one font.
 pub(crate) fn shape_face_run(
     font: &Font<'_>,
@@ -481,7 +499,14 @@ pub(crate) fn shape_face_run(
     let legacy_kern = kern_on && !gpos_kerns && font.kern_header_variant().is_some();
 
     let mut glyphs = shape_segments(&ctx, &chars, kern_on && gpos_kerns);
-    if gpos_types & (1 << 5) != 0 && mark_follows_ligature(font, &chars, &glyphs) {
+    // GDEF mark class of every glyph, from the face's kept answers.
+    let mut marks: Vec<bool> = Vec::with_capacity(glyphs.len());
+    plan.marks_of(font, glyphs.iter().map(|g| g.gid), &mut marks);
+    for (m, g) in marks.iter_mut().zip(&glyphs) {
+        *m &= !g.hidden();
+    }
+    let any_mark = marks.contains(&true);
+    if any_mark && gpos_types & (1 << 5) != 0 && mark_follows_ligature(&marks, &chars, &glyphs) {
         // Which component of a ligature a mark belongs to is tracked
         // by the staged engine.
         return shape_general_staged(font, plan, &chars, spec, &tags, &features);
@@ -501,15 +526,16 @@ pub(crate) fn shape_face_run(
             prev = Some(i);
         }
     }
-    attach_marks(&ctx, &chars, &mut glyphs);
+    if any_mark {
+        attach_marks(&ctx, &marks, &chars, &mut glyphs);
+    }
     if spec.rtl && kern_on && gpos_kerns {
         // The table engine reports final advances; a right-to-left
         // line needs to know which part of a change is pair kerning
         // (it is laid out on the other side of the glyph).
         let mut prev: Option<usize> = None;
         for i in 0..glyphs.len() {
-            if glyphs[i].hidden() || glyphs[i].base != NO_BASE || font.is_mark_glyph(glyphs[i].gid)
-            {
+            if glyphs[i].hidden() || glyphs[i].base != NO_BASE || marks[i] {
                 continue;
             }
             if let Some(p) = prev
@@ -528,7 +554,7 @@ pub(crate) fn shape_face_run(
             g.x_adv +=
                 i32::from(font.glyph_advance_varied(g.gid)) - i32::from(font.glyph_advance(g.gid));
         }
-        vary_positioning(font, &mut glyphs, kern_on && gpos_kerns);
+        vary_positioning(font, &marks, &mut glyphs, kern_on && gpos_kerns);
     }
     if spec.opts.vertical {
         make_vertical(font, &mut glyphs);
@@ -541,7 +567,7 @@ pub(crate) fn shape_face_run(
 /// moved by the difference between its varied and its default form
 /// (GPOS value records and anchors carry variation deltas, OpenType
 /// "Device and VariationIndex tables").
-fn vary_positioning(font: &Font<'_>, glyphs: &mut [RunGlyph], kerning: bool) {
+fn vary_positioning(font: &Font<'_>, marks: &[bool], glyphs: &mut [RunGlyph], kerning: bool) {
     let mut prev_base: Option<usize> = None;
     let mut prev: Option<usize> = None;
     // Movement already applied to the previous mark (a mark stacked on
@@ -552,7 +578,7 @@ fn vary_positioning(font: &Font<'_>, glyphs: &mut [RunGlyph], kerning: bool) {
             continue;
         }
         if glyphs[i].base == NO_BASE {
-            if !font.is_mark_glyph(glyphs[i].gid) {
+            if !marks[i] {
                 if kerning && let Some(p) = prev_base {
                     let (a, b) = (glyphs[p].gid, glyphs[i].gid);
                     let d = i32::from(font.lookup_kerning_var(a, b))
@@ -620,24 +646,20 @@ pub(crate) fn advance_at_instance(font: &Font<'_>, varies: bool, gid: u16) -> i3
 
 /// Does a mark glyph follow a glyph that stands for more than one
 /// base character (a ligature)?
-fn mark_follows_ligature(font: &Font<'_>, chars: &[RunChar], glyphs: &[RunGlyph]) -> bool {
+fn mark_follows_ligature(marks: &[bool], chars: &[RunChar], glyphs: &[RunGlyph]) -> bool {
     for i in 1..glyphs.len() {
-        if glyphs[i].hidden() || !font.is_mark_glyph(glyphs[i].gid) {
+        if !marks[i] {
             continue;
         }
-        let Some(b) = (0..i)
-            .rev()
-            .find(|&k| !glyphs[k].hidden() && !font.is_mark_glyph(glyphs[k].gid))
-        else {
+        let Some(b) = (0..i).rev().find(|&k| !glyphs[k].hidden() && !marks[k]) else {
             continue;
         };
         // The characters from the base glyph's cluster up to the next
         // base glyph's: more than one non-mark means a ligature.
         let from = glyphs[b].cluster;
-        let to = glyphs[i + 1..]
-            .iter()
-            .find(|g| !g.hidden() && !font.is_mark_glyph(g.gid))
-            .map_or(u32::MAX, |g| g.cluster);
+        let to = (i + 1..glyphs.len())
+            .find(|&k| !glyphs[k].hidden() && !marks[k])
+            .map_or(u32::MAX, |k| glyphs[k].cluster);
         let bases = chars
             .iter()
             .filter(|rc| {
@@ -1079,7 +1101,12 @@ fn shape_plain(ctx: &PlainCtx<'_, '_>, chars: &[RunChar]) -> (Vec<RunGlyph>, Vec
 /// (Mark-to-mark positioning thus always builds on mark-to-base — the
 /// order "`mark`, then `mkmk`" of the standard-scripts specification —
 /// whatever order the two lookups have in the font.)
-fn attach_marks(ctx: &PlainCtx<'_, '_>, chars: &[RunChar], glyphs: &mut [RunGlyph]) {
+fn attach_marks(
+    ctx: &PlainCtx<'_, '_>,
+    marks: &[bool],
+    chars: &[RunChar],
+    glyphs: &mut [RunGlyph],
+) {
     let font = ctx.font;
     let mut last_base: Option<usize> = None;
     let mut prev: Option<usize> = None;
@@ -1088,7 +1115,7 @@ fn attach_marks(ctx: &PlainCtx<'_, '_>, chars: &[RunChar], glyphs: &mut [RunGlyp
             continue;
         }
         let before = prev.replace(i);
-        if !font.is_mark_glyph(glyphs[i].gid) {
+        if !marks[i] {
             last_base = Some(i);
             continue;
         }

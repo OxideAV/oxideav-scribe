@@ -286,13 +286,25 @@ pub fn shape_visual_line_with(
     base_level: Option<u8>,
     opts: &ShapeOptions,
 ) -> Result<ShapedVisualLine, Error> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() || size_px <= 0.0 {
+    if text.is_empty() || size_px <= 0.0 {
         return Ok(ShapedVisualLine {
             glyphs: Vec::new(),
             base_level: base_level.map(|l| l & 1).unwrap_or(0),
         });
     }
+    // Below U+0590 there are no right-to-left characters, Arabic
+    // digits or directional controls: in a left-to-right line every
+    // character resolves to level 0 (European digits by W7, the rest
+    // by N1 / N2), so the line is one left-to-right run.
+    if base_level.is_none_or(|l| l & 1 == 0) && text.chars().all(|c| (c as u32) < 0x590) {
+        let mut glyphs = Vec::new();
+        chain.shape_directional(text, size_px, opts, false, &mut glyphs)?;
+        return Ok(ShapedVisualLine {
+            glyphs,
+            base_level: 0,
+        });
+    }
+    let chars: Vec<char> = text.chars().collect();
 
     let classes: Vec<BidiClass> = chars.iter().copied().map(bidi_class).collect();
     let carrier = process_paragraph_classes_with_brackets(&classes, &chars, base_level);
@@ -373,6 +385,19 @@ pub fn wrap_lines(
     size_px: f32,
     max_width: f32,
 ) -> Result<Vec<String>, Error> {
+    let shape = |s: &str| Ok(run_width(&Shaper::shape(face, s, size_px)?));
+    wrap_lines_measured(&mut Measurer::new(&shape), face, text, size_px, max_width)
+}
+
+/// [`wrap_lines`] with a caller-held [`Measurer`], so the token widths
+/// learned on one paragraph serve the next.
+fn wrap_lines_measured(
+    measure: &mut Measurer<'_>,
+    face: &Face,
+    text: &str,
+    size_px: f32,
+    max_width: f32,
+) -> Result<Vec<String>, Error> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
@@ -385,7 +410,7 @@ pub fn wrap_lines(
 
     let mut lines: Vec<String> = Vec::new();
     for paragraph in text.split('\n') {
-        wrap_paragraph(face, paragraph, size_px, max_width, &mut lines)?;
+        wrap_paragraph(measure, face, paragraph, size_px, max_width, &mut lines)?;
     }
     Ok(lines)
 }
@@ -424,7 +449,27 @@ pub fn wrap_and_shape_lines(
     max_width: f32,
     base_level: Option<u8>,
 ) -> Result<Vec<ShapedVisualLine>, Error> {
-    let line_strings = wrap_lines(chain.primary(), text, size_px, max_width)?;
+    let face = chain.primary();
+    let shape = |s: &str| Ok(run_width(&Shaper::shape(face, s, size_px)?));
+    wrap_and_shape_measured(
+        &mut Measurer::new(&shape),
+        chain,
+        text,
+        size_px,
+        max_width,
+        base_level,
+    )
+}
+
+fn wrap_and_shape_measured(
+    measure: &mut Measurer<'_>,
+    chain: &FaceChain,
+    text: &str,
+    size_px: f32,
+    max_width: f32,
+    base_level: Option<u8>,
+) -> Result<Vec<ShapedVisualLine>, Error> {
+    let line_strings = wrap_lines_measured(measure, chain.primary(), text, size_px, max_width)?;
     let mut out = Vec::with_capacity(line_strings.len());
     for line in &line_strings {
         out.push(shape_visual_line(chain, line, size_px, base_level)?);
@@ -488,7 +533,18 @@ pub fn shape_paragraphs(
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
+    // One width memo for the whole document: paragraphs share words.
+    let face = chain.primary();
+    let shape = |s: &str| Ok(run_width(&Shaper::shape(face, s, size_px)?));
+    let mut measure = Measurer::new(&shape);
+    let mut after_cr = false;
     for para in crate::bidi::split_paragraphs(text) {
+        // CR LF is one paragraph separator: the LF that follows a CR
+        // does not open an (empty) paragraph of its own.
+        if para == "\n" && std::mem::take(&mut after_cr) {
+            continue;
+        }
+        after_cr = para.ends_with('\r');
         // Drop the trailing paragraph separator (the B character P1 keeps
         // attached) — it is not part of the rendered run. A bare
         // separator paragraph collapses to an empty line.
@@ -499,7 +555,14 @@ pub fn shape_paragraphs(
         // Per-paragraph base level: the caller override wins; otherwise
         // P2 / P3 resolves this paragraph independently.
         let resolved = base_level.unwrap_or_else(|| crate::bidi::paragraph_level(body));
-        let lines = wrap_and_shape_lines(chain, body, size_px, max_width, Some(resolved))?;
+        let lines = wrap_and_shape_measured(
+            &mut measure,
+            chain,
+            body,
+            size_px,
+            max_width,
+            Some(resolved),
+        )?;
         // An empty paragraph (separator-only) still contributes one empty
         // line so the renderer advances a blank line.
         let lines = if lines.is_empty() {
@@ -518,7 +581,77 @@ pub fn shape_paragraphs(
     Ok(out)
 }
 
+/// Widths of line candidates without shaping each candidate whole.
+///
+/// A candidate line is a sequence of tokens. Its width is the sum of
+/// the tokens' own widths (each token shaped once and remembered —
+/// documents repeat their words) plus, at every joint, what shaping
+/// the two characters either side of the joint together adds to
+/// shaping them apart (pair kerning across the joint; remembered per
+/// character pair). Filling a paragraph is therefore linear in its
+/// length instead of quadratic in the length of each line.
+struct Measurer<'a> {
+    shape: &'a dyn Fn(&str) -> Result<f32, Error>,
+    tokens: std::collections::HashMap<String, f32>,
+    joints: std::collections::HashMap<(char, char), f32>,
+}
+
+impl<'a> Measurer<'a> {
+    fn new(shape: &'a dyn Fn(&str) -> Result<f32, Error>) -> Self {
+        Self {
+            shape,
+            tokens: std::collections::HashMap::new(),
+            joints: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Width of `token` shaped on its own.
+    fn token(&mut self, token: &str) -> Result<f32, Error> {
+        if token.is_empty() {
+            return Ok(0.0);
+        }
+        if let Some(&w) = self.tokens.get(token) {
+            return Ok(w);
+        }
+        let w = (self.shape)(token)?;
+        // A hostile document of all-distinct tokens must not grow the
+        // memo without bound.
+        if self.tokens.len() < 65_536 {
+            self.tokens.insert(token.to_string(), w);
+        }
+        Ok(w)
+    }
+
+    /// What putting `b` right after `a` adds to their separate widths.
+    fn joint(&mut self, a: char, b: char) -> Result<f32, Error> {
+        if let Some(&d) = self.joints.get(&(a, b)) {
+            return Ok(d);
+        }
+        let mut pair = String::with_capacity(8);
+        pair.push(a);
+        pair.push(b);
+        let mut one = [0u8; 4];
+        let together = (self.shape)(&pair)?;
+        let apart = (self.shape)(a.encode_utf8(&mut one))? + (self.shape)(b.encode_utf8(&mut one))?;
+        let d = together - apart;
+        if self.joints.len() < 65_536 {
+            self.joints.insert((a, b), d);
+        }
+        Ok(d)
+    }
+
+    /// Width of `line` with `token` appended, given `line`'s width.
+    fn appended(&mut self, line: &str, line_width: f32, token: &str) -> Result<f32, Error> {
+        let mut w = line_width + self.token(token)?;
+        if let (Some(a), Some(b)) = (line.chars().next_back(), token.chars().next()) {
+            w += self.joint(a, b)?;
+        }
+        Ok(w)
+    }
+}
+
 fn wrap_paragraph(
+    measure: &mut Measurer<'_>,
     face: &Face,
     text: &str,
     size_px: f32,
@@ -539,25 +672,28 @@ fn wrap_paragraph(
     }
 
     let mut current = String::new();
+    let mut current_width = 0.0f32;
     for word in words {
-        let candidate = if current.is_empty() {
-            word.trim_start().to_string()
-        } else {
-            format!("{current}{word}")
-        };
-        let candidate_width = run_width(&Shaper::shape(face, &candidate, size_px)?);
-        if candidate_width <= max_width || current.is_empty() {
-            current = candidate;
-            // If even the first word doesn't fit, hard-break it. (The
-            // candidate was just measured; it is not shaped again.)
-            if candidate_width > max_width {
+        if current.is_empty() {
+            current = word.trim_start().to_string();
+            current_width = measure.token(&current)?;
+            // If even the first word doesn't fit, hard-break it.
+            if current_width > max_width {
                 let (head, tail) = hard_break(face, &current, size_px, max_width)?;
                 lines.push(head);
                 current = tail;
+                current_width = measure.token(&current)?;
             }
+            continue;
+        }
+        let candidate_width = measure.appended(&current, current_width, &word)?;
+        if candidate_width <= max_width {
+            current.push_str(&word);
+            current_width = candidate_width;
         } else {
-            lines.push(current.clone());
+            lines.push(std::mem::take(&mut current));
             current = word.trim_start().to_string();
+            current_width = measure.token(&current)?;
         }
     }
     if !current.is_empty() {
@@ -593,30 +729,33 @@ fn split_keeping_whitespace(s: &str) -> Vec<String> {
 
 /// Cut `text` so the prefix shapes within `max_width`. Returns
 /// `(head, tail)` — `head` is everything that fit, `tail` is the rest.
+/// The longest fitting prefix is found by bisection (a prefix never
+/// gets narrower by growing).
 fn hard_break(
     face: &Face,
     text: &str,
     size_px: f32,
     max_width: f32,
 ) -> Result<(String, String), Error> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut last_good = 0usize;
-    for n in 1..=chars.len() {
-        let candidate: String = chars[..n].iter().collect();
-        let glyphs = Shaper::shape(face, &candidate, size_px)?;
-        if run_width(&glyphs) > max_width {
-            break;
+    let ends: Vec<usize> = text.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+    let fits = |n: usize| -> Result<bool, Error> {
+        Ok(run_width(&Shaper::shape(face, &text[..ends[n - 1]], size_px)?) <= max_width)
+    };
+    // Invariant: prefixes of `lo` characters fit, of `hi` do not.
+    let (mut lo, mut hi) = (0usize, ends.len() + 1);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if fits(mid)? {
+            lo = mid;
+        } else {
+            hi = mid;
         }
-        last_good = n;
     }
-    if last_good == 0 {
-        // Even the first character overflows; emit it anyway so we
-        // don't loop forever.
-        last_good = 1.min(chars.len());
-    }
-    let head: String = chars[..last_good].iter().collect();
-    let tail: String = chars[last_good..].iter().collect();
-    Ok((head, tail))
+    // Even the first character overflows: emit it anyway so the
+    // caller makes progress.
+    let take = lo.max(1).min(ends.len());
+    let cut = ends.get(take.wrapping_sub(1)).copied().unwrap_or(0);
+    Ok((text[..cut].to_string(), text[cut..].to_string()))
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ use crate::shaper::{PositionedGlyph, ShapeOptions, shape_run_planned};
 use crate::shaping::arabic::{Script, compute_forms, script_of};
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::engine::{
-    NO_BASE, RunChar, RunGlyph, RunSpec, normalise_for_font, script_runs, shape_face_run,
+    NO_BASE, RunChar, RunGlyph, RunSpec, normalise_for_font, runs_of, shape_face_run,
 };
 use crate::shaping::indic::{
     BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, IndicCategory,
@@ -404,9 +404,8 @@ impl FaceChain {
         let mut parsed = ParsedFaces::new(&self.faces);
         let chars: Vec<RunChar> = cluster_chars(text);
         let plain: Vec<char> = chars.iter().map(|rc| rc.ch).collect();
-        let scripts = crate::script::resolve_scripts(&plain);
         let mut runs: Vec<ShapedRun> = Vec::new();
-        for (start, end, script) in script_runs(&scripts) {
+        for (start, end, script) in runs_of(&plain) {
             let rtl = opts
                 .rtl
                 .unwrap_or_else(|| plain[start..end].iter().any(|&c| is_strong_rtl(c)));
@@ -1895,6 +1894,62 @@ mod parse_once_tests {
         let before = PARSE_COUNT.with(|c| c.get());
         f();
         PARSE_COUNT.with(|c| c.get()) - before
+    }
+
+    /// Every shaping and layout entry point — options, directional
+    /// runs, wrapping, paragraph layout, Arabic and Indic runs, CFF
+    /// faces — works on the views the faces already hold.
+    #[test]
+    fn shaping_and_layout_entry_points_parse_nothing() {
+        let chain = FaceChain::new(
+            Face::from_otf_bytes(
+                include_bytes!("../tests/fixtures/SourceSans3-Regular.otf").to_vec(),
+            )
+            .unwrap(),
+        )
+        .push_fallback(
+            Face::from_ttf_bytes(include_bytes!("../tests/fixtures/DejaVuSans.ttf").to_vec())
+                .unwrap(),
+        )
+        .push_fallback(
+            Face::from_ttf_bytes(
+                include_bytes!("../tests/fixtures/NotoSansArabic-Regular.ttf").to_vec(),
+            )
+            .unwrap(),
+        );
+        let text = "office AV q\u{301} \u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{628}\u{64e}\u{628}                     \u{915}\u{94d}\u{937}\u{93f}\ttab\nsecond paragraph";
+        let opts = ShapeOptions::new()
+            .with_feature(*b"smcp", true)
+            .with_feature(*b"liga", false);
+        let n = parses_during(|| {
+            for _ in 0..3 {
+                let glyphs = chain.shape(text, 16.0).unwrap();
+                assert!(glyphs.iter().any(|g| g.face_idx == 1));
+                chain.shape_with_options(text, 16.0, &opts).unwrap();
+                chain.shape_with_features(text, 16.0, &[*b"onum"]).unwrap();
+                chain.shape_visual_run(text, 16.0, &opts, true).unwrap();
+                chain
+                    .shape_with_options(text, 16.0, &ShapeOptions::new().with_vertical(true))
+                    .unwrap();
+                crate::layout::shape_visual_line(&chain, text, 16.0, None).unwrap();
+                crate::layout::shape_paragraphs(&chain, text, 16.0, 120.0, None).unwrap();
+                crate::layout::wrap_lines(chain.primary(), text, 16.0, 120.0).unwrap();
+                let lines = crate::layout_text(
+                    &chain,
+                    text,
+                    16.0,
+                    &crate::LayoutOptions::new(120.0).with_align(crate::Align::Justify),
+                )
+                .unwrap();
+                for line in &lines {
+                    for g in &line.glyphs {
+                        let _ = chain.face(g.face_idx).glyph_path(g.glyph_id);
+                    }
+                }
+                let _ = crate::Shaper::shape_to_paths(&chain, text, 16.0);
+            }
+        });
+        assert_eq!(n, 0);
     }
 
     /// Shaping parses nothing: every face keeps the view it parsed at

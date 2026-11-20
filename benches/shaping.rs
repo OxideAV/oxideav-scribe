@@ -9,12 +9,13 @@
 //! * **cold** — a fresh `Face` per iteration: construction plus the
 //!   first shaping call, which builds whatever the text needs.
 //! * **document** — `layout::shape_paragraphs` over a 100 000-character
-//!   text (wrap to 480 px, bidi, shape every line).
+//!   text (wrap to 480 px, bidi, shape every line); **layout_text** —
+//!   the same text through `layout_text` (UAX #14 breaking, justified).
 //! * **outlines** — `Face::glyph_path` / `glyph_node` for every glyph
 //!   of a paragraph; a per-glyph cost near the outline walk itself
 //!   shows nothing re-parses the font.
 
-use oxideav_scribe::{Face, FaceChain, layout};
+use oxideav_scribe::{Align, Face, FaceChain, LayoutOptions, layout, layout_text};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -155,6 +156,29 @@ fn main() {
                 black_box(
                     layout::shape_paragraphs(&chain, black_box(&doc), 16.0, 480.0, None).ok(),
                 );
+            },
+        );
+    }
+
+    // --- the same documents through `layout_text` ---------------------
+    for (label, face, paragraph) in [
+        ("Latin, DejaVu Sans", ttf(DEJAVU), LATIN),
+        ("Arabic, Noto Sans Arabic", ttf(NOTO_ARABIC), ARABIC),
+    ] {
+        let doc = document(paragraph, 100_000);
+        let chars = doc.chars().count();
+        let chain = FaceChain::new(face);
+        let opts = LayoutOptions::new(480.0).with_align(Align::Justify);
+        let Ok(lines) = layout_text(&chain, &doc, 16.0, &opts) else {
+            continue;
+        };
+        bench.run(
+            &format!("layout_text 100k ({} lines): {label}", lines.len()),
+            chars,
+            "char",
+            1,
+            || {
+                black_box(layout_text(&chain, black_box(&doc), 16.0, &opts).ok());
             },
         );
     }

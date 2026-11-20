@@ -176,6 +176,7 @@ pub mod face;
 pub mod face_chain;
 pub mod layout;
 pub mod outline_cache;
+pub mod paragraph;
 mod parsed;
 pub mod post;
 pub mod script;
@@ -204,6 +205,7 @@ pub use layout::{
 };
 pub use outline_cache::{DEFAULT_BUDGET_BYTES, OutlineCache, OutlineCacheStats};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
+pub use paragraph::{Align, LaidOutLine, LayoutOptions, layout_text};
 pub use post::{PostTable, STANDARD_MAC_GLYPH_NAMES, standard_mac_glyph_name};
 pub use script::{
     ScriptRun, ot_script_tag, ot_script_tags, resolve_scripts, script_runs, script_runs_str,
