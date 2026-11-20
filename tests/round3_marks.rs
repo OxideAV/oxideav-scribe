@@ -20,13 +20,18 @@ fn load_face() -> Face {
 
 #[test]
 fn combining_acute_attaches_to_a() {
-    // 'A' (U+0041) + COMBINING ACUTE ACCENT (U+0301).
+    // 'Q' (U+0051) + COMBINING ACUTE ACCENT (U+0301): a pair with no
+    // precomposed character, so normalisation keeps base and mark apart.
     // DejaVu Sans is one of the most commonly distributed fonts that
     // includes mark anchors for the combining diacritics — this pair
     // is a canonical mark-to-base test case.
     let face = load_face();
-    let glyphs = Shaper::shape(&face, "A\u{0301}", 32.0).expect("shape");
-    assert_eq!(glyphs.len(), 2, "expected 2 glyphs (no precomposed Á)");
+    let glyphs = Shaper::shape(&face, "Q\u{0301}", 32.0).expect("shape");
+    assert_eq!(
+        glyphs.len(),
+        2,
+        "expected 2 glyphs (there is no precomposed Q-acute)"
+    );
 
     let base = glyphs[0];
     let mark = glyphs[1];
@@ -48,12 +53,12 @@ fn combining_acute_attaches_to_a() {
         .expect("with_font");
     assert!(
         anchor.is_some(),
-        "DejaVu Sans should ship a mark-to-base anchor for ('A' = {base_gid}, combining-acute = {mark_gid})"
+        "DejaVu Sans should ship a mark-to-base anchor for ('Q' = {base_gid}, combining-acute = {mark_gid})"
     );
 
     // After shaping, the mark must have:
     // 1. Non-zero y_offset (lifted up onto the base anchor) — combining
-    //    acute sits *above* 'A' so its y_offset (raster Y-down) must be
+    //    acute sits *above* 'Q' so its y_offset (raster Y-down) must be
     //    NEGATIVE.
     assert!(
         mark.y_offset < 0.0,
@@ -75,8 +80,8 @@ fn combining_mark_y_offset_proportional_to_size() {
     // size_px (anchors are font-unit based; the shaper applies the
     // pixel scale).
     let face = load_face();
-    let small = Shaper::shape(&face, "A\u{0301}", 16.0).expect("shape small");
-    let large = Shaper::shape(&face, "A\u{0301}", 64.0).expect("shape large");
+    let small = Shaper::shape(&face, "Q\u{0301}", 16.0).expect("shape small");
+    let large = Shaper::shape(&face, "Q\u{0301}", 64.0).expect("shape large");
 
     assert_eq!(small.len(), 2);
     assert_eq!(large.len(), 2);

@@ -58,11 +58,17 @@ const GENERAL_SCRIPT_TAGS: [[u8; 4]; 4] = [*b"latn", *b"cyrl", *b"grek", *b"DFLT
 pub(crate) struct LayoutPlan {
     /// `(lookup index, effective type)` for every `GSUB` lookup.
     gsub_types: OnceLock<Vec<(u16, u16)>>,
+    gpos_types: OnceLock<Vec<(u16, u16)>>,
     gpos: OnceLock<GposPlan>,
     ccmp: OnceLock<Vec<u16>>,
     calt: OnceLock<Vec<u16>>,
     /// `GSUB` features of each script's default language system.
     script_features: Mutex<HashMap<[u8; 4], Arc<[PlannedFeature]>>>,
+    /// GPOS mirror of `script_features`.
+    gpos_script_features: Mutex<HashMap<[u8; 4], Arc<[PlannedFeature]>>>,
+    /// Per script tag: which positioning lookup types its features
+    /// reach (bit `n` set = a lookup of type `n`).
+    gpos_script_types: Mutex<HashMap<[u8; 4], u16>>,
 }
 
 impl LayoutPlan {
@@ -88,6 +94,21 @@ impl LayoutPlan {
 
     /// The `GPOS` lookups grouped the way the positioning pass uses
     /// them.
+    /// Effective type of GPOS lookup `index` (extension lookups
+    /// unwrapped).
+    pub(crate) fn gpos_lookup_type(&self, font: &Font<'_>, index: u16) -> Option<u16> {
+        let types = self.gpos_types.get_or_init(|| {
+            font.gpos_lookup_list()
+                .into_iter()
+                .map(|(i, ty, _)| (i, ty))
+                .collect()
+        });
+        match types.get(index as usize) {
+            Some(&(i, ty)) if i == index => Some(ty),
+            _ => types.iter().find(|&&(i, _)| i == index).map(|&(_, ty)| ty),
+        }
+    }
+
     pub(crate) fn gpos(&self, font: &Font<'_>) -> &GposPlan {
         self.gpos.get_or_init(|| {
             let mut plan = GposPlan::default();
@@ -145,6 +166,70 @@ impl LayoutPlan {
 
     /// Lookup indices of every `feature_tag` record `script_tag`
     /// publishes, in declaration order.
+    /// The GPOS features (default language system) of `script_tag`,
+    /// resolved once per tag.
+    pub(crate) fn gpos_features(
+        &self,
+        font: &Font<'_>,
+        script_tag: [u8; 4],
+    ) -> Arc<[PlannedFeature]> {
+        if let Some(hit) = self
+            .gpos_script_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&script_tag)
+        {
+            return hit.clone();
+        }
+        let features: Arc<[PlannedFeature]> = font
+            .gpos_features_for_script(script_tag, None)
+            .into_iter()
+            .map(|f| PlannedFeature {
+                tag: f.tag,
+                lookups: f.lookup_indices,
+            })
+            .collect();
+        let mut kept = self
+            .gpos_script_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if kept.len() < MAX_KEPT_SCRIPTS {
+            kept.insert(script_tag, features.clone());
+        }
+        features
+    }
+
+    /// Bit set of the GPOS lookup types reachable from the features
+    /// of `script_tag` (bit `n` = lookup type `n`).
+    pub(crate) fn gpos_types_for_script(&self, font: &Font<'_>, script_tag: [u8; 4]) -> u16 {
+        if let Some(&hit) = self
+            .gpos_script_types
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&script_tag)
+        {
+            return hit;
+        }
+        let mut types = 0u16;
+        for feature in self.gpos_features(font, script_tag).iter() {
+            for &index in &feature.lookups {
+                if let Some(ty) = self.gpos_lookup_type(font, index)
+                    && ty < 16
+                {
+                    types |= 1 << ty;
+                }
+            }
+        }
+        let mut kept = self
+            .gpos_script_types
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if kept.len() < MAX_KEPT_SCRIPTS {
+            kept.insert(script_tag, types);
+        }
+        types
+    }
+
     pub(crate) fn gsub_feature_lookups(
         &self,
         font: &Font<'_>,

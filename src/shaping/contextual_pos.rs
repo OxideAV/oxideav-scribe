@@ -167,6 +167,8 @@ mod tests {
             y_offset: 0.0,
             x_advance: 10.0,
             face_idx: 0,
+            y_advance: 0.0,
+            cluster: 0,
         }
     }
 
@@ -292,6 +294,8 @@ mod tests {
                 y_offset: 0.0,
                 x_advance: 10.0,
                 face_idx: 0,
+                y_advance: 0.0,
+                cluster: 0,
             }];
             let before = one.clone();
             apply_contextual_pos(font, &mut one, 0.02);
@@ -324,6 +328,8 @@ mod tests {
                     y_offset: 2.0,
                     x_advance: 8.0,
                     face_idx: 0,
+                    y_advance: 0.0,
+                    cluster: 0,
                 })
                 .collect();
             let before = run.clone();

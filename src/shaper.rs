@@ -1,77 +1,38 @@
-//! Text shaper: cmap → ligature substitution → pair kerning →
-//! mark-to-base attachment → mark-to-mark stacking → cursive
-//! attachment → contextual / chained-contextual positioning.
+//! Shaping entry points and the glyph record they produce.
 //!
-//! This covers the core of an OpenType positioning pass — enough to
-//! render Latin (incl. extended diacritics) / Cyrillic / Greek (incl.
-//! polytonic) / basic CJK with the ligatures, kerning, diacritic
-//! attachment, and context-sensitive position adjustments that
-//! production fonts ship. Bidi (UAX #9), Arabic joining, and Indic
-//! conjunct formation are layered above this run-level pass by
-//! [`crate::FaceChain`] and [`crate::shaping`].
+//! [`Shaper::shape`] (one face) and [`crate::FaceChain::shape`] (a
+//! fallback chain) run the same pipeline, implemented in
+//! [`crate::shaping`]:
 //!
-//! ## Pipeline
+//! 1. **Itemise** the text into script runs (UAX #24) and, for a
+//!    chain, give every grapheme cluster to the first face that draws
+//!    all of it.
+//! 2. **Normalise per font**: a base and its marks become the
+//!    precomposed character when the font has it, a precomposed
+//!    character the font lacks becomes base + marks; marks are put in
+//!    canonical order; right-to-left runs get mirrored characters.
+//! 3. **Map and substitute**: `cmap`, then the `GSUB` lookups of the
+//!    script's features. Scripts whose features apply to every glyph
+//!    alike (Latin, Cyrillic, Greek, Hebrew, Hangul, CJK, Thai, …) go
+//!    through the font parser's lookup engine, which applies the union
+//!    of the active features' lookups in LookupList order. Cursive
+//!    joining scripts and the Indic scripts — where each glyph takes
+//!    its own features and glyphs are reordered between feature groups
+//!    — go through the staged engine ([`crate::shaping`]).
+//! 4. **Position**: advances from `hmtx` (at the installed variation
+//!    instance), then `GPOS` — single and pair adjustment, cursive
+//!    attachment, mark-to-base / mark-to-ligature / mark-to-mark,
+//!    contextual positioning — or the legacy `kern` table when the
+//!    font's `GPOS` has no `kern` feature for the script.
 //!
-//! 1. **cmap**: walk the input string codepoint-by-codepoint, looking
-//!    each up via `Font::glyph_index`. Unmapped codepoints fall back
-//!    to glyph 0 (the `.notdef` "tofu" glyph) — preserving
-//!    measurement and visual feedback that the font was missing.
-//! 2. **Ligatures (GSUB type 4)**: for every position in the glyph
-//!    array, ask `Font::lookup_ligature(&glyphs[i..])`. If it returns
-//!    `Some((replacement, n))`, replace `n` glyphs starting at `i`
-//!    with the single replacement and advance the cursor.
-//! 3. **Kerning (GPOS type 2 PairPos + legacy `kern`)**: for each
-//!    adjacent pair, call `Font::lookup_kerning(left, right)` and apply
-//!    the result to the **left glyph's `x_advance`**. Per OFF §6.4 a
-//!    pair adjustment changes the xAdvance of the *first* glyph in the
-//!    pair, so the pen accumulates the kern and every glyph downstream
-//!    shifts with it (applying it as an `x_offset` on the right glyph
-//!    would move only that glyph and leak the adjustment).
-//! 4. **Mark-to-base attachment (GPOS type 4)**: for each (base, mark)
-//!    pair where `mark` is classified as a mark by GDEF, call
-//!    `Font::lookup_mark_to_base(base, mark)`. The returned anchor
-//!    delta is applied to the mark's `x_offset` / `y_offset` (with
-//!    the mark's own advance subtracted on X so the mark stacks on
-//!    top of the base instead of being placed after it). When the
-//!    walked-back base is a ligature glyph (formed in step 2 from two
-//!    or more components), **mark-to-ligature attachment (GPOS type
-//!    5)** is tried first via `Font::lookup_mark_to_ligature(lig,
-//!    component, mark)`: the mark is associated with a ligature
-//!    component by its trailing ordinal and lands on that component's
-//!    per-class anchor, falling back to mark-to-base if the ligature
-//!    publishes no LookupType-5 anchor for the mark.
-//! 5. **Mark-to-mark stacking (GPOS type 6)**: for each consecutive
-//!    `(mark_prev, mark_new)` pair where both are GDEF marks, call
-//!    `Font::lookup_mark_to_mark(mark_prev, mark_new)`. If the font
-//!    provides an anchor for the pair, the new mark is positioned
-//!    relative to the previous mark's *post-attachment* position
-//!    (which already sits on the base). This handles double-diacritic
-//!    stacks like polytonic Greek and Vietnamese tonal vowels. The
-//!    mark-to-base path remains the fallback: if no mark-to-mark
-//!    anchor exists, the new mark falls back to attaching to the
-//!    walked-back base (round-3 behaviour).
-//! 6. **Cursive attachment (GPOS type 3)** (round 276): for each
-//!    consecutive pair of non-mark glyphs where the first publishes
-//!    an exit anchor and the second an entry anchor, the first
-//!    glyph's advance is rewritten so the anchors align in the
-//!    line-layout direction, and one glyph's `y_offset` is adjusted
-//!    so they align in the cross-stream direction: the second glyph
-//!    when the lookup's RIGHT_TO_LEFT flag is clear (the chain
-//!    cascades from the first glyph's baseline), the first glyph when
-//!    it is set (the chain hangs from the last glyph's baseline).
-//!    Marks attached to the moved glyph follow it vertically.
-//! 7. **Contextual + chained-contextual positioning (GPOS types 7 +
-//!    8)**: recognise an input context (a glyph sequence, optionally
-//!    bracketed by backtrack / lookahead in the chained variant) and
-//!    apply the nested per-glyph positioning adjustments the rule
-//!    dispatches. The dependency resolves the sub-table match and the
-//!    `SequenceLookupRecord` recursion into absolute per-glyph
-//!    `PosRecord` deltas; this pass accumulates them onto the already-
-//!    positioned run (see [`crate::shaping::contextual_pos`]). Runs last
-//!    so the contextual rules see the post-kern / post-mark / post-
-//!    cursive geometry.
+//! [`ShapeOptions`] switches features on and off, picks a language
+//! system and selects vertical layout.
 //!
-//! Output is a `Vec<PositionedGlyph>` ready for [`crate::compose`].
+//! The run-level helpers [`shape_run_with_font`] and
+//! [`position_run_with_font`] keep their earlier, fixed behaviour
+//! (ligatures, pair kerning, mark attachment, cursive attachment and
+//! contextual positioning over a glyph run the caller has already
+//! mapped), for callers that drive the lookup primitives themselves.
 
 use crate::Error;
 use crate::face::Face;
@@ -132,6 +93,145 @@ pub struct PositionedGlyph {
     /// glyph was sourced from. 0 for the primary face. Round-1 callers
     /// using the single-face `Shaper::shape` get 0 for every glyph.
     pub face_idx: u16,
+    /// Vertical pen movement after this glyph, in raster pixels (Y
+    /// down). Zero for horizontal runs; a vertical run moves the pen
+    /// down by this much and leaves `x_advance` at zero.
+    pub y_advance: f32,
+    /// Byte offset, in the string that was shaped, of the first
+    /// character this glyph stands for. All glyphs of one cluster
+    /// (a ligature's components, a base and its marks, a reordered
+    /// syllable) share the offset.
+    pub cluster: u32,
+}
+
+/// How a run is to be shaped: feature switches, language system,
+/// line orientation.
+///
+/// The default (`ShapeOptions::new()`) is what [`crate::FaceChain::shape`]
+/// uses: horizontal text, the script's default language system, and
+/// the features the OpenType feature registry marks as on by default
+/// (`ccmp`, `locl`, `rlig`, `liga`, `clig`, `calt`, `rclt`, `kern`,
+/// `mark`, `mkmk`, `abvm`, `blwm`, `dist`, `curs`, plus the script's
+/// own required features).
+///
+/// ```
+/// use oxideav_scribe::ShapeOptions;
+/// let opts = ShapeOptions::new()
+///     .with_feature(*b"smcp", true)   // small capitals on
+///     .with_feature(*b"liga", false); // standard ligatures off
+/// assert_eq!(opts.feature(*b"smcp"), Some(1));
+/// assert_eq!(opts.feature(*b"liga"), Some(0));
+/// assert_eq!(opts.feature(*b"kern"), None); // left at its default
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ShapeOptions {
+    /// Caller feature settings, in the order given: `(tag, value)`
+    /// with `0` = off and any other value = on (the value doubles as
+    /// the 1-based alternate index for alternate-substitution
+    /// features).
+    pub(crate) features: Vec<([u8; 4], u32)>,
+    /// OpenType language-system tag (`*b"TRK "`, `*b"ROM "`, …);
+    /// `None` selects each script's default language system.
+    pub(crate) language: Option<[u8; 4]>,
+    /// Lay the run out top-to-bottom.
+    pub(crate) vertical: bool,
+    /// Explicit run direction; `None` follows the script.
+    pub(crate) rtl: Option<bool>,
+    /// Apply the default substitution features.
+    pub(crate) default_substitutions: bool,
+}
+
+impl Default for ShapeOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShapeOptions {
+    /// The default options (see the type docs).
+    pub fn new() -> Self {
+        Self {
+            features: Vec::new(),
+            language: None,
+            vertical: false,
+            rtl: None,
+            default_substitutions: true,
+        }
+    }
+
+    /// Switch one feature on or off. A later setting for the same tag
+    /// replaces an earlier one.
+    #[must_use]
+    pub fn with_feature(self, tag: [u8; 4], on: bool) -> Self {
+        self.with_feature_value(tag, u32::from(on))
+    }
+
+    /// Set a feature's value: `0` switches it off, `1` on; for an
+    /// alternate-substitution feature (`salt`, `aalt`, `cv01`…) a
+    /// value `n >= 1` picks the n-th alternate.
+    #[must_use]
+    pub fn with_feature_value(mut self, tag: [u8; 4], value: u32) -> Self {
+        self.features.retain(|(t, _)| *t != tag);
+        self.features.push((tag, value));
+        self
+    }
+
+    /// Shape under an OpenType language system (e.g. `*b"TRK "` so a
+    /// font's Turkish `locl` forms apply). `None` restores the
+    /// default language system.
+    #[must_use]
+    pub fn with_language(mut self, language: Option<[u8; 4]>) -> Self {
+        self.language = language;
+        self
+    }
+
+    /// Lay the run out top-to-bottom: vertical alternates (`vert`) are
+    /// substituted, glyphs advance by their vertical advance and are
+    /// placed relative to their vertical origin.
+    #[must_use]
+    pub fn with_vertical(mut self, vertical: bool) -> Self {
+        self.vertical = vertical;
+        self
+    }
+
+    /// Force the run direction (`Some(true)` = right-to-left) instead
+    /// of deriving it from each script. Direction decides mirroring
+    /// and the direction-specific features; the glyphs still come
+    /// back in logical order.
+    #[must_use]
+    pub fn with_rtl(mut self, rtl: Option<bool>) -> Self {
+        self.rtl = rtl;
+        self
+    }
+
+    /// Keep (`true`, the default) or drop the default *substitution*
+    /// features, so that only the features named with
+    /// [`Self::with_feature`] substitute glyphs. Positioning features
+    /// stay on either way.
+    #[must_use]
+    pub fn with_default_substitutions(mut self, on: bool) -> Self {
+        self.default_substitutions = on;
+        self
+    }
+
+    /// The caller's setting for `tag`, if one was given.
+    pub fn feature(&self, tag: [u8; 4]) -> Option<u32> {
+        self.features
+            .iter()
+            .find(|(t, _)| *t == tag)
+            .map(|&(_, v)| v)
+    }
+
+    /// The language system set with [`Self::with_language`].
+    pub fn language(&self) -> Option<[u8; 4]> {
+        self.language
+    }
+
+    /// Whether the run is laid out top-to-bottom.
+    pub fn is_vertical(&self) -> bool {
+        self.vertical
+    }
 }
 
 /// Round-1 shaper. Stateless — every call starts from scratch.
@@ -155,19 +255,51 @@ impl Shaper {
         if text.is_empty() || size_px <= 0.0 {
             return Ok(Vec::new());
         }
-        let font = face.ttf()?;
-        // Step 1: cmap.
-        let raw_glyphs: Vec<u16> = text
-            .chars()
-            .map(|ch| font.glyph_index(ch).unwrap_or(0))
+        let font = face.layout_font()?;
+        let opts = ShapeOptions::new();
+        let chars: Vec<crate::shaping::engine::RunChar> = text
+            .char_indices()
+            .map(|(i, ch)| crate::shaping::engine::RunChar {
+                ch,
+                cluster: i as u32,
+            })
             .collect();
-        Ok(shape_run_planned(
-            font,
-            face.layout_plan(),
-            &raw_glyphs,
-            size_px,
-            0,
-        ))
+        let plain: Vec<char> = chars.iter().map(|rc| rc.ch).collect();
+        let scripts = crate::script::resolve_scripts(&plain);
+        let scale = size_px / f32::from(font.units_per_em().max(1));
+        let mut out = Vec::with_capacity(chars.len());
+        for (start, end, script) in crate::shaping::engine::script_runs(&scripts) {
+            let spec = crate::shaping::engine::RunSpec {
+                script,
+                rtl: false,
+                opts: &opts,
+            };
+            let glyphs = crate::shaping::engine::shape_face_run(
+                font,
+                face.layout_plan(),
+                &chars[start..end],
+                &spec,
+            );
+            for (i, g) in glyphs.iter().enumerate() {
+                let mut x_off = g.x_off;
+                if g.base != crate::shaping::engine::NO_BASE && (g.base as usize) < i {
+                    x_off -= glyphs[g.base as usize..i]
+                        .iter()
+                        .map(|g| g.x_adv)
+                        .sum::<i32>();
+                }
+                out.push(PositionedGlyph {
+                    glyph_id: g.gid,
+                    x_offset: x_off as f32 * scale,
+                    y_offset: -(g.y_off as f32) * scale,
+                    x_advance: g.x_adv as f32 * scale,
+                    face_idx: 0,
+                    y_advance: -(g.y_adv as f32) * scale,
+                    cluster: g.cluster,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Shape a text run and return positioned **vector glyphs** —
@@ -570,6 +702,8 @@ pub(crate) fn position_run_planned(
             y_offset: 0.0,
             x_advance,
             face_idx,
+            y_advance: 0.0,
+            cluster: 0,
         });
     }
     for idx in 1..shaped_gids.len() {

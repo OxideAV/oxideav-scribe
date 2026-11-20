@@ -1,34 +1,35 @@
-//! `FaceChain` — ordered list of faces consulted in priority order
-//! when shaping. Round-2 fallback support: when the primary face
-//! doesn't have a glyph for a codepoint, the chain walks down the list
-//! until one does, falling back to the primary's `.notdef` only if no
-//! face provides a glyph.
+//! `FaceChain` — an ordered list of faces consulted in priority order
+//! when shaping: the primary face first, then each fallback.
 //!
 //! ## Design
 //!
-//! Each codepoint is mapped to `(face_idx, glyph_id)` independently;
-//! ligature substitution + kerning then run on the resulting glyph runs
-//! face-by-face (because GSUB / GPOS lookups are face-local — you can't
-//! ligate an "f" from face A with an "i" from face B).
+//! Fallback is decided per **grapheme cluster** (UAX #29): a cluster —
+//! a base with its marks, an emoji sequence, a conjunct — goes to the
+//! first face that can draw all of it after per-font normalisation,
+//! because substitution and mark attachment cannot cross faces. A
+//! cluster carrying the emoji presentation selector (U+FE0F) prefers a
+//! colour face, one carrying the text presentation selector (U+FE0E) a
+//! monochrome face. A cluster no face covers entirely is assigned
+//! character by character (marks staying with their base's face when
+//! it has them); characters no face has come out as the primary
+//! face's `.notdef`.
 //!
-//! The fallback decision is "first face where `glyph_index` returns a
-//! non-zero, defined glyph". A returned `0` is treated as `.notdef`
-//! (i.e. *not present*) because the primary face's `.notdef` is what
-//! we'd use as the *final* fallback anyway, and skipping over it lets
-//! a fallback face provide a real glyph.
+//! Each maximal run of one script in one face is then shaped by the
+//! engine in [`crate::shaping`]; `PositionedGlyph::face_idx` tells the
+//! consumer which face owns each glyph.
 //!
-//! ## Cache key impact
-//!
-//! `PositionedGlyph::face_idx` lets the rasterizer pick the right face
-//! out of the chain. The cache key already keys by `face_id` (per-face,
-//! globally unique), so a glyph from face[0] and a glyph from face[1]
-//! with the same numerical `glyph_id` never collide.
+//! The scripts whose shaping model is not specified in the staged
+//! documentation (Sinhala, Khmer, Myanmar) keep the character-level
+//! cluster model implemented in this module.
 
 use crate::Error;
 use crate::face::Face;
-use crate::shaper::{PositionedGlyph, shape_run_planned};
+use crate::shaper::{PositionedGlyph, ShapeOptions, shape_run_planned};
 use crate::shaping::arabic::{Script, compute_forms, script_of};
 use crate::shaping::arabic_pf::presentation_form;
+use crate::shaping::engine::{
+    NO_BASE, RunChar, RunGlyph, RunSpec, normalise_for_font, script_runs, shape_face_run,
+};
 use crate::shaping::indic::{
     BENGALI_RULES, BURMESE_RULES, DEVANAGARI_RULES, GUJARATI_RULES, GURMUKHI_RULES, IndicCategory,
     KANNADA_RULES, KHMER_RULES, LAO_RULES, MALAYALAM_RULES, ORIYA_RULES, ReorderRules,
@@ -36,6 +37,7 @@ use crate::shaping::indic::{
     reorder_cluster_with, script_indic_tags,
 };
 use crate::shaping::plan::LayoutPlan;
+use crate::shaping::text;
 use crate::style::Style;
 
 /// The chain's faces as parsed views. Each face keeps the view it
@@ -54,13 +56,84 @@ impl<'a> ParsedFaces<'a> {
 
     /// The parsed view of face `idx`.
     fn font(&mut self, idx: usize) -> Result<&'a oxideav_ttf::Font<'a>, Error> {
-        self.faces[idx].ttf()
+        self.faces[idx].layout_font()
     }
 
     /// The kept shaping plan of face `idx`.
     fn plan(&self, idx: usize) -> &'a LayoutPlan {
         self.faces[idx].layout_plan()
     }
+}
+
+/// The glyphs one face contributes to a line, in logical order.
+#[derive(Debug)]
+pub(crate) struct ShapedRun {
+    pub(crate) face_idx: u16,
+    pub(crate) glyphs: Vec<RunGlyph>,
+}
+
+/// Append `glyphs` to `runs`, as a new run or as the continuation of
+/// the last one when the face is the same. Attachment indices are
+/// rebased onto the merged run.
+fn push_run(runs: &mut Vec<ShapedRun>, face_idx: u16, mut glyphs: Vec<RunGlyph>) {
+    if glyphs.is_empty() {
+        return;
+    }
+    if let Some(last) = runs.last_mut()
+        && last.face_idx == face_idx
+    {
+        let shift = last.glyphs.len() as u32;
+        for g in &mut glyphs {
+            if g.base != NO_BASE {
+                g.base += shift;
+            }
+        }
+        last.glyphs.append(&mut glyphs);
+        return;
+    }
+    runs.push(ShapedRun { face_idx, glyphs });
+}
+
+/// The characters of `text`, each with the byte offset of the grapheme
+/// cluster (UAX #29) it belongs to.
+fn cluster_chars(text: &str) -> Vec<RunChar> {
+    if text.is_ascii() {
+        return text
+            .char_indices()
+            .map(|(i, ch)| RunChar {
+                ch,
+                cluster: i as u32,
+            })
+            .collect();
+    }
+    let mut out = Vec::with_capacity(text.len());
+    let mut offset = 0usize;
+    for g in intl::unicode::segment::graphemes(text) {
+        out.extend(g.chars().map(|ch| RunChar {
+            ch,
+            cluster: offset as u32,
+        }));
+        offset += g.len();
+    }
+    out
+}
+
+/// Strong right-to-left character (bidi class `R` or `AL`).
+fn is_strong_rtl(c: char) -> bool {
+    (c as u32) >= 0x590
+        && matches!(
+            crate::bidi::bidi_class(c),
+            crate::bidi::BidiClass::R | crate::bidi::BidiClass::AL
+        )
+}
+
+/// Scripts shaped through the character-level cluster model in this
+/// module (cluster segmentation, pre-base reordering and
+/// cluster-position features decided per character) rather than the
+/// table engine.
+fn uses_cluster_model(script: intl::unicode::script::Script) -> bool {
+    use intl::unicode::script::Script as S;
+    matches!(script, S::Sinhala | S::Khmer | S::Myanmar)
 }
 
 /// Ordered chain of faces. Index 0 is the primary; index N is consulted
@@ -171,38 +244,314 @@ impl FaceChain {
     }
 
     /// Shape `text` with full chain fallback at default style (upright,
-    /// regular).
+    /// regular) and the default [`ShapeOptions`]. Glyphs come back in
+    /// logical (reading) order with the pen advancing along +X; for
+    /// mixed-direction or right-to-left text use
+    /// [`crate::layout::shape_visual_line`], which arranges the runs
+    /// for display.
     pub fn shape(&self, text: &str, size_px: f32) -> Result<Vec<PositionedGlyph>, Error> {
-        self.shape_styled(text, size_px, Style::REGULAR)
+        self.shape_with_options(text, size_px, &ShapeOptions::new())
     }
 
     /// Shape `text` honouring `style` (italic / weight). The shear
     /// derived from `style` is applied at rasterise-time, not at
     /// shape-time — so glyph positions / advances stay identical
-    /// regardless of italic. This matches what desktop shapers do
-    /// (synthesised italic doesn't change the metrics).
+    /// regardless of italic (a synthesised slant does not change the
+    /// metrics).
     pub fn shape_styled(
         &self,
         text: &str,
         size_px: f32,
         _style: Style,
     ) -> Result<Vec<PositionedGlyph>, Error> {
+        self.shape(text, size_px)
+    }
+
+    /// Shape `text` under explicit [`ShapeOptions`]: feature switches
+    /// (`smcp`, `onum`, `-liga`, …), an OpenType language system, or
+    /// vertical layout.
+    ///
+    /// The pipeline, per call:
+    ///
+    /// 1. the text is itemised into script runs (UAX #24);
+    /// 2. every grapheme cluster is given to the first face of the
+    ///    chain that can draw all of it (a cluster carrying the emoji
+    ///    presentation selector prefers a colour face, one carrying
+    ///    the text presentation selector a monochrome face);
+    /// 3. each maximal (script, face) run is normalised for its face,
+    ///    mapped to glyphs and run through the face's `GSUB` and
+    ///    `GPOS` lookups for the script's language system.
+    ///
+    /// Glyphs are returned in logical order; each carries the byte
+    /// offset of its cluster in `text`.
+    pub fn shape_with_options(
+        &self,
+        text: &str,
+        size_px: f32,
+        opts: &ShapeOptions,
+    ) -> Result<Vec<PositionedGlyph>, Error> {
         if text.is_empty() || size_px <= 0.0 {
             return Ok(Vec::new());
         }
+        let runs = self.shape_runs(text, opts)?;
+        let mut out = Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
+        self.emit_runs(&runs, size_px, false, &mut out);
+        Ok(out)
+    }
 
-        // Step 1: per-codepoint, decide which face owns this glyph.
-        // Result: Vec<(face_idx, glyph_id)>.
-        let mut parsed = ParsedFaces::new(&self.faces);
-        let assigned = self.assign_codepoints(&mut parsed, text)?;
-        if assigned.is_empty() {
-            return Ok(Vec::new());
+    /// Shape one **directional run** and arrange it for display: with
+    /// `rtl` the glyphs come back leftmost first (the reverse of
+    /// reading order) with marks and kerning placed for that order, so
+    /// painting them left to right with the pen advancing by
+    /// `x_advance` draws the run correctly.
+    ///
+    /// This is the building block for callers that resolve bidi levels
+    /// themselves; [`crate::layout::shape_visual_line`] does both. The
+    /// whole of `text` is treated as one run of the given direction —
+    /// no bidi analysis is done here.
+    pub fn shape_visual_run(
+        &self,
+        text: &str,
+        size_px: f32,
+        opts: &ShapeOptions,
+        rtl: bool,
+    ) -> Result<Vec<PositionedGlyph>, Error> {
+        let mut out = Vec::new();
+        self.shape_directional(text, size_px, opts, rtl, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Self::shape_visual_run`] appending to `out`.
+    pub(crate) fn shape_directional(
+        &self,
+        text: &str,
+        size_px: f32,
+        opts: &ShapeOptions,
+        rtl: bool,
+        out: &mut Vec<PositionedGlyph>,
+    ) -> Result<(), Error> {
+        if text.is_empty() || size_px <= 0.0 {
+            return Ok(());
         }
+        let runs = if opts.rtl == Some(rtl) {
+            self.shape_runs(text, opts)?
+        } else {
+            self.shape_runs(text, &opts.clone().with_rtl(Some(rtl)))?
+        };
+        self.emit_runs(&runs, size_px, rtl, out);
+        Ok(())
+    }
 
-        // Step 2: walk runs of consecutive (face_idx) glyphs and shape
-        // each run within the appropriate face. Each run gets its own
-        // GSUB + GPOS pass.
-        let mut out: Vec<PositionedGlyph> = Vec::with_capacity(assigned.len());
+    /// Convert shaped runs (font units, Y up) to positioned glyphs in
+    /// raster pixels (Y down). `reversed` lays the runs out for a
+    /// right-to-left line: last run first, last glyph first.
+    fn emit_runs(
+        &self,
+        runs: &[ShapedRun],
+        size_px: f32,
+        reversed: bool,
+        out: &mut Vec<PositionedGlyph>,
+    ) {
+        let emit = |run: &ShapedRun, i: usize, out: &mut Vec<PositionedGlyph>| {
+            let scale =
+                size_px / f32::from(self.faces[run.face_idx as usize].units_per_em().max(1));
+            let g = run.glyphs[i];
+            let mut x_off = g.x_off;
+            if g.base != NO_BASE && (g.base as usize) < i {
+                let b = g.base as usize;
+                if reversed {
+                    // The base is drawn after the glyph: the pen still
+                    // has to cross everything between them.
+                    x_off += run.glyphs[b + 1..=i].iter().map(|g| g.x_adv).sum::<i32>();
+                } else {
+                    x_off -= run.glyphs[b..i].iter().map(|g| g.x_adv).sum::<i32>();
+                }
+            } else if reversed {
+                // An advance adjustment (kerning) changes the space
+                // towards the next glyph in reading order, which in a
+                // right-to-left line lies on the glyph's left: move
+                // the glyph with it.
+                x_off += g.adj;
+            }
+            out.push(PositionedGlyph {
+                glyph_id: g.gid,
+                x_offset: x_off as f32 * scale,
+                y_offset: -(g.y_off as f32) * scale,
+                x_advance: g.x_adv as f32 * scale,
+                face_idx: run.face_idx,
+                y_advance: -(g.y_adv as f32) * scale,
+                cluster: g.cluster,
+            });
+        };
+        if reversed {
+            for run in runs.iter().rev() {
+                for i in (0..run.glyphs.len()).rev() {
+                    emit(run, i, out);
+                }
+            }
+        } else {
+            for run in runs {
+                for i in 0..run.glyphs.len() {
+                    emit(run, i, out);
+                }
+            }
+        }
+    }
+
+    /// Itemise, assign faces and shape: the runs of `text` in logical
+    /// order.
+    fn shape_runs(&self, text: &str, opts: &ShapeOptions) -> Result<Vec<ShapedRun>, Error> {
+        let mut parsed = ParsedFaces::new(&self.faces);
+        let chars: Vec<RunChar> = cluster_chars(text);
+        let plain: Vec<char> = chars.iter().map(|rc| rc.ch).collect();
+        let scripts = crate::script::resolve_scripts(&plain);
+        let mut runs: Vec<ShapedRun> = Vec::new();
+        for (start, end, script) in script_runs(&scripts) {
+            let rtl = opts
+                .rtl
+                .unwrap_or_else(|| plain[start..end].iter().any(|&c| is_strong_rtl(c)));
+            let spec = RunSpec { script, rtl, opts };
+            if uses_cluster_model(script) {
+                self.shape_cluster_model_run(&mut parsed, &chars[start..end], &mut runs)?;
+            } else {
+                let faces = self.assign_faces(&mut parsed, &chars[start..end])?;
+                let mut s = 0usize;
+                while s < faces.len() {
+                    let face_idx = faces[s];
+                    let mut e = s + 1;
+                    while e < faces.len() && faces[e] == face_idx {
+                        e += 1;
+                    }
+                    let font = parsed.font(face_idx as usize)?;
+                    let plan = parsed.plan(face_idx as usize);
+                    let glyphs = shape_face_run(font, plan, &chars[start + s..start + e], &spec);
+                    push_run(&mut runs, face_idx, glyphs);
+                    s = e;
+                }
+            }
+        }
+        Ok(runs)
+    }
+
+    /// Face of every character of a script run: the first face that
+    /// draws the whole grapheme cluster, else character by character
+    /// (marks staying with their base's face when it has them).
+    fn assign_faces(
+        &self,
+        parsed: &mut ParsedFaces<'_>,
+        chars: &[RunChar],
+    ) -> Result<Vec<u16>, Error> {
+        let mut faces = vec![0u16; chars.len()];
+        if self.faces.len() <= 1 {
+            return Ok(faces);
+        }
+        let wants_glyph = |c: char| !text::is_default_ignorable(c) && !c.is_control();
+        // Common case: the primary face draws everything.
+        let primary = parsed.font(0)?;
+        if chars
+            .iter()
+            .all(|rc| !wants_glyph(rc.ch) || primary.glyph_index(rc.ch).is_some_and(|g| g != 0))
+            && !chars.iter().any(|rc| rc.ch == '\u{fe0f}')
+        {
+            return Ok(faces);
+        }
+        let mut s = 0usize;
+        while s < chars.len() {
+            let mut e = s + 1;
+            while e < chars.len() && chars[e].cluster == chars[s].cluster {
+                e += 1;
+            }
+            let cluster = &chars[s..e];
+            // Presentation selectors steer the choice between colour
+            // and monochrome faces.
+            let want_color = if cluster.iter().any(|rc| rc.ch == '\u{fe0f}') {
+                Some(true)
+            } else if cluster.iter().any(|rc| rc.ch == '\u{fe0e}') {
+                Some(false)
+            } else {
+                None
+            };
+            let mut chosen: Option<u16> = None;
+            'pass: for pass in 0..2 {
+                for (idx, face) in self.faces.iter().enumerate() {
+                    if let Some(want) = want_color {
+                        let is_color = face.is_color_font();
+                        // First pass: only faces of the wanted kind.
+                        if pass == 0 && is_color != want {
+                            continue;
+                        }
+                        if pass == 1 && is_color == want {
+                            continue;
+                        }
+                    } else if pass == 1 {
+                        break 'pass;
+                    }
+                    let font = parsed.font(idx)?;
+                    let normalised = normalise_for_font(font, cluster);
+                    let view: &[RunChar] = normalised.as_deref().unwrap_or(cluster);
+                    if view.iter().all(|rc| {
+                        !wants_glyph(rc.ch) || font.glyph_index(rc.ch).is_some_and(|g| g != 0)
+                    }) {
+                        chosen = Some(idx as u16);
+                        break 'pass;
+                    }
+                }
+            }
+            match chosen {
+                Some(idx) => faces[s..e].fill(idx),
+                None => {
+                    // No face draws the whole cluster: character by
+                    // character, marks preferring the base's face.
+                    let mut base_face: Option<u16> = None;
+                    for i in s..e {
+                        let c = chars[i].ch;
+                        if !wants_glyph(c) {
+                            faces[i] = base_face.unwrap_or(0);
+                            continue;
+                        }
+                        let mut found: Option<u16> = None;
+                        if text::is_mark(c)
+                            && let Some(b) = base_face
+                            && parsed
+                                .font(b as usize)?
+                                .glyph_index(c)
+                                .is_some_and(|g| g != 0)
+                        {
+                            found = Some(b);
+                        }
+                        if found.is_none() {
+                            for idx in 0..self.faces.len() {
+                                if parsed.font(idx)?.glyph_index(c).is_some_and(|g| g != 0) {
+                                    found = Some(idx as u16);
+                                    break;
+                                }
+                            }
+                        }
+                        faces[i] = found.or(base_face).unwrap_or(0);
+                        if !text::is_mark(c) {
+                            base_face = Some(faces[i]);
+                        }
+                    }
+                }
+            }
+            s = e;
+        }
+        Ok(faces)
+    }
+
+    /// Shape one run of a script that still goes through the
+    /// character-level cluster model (see [`uses_cluster_model`]).
+    fn shape_cluster_model_run(
+        &self,
+        parsed: &mut ParsedFaces<'_>,
+        chars: &[RunChar],
+        runs: &mut Vec<ShapedRun>,
+    ) -> Result<(), Error> {
+        // Shape at a power-of-two size so converting back to font
+        // units is exact for the usual unit-per-em values.
+        const SIZE: f32 = 4096.0;
+        let text: String = chars.iter().map(|rc| rc.ch).collect();
+        let assigned = self.assign_codepoints(parsed, &text)?;
         let mut run_start = 0usize;
         while run_start < assigned.len() {
             let face_idx = assigned[run_start].0;
@@ -213,85 +562,53 @@ impl FaceChain {
             let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
             let font = parsed.font(face_idx as usize)?;
             let plan = parsed.plan(face_idx as usize);
-            let mut run_glyphs = shape_run_planned(font, plan, &gids, size_px, face_idx);
-            out.append(&mut run_glyphs);
+            let shaped = shape_run_planned(font, plan, &gids, SIZE, face_idx);
+            let to_units = f32::from(font.units_per_em().max(1)) / SIZE;
+            let glyphs = shaped
+                .iter()
+                .map(|g| RunGlyph {
+                    gid: g.glyph_id,
+                    cluster: chars[0].cluster,
+                    x_off: (g.x_offset * to_units).round() as i32,
+                    y_off: (-g.y_offset * to_units).round() as i32,
+                    x_adv: (g.x_advance * to_units).round() as i32,
+                    y_adv: 0,
+                    base: NO_BASE,
+                    adj: 0,
+                })
+                .collect();
+            push_run(runs, face_idx, glyphs);
             run_start = run_end;
         }
-        Ok(out)
+        Ok(())
     }
 
-    /// Shape `text` with full chain fallback **and** the caller-requested
-    /// optional/discretionary OpenType GSUB features applied.
+    /// Shape `text` with full chain fallback and **only** the
+    /// caller-named substitution features (plus the positioning
+    /// features, which always run).
     ///
-    /// This is the chain-level entry point onto the round-362
-    /// positioned caller-feature surface
-    /// ([`crate::shaping::position_gids_with_features_with_font`]). Where
-    /// [`Self::shape`] applies only the always-on features (`ccmp` /
-    /// `liga` / `calt`), this method additionally runs the features the
-    /// caller names — typical entries are `smcp` (small caps), `c2sc`,
-    /// `case`, `frac`, `sups` / `subs`, `numr` / `dnom`, `onum` / `lnum`
-    /// / `pnum` / `tnum` (figure styles), `zero` (slashed zero), `ordn`,
-    /// `salt`, `ss01..ss20` (stylistic sets), `dlig`, `swsh`, and the
-    /// `cv01..cv99` per-character variant family — and then positions the
-    /// substituted run through the full GPOS pass (kerning, SinglePos,
-    /// mark-to-base / mark-to-mark / mark-to-ligature, cursive,
-    /// contextual positioning).
+    /// Typical entries are `smcp` (small caps), `c2sc`, `case`, `frac`,
+    /// `sups` / `subs`, `onum` / `lnum` / `pnum` / `tnum` (figure
+    /// styles), `zero` (slashed zero), `salt`, `ss01..ss20`, `dlig`.
+    /// The default substitution features (`ccmp`, `liga`, `calt`, …)
+    /// are *not* implied: a caller that wants them alongside its own
+    /// lists them, or uses [`Self::shape_with_options`], which starts
+    /// from the defaults.
     ///
-    /// Feature application order is the caller's `features` order. Each
-    /// per-face run is shaped within its own face (GSUB / GPOS lookups
-    /// are face-local), so a fallback face's run gets the same feature
-    /// list resolved against *that* face's script tables — a feature the
-    /// fallback face doesn't publish is a silent no-op for its run.
-    ///
-    /// An empty `features` slice is equivalent to [`Self::shape`]'s
-    /// always-on path *minus* the `ccmp` / `calt` passes: pure cmap +
-    /// GPOS positioning. Callers that want the always-on features AND
-    /// their own should include `ccmp` / `calt` / `liga` explicitly.
-    ///
-    /// The Arabic joining + Indic cluster pre-shaping that
-    /// [`Self::shape`] performs in [`Self::assign_codepoints`] runs here
-    /// too, so a feature-requesting caller still gets correct
-    /// presentation-form / cluster ordering before the GSUB feature pass.
+    /// Per the OpenType layout model the lookups of all the active
+    /// features are applied in the font's LookupList order, so the
+    /// order of `features` does not matter.
     pub fn shape_with_features(
         &self,
         text: &str,
         size_px: f32,
         features: &[[u8; 4]],
     ) -> Result<Vec<PositionedGlyph>, Error> {
-        if text.is_empty() || size_px <= 0.0 {
-            return Ok(Vec::new());
+        let mut opts = ShapeOptions::new().with_default_substitutions(false);
+        for &tag in features {
+            opts = opts.with_feature(tag, true);
         }
-
-        let mut parsed = ParsedFaces::new(&self.faces);
-        let assigned = self.assign_codepoints(&mut parsed, text)?;
-        if assigned.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut out: Vec<PositionedGlyph> = Vec::with_capacity(assigned.len());
-        let mut run_start = 0usize;
-        while run_start < assigned.len() {
-            let face_idx = assigned[run_start].0;
-            let mut run_end = run_start + 1;
-            while run_end < assigned.len() && assigned[run_end].0 == face_idx {
-                run_end += 1;
-            }
-            let gids: Vec<u16> = assigned[run_start..run_end].iter().map(|p| p.1).collect();
-            let font = parsed.font(face_idx as usize)?;
-            let upem = font.units_per_em().max(1) as f32;
-            let scale = size_px / upem;
-            let mut run_glyphs = crate::shaping::feature_subst::position_gids_with_features_planned(
-                font,
-                parsed.plan(face_idx as usize),
-                &gids,
-                scale,
-                features,
-                face_idx,
-            );
-            out.append(&mut run_glyphs);
-            run_start = run_end;
-        }
-        Ok(out)
+        self.shape_with_options(text, size_px, &opts)
     }
 
     /// Per-codepoint face assignment. For every char in `text`, walk

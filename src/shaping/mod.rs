@@ -49,10 +49,15 @@ pub mod arabic;
 pub mod arabic_pf;
 pub mod cluster;
 pub mod contextual_pos;
+pub(crate) mod engine;
 pub mod feature_subst;
 pub mod general;
 pub mod indic;
+pub(crate) mod indic_ot;
+pub(crate) mod joining;
 pub(crate) mod plan;
+pub(crate) mod staged;
+pub(crate) mod text;
 
 pub use arabic::{
     JoiningClass, JoiningForm, Script, compute_forms, feature_tags_for_run, joining_class,

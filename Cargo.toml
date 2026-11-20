@@ -32,9 +32,12 @@ oxideav-png = "0.1"
 # `Bidi_Mirroring_Glyph` (`unicode::bidi_mirror`) from compiled
 # const-fn tables, replacing the previously-vendored
 # `DerivedBidiClass.txt` / `BidiMirroring.txt` runtime parsers. Only
-# the `bidi` property tables over the full U+0000..=U+10FFFF range are
-# pulled in.
-intl = { version = "0.4", default-features = false, features = ["bidi", "full"] }
+# the property tables over the full U+0000..=U+10FFFF range are pulled
+# in. `normalization` supplies canonical decomposition / composition and
+# combining classes for the shaper's per-font normalisation step;
+# `segmentation` supplies UAX #29 grapheme clusters (font fallback is
+# decided per cluster) and UAX #14 line-break opportunities.
+intl = { version = "0.4", default-features = false, features = ["bidi", "full", "normalization", "segmentation"] }
 
 [dev-dependencies]
 # round5_cjk_fallback / round5_emoji integration tests fetch large

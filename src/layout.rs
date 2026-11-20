@@ -14,7 +14,7 @@ use crate::bidi::{
 };
 use crate::face::Face;
 use crate::face_chain::FaceChain;
-use crate::shaper::{PositionedGlyph, Shaper};
+use crate::shaper::{PositionedGlyph, ShapeOptions, Shaper};
 
 /// Width of a shaped run in raster pixels: cumulative advance + the
 /// trailing glyph's offset (which is normally 0; included for correctness
@@ -271,6 +271,21 @@ pub fn shape_visual_line(
     size_px: f32,
     base_level: Option<u8>,
 ) -> Result<ShapedVisualLine, Error> {
+    shape_visual_line_with(chain, text, size_px, base_level, &ShapeOptions::new())
+}
+
+/// [`shape_visual_line`] under explicit [`ShapeOptions`] (feature
+/// switches, language system, vertical layout). Each level run is
+/// shaped in its own direction, so mirrored punctuation, joining forms
+/// and mark placement follow the resolved bidi levels; glyph clusters
+/// are byte offsets into `text`.
+pub fn shape_visual_line_with(
+    chain: &FaceChain,
+    text: &str,
+    size_px: f32,
+    base_level: Option<u8>,
+    opts: &ShapeOptions,
+) -> Result<ShapedVisualLine, Error> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() || size_px <= 0.0 {
         return Ok(ShapedVisualLine {
@@ -301,18 +316,24 @@ pub fn shape_visual_line(
     // BD7 level-run partition.
     let runs = level_runs(&line_levels);
 
+    // Byte offset of every character (plus the end), to slice the
+    // logical text per run and to rebase clusters onto the line.
+    let mut offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    offsets.push(text.len());
+
     // Shape each run logically; record (visual_rank, glyphs).
     let mut shaped_runs: Vec<(usize, Vec<PositionedGlyph>)> = Vec::with_capacity(runs.len());
     for run in &runs {
-        let run_text: String = chars[run.start..run.end].iter().collect();
-        let mut glyphs = chain.shape(&run_text, size_px)?;
-        // RTL run: the shaped glyphs read left-to-right in logical
-        // order, but the run is laid out right-to-left, so reverse the
-        // glyph sequence. Advances stay attached to their glyph, so the
-        // pen still accumulates correctly when the reversed sequence is
-        // emitted left-to-right.
-        if run.level & 1 == 1 {
-            glyphs.reverse();
+        let run_text = &text[offsets[run.start]..offsets[run.end]];
+        // An odd level is a right-to-left run: its glyphs come back
+        // leftmost first, marks placed for that order.
+        let mut glyphs = Vec::new();
+        chain.shape_directional(run_text, size_px, opts, run.level & 1 == 1, &mut glyphs)?;
+        let shift = offsets[run.start] as u32;
+        if shift != 0 {
+            for g in &mut glyphs {
+                g.cluster += shift;
+            }
         }
         // The run's visual rank: among all runs, where does this one
         // land left-to-right? Use the minimum visual position of its

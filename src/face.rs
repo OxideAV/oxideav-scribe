@@ -384,6 +384,29 @@ impl Face {
         })
     }
 
+    /// The view shaping works on: glyph mapping, metrics and layout
+    /// tables. Available for TrueType and CFF faces alike.
+    pub(crate) fn layout_font(&self) -> Result<&oxideav_ttf::Font<'_>, Error> {
+        self.font.layout().ok_or(Error::WrongFaceKind {
+            expected: FaceKind::Ttf,
+            actual: self.kind,
+        })
+    }
+
+    /// `true` when the face carries colour glyphs of any kind (colour
+    /// bitmaps, `sbix` strikes, `COLR` layers or paint graphs, `SVG `
+    /// documents). Font fallback uses this to honour the emoji / text
+    /// presentation selectors.
+    pub fn is_color_font(&self) -> bool {
+        self.font.layout().is_some_and(|f| {
+            f.has_color_bitmaps()
+                || f.has_sbix()
+                || f.has_color_layers()
+                || f.has_colr_v1()
+                || f.has_svg()
+        })
+    }
+
     /// The face's kept shaping plan (only meaningful together with
     /// [`Self::ttf`]'s view).
     pub(crate) fn layout_plan(&self) -> &LayoutPlan {

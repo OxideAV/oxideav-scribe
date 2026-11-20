@@ -87,28 +87,33 @@ fn al_salam_shapes_to_presentation_form_b_gids() {
         .map(|&c| gid_for_codepoint(&face, c))
         .collect();
 
-    // Expected glyph sequence after PF-B substitution AND GSUB
-    // ligature collapse: ALEF-isol, LAM-init, SEEN-medi, then
-    // LAM-medi + ALEF-fina merged into the LAM-ALEF FINAL ligature
-    // (U+FEFC), then MEEM-isol. 5 glyphs total.
+    // Expected glyph sequence after the font's joining-form lookups
+    // (`init` / `medi` / `fina`) and its required lam-alef ligature
+    // (`rlig`): LAM-init, SEEN-medi, then LAM-medi + ALEF-fina merged
+    // into the LAM-ALEF FINAL ligature. The two letters that join to
+    // nothing — the leading ALEF and the trailing MEEM — keep their
+    // nominal glyphs: the font has no `isol` feature, so the nominal
+    // glyph *is* its isolated form. In DejaVu Sans the lookups' form
+    // glyphs are the ones `cmap` gives the presentation-form code
+    // points, which is what lets this test name them. 5 glyphs total.
     let expected_gids: Vec<u16> = vec![
-        gid_for_codepoint(&face, '\u{FE8D}'), // ALEF ISOL
+        gid_for_codepoint(&face, '\u{0627}'), // ALEF (isolated)
         gid_for_codepoint(&face, '\u{FEDF}'), // LAM INIT
         gid_for_codepoint(&face, '\u{FEB4}'), // SEEN MEDI
         gid_for_codepoint(&face, '\u{FEFC}'), // LAM-ALEF FINAL ligature
-        gid_for_codepoint(&face, '\u{FEE1}'), // MEEM ISOL
+        gid_for_codepoint(&face, '\u{0645}'), // MEEM (isolated)
     ];
 
-    // Sanity: every expected gid must differ from the corresponding
-    // naive gid (otherwise the test would tautologically pass on a
+    // Sanity: the three joined glyphs must differ from every naive
+    // gid (otherwise the test would tautologically pass on a
     // non-shaping pipeline).
-    let differing: usize = naive_gids
+    let differing: usize = expected_gids
         .iter()
-        .filter(|g| !expected_gids.contains(g))
+        .filter(|g| !naive_gids.contains(g))
         .count();
     assert!(
-        differing >= 5,
-        "fixture sanity: naive isolated gids must not appear in the joined output\n  naive    = {naive_gids:?}\n  expected = {expected_gids:?}",
+        differing >= 3,
+        "fixture sanity: joined forms must differ from the nominal glyphs\n  naive    = {naive_gids:?}\n  expected = {expected_gids:?}",
     );
 
     // Now shape via the chain — this is the round-7 hot path.
@@ -122,33 +127,31 @@ fn al_salam_shapes_to_presentation_form_b_gids() {
 
     assert_eq!(
         actual_gids, expected_gids,
-        "round-7 shaper must emit PF-B + LAM-ALEF-ligature gids\n  actual   = {actual_gids:?}\n  expected = {expected_gids:?}\n  naive    = {naive_gids:?}",
+        "the shaper must emit the joined forms + the LAM-ALEF ligature\n  actual   = {actual_gids:?}\n  expected = {expected_gids:?}\n  naive    = {naive_gids:?}",
     );
-    // Belt + braces: assert no naive isolated gid leaked into the
-    // output (i.e. the contextual substitution actually fired).
-    for g in &actual_gids {
+    // Belt + braces: the letters that join (everything between the
+    // first and the last glyph) are not their nominal glyphs.
+    for g in &actual_gids[1..actual_gids.len() - 1] {
         assert!(
             !naive_gids.contains(g),
-            "naive isolated gid {g} present in shaped output {actual_gids:?}",
+            "nominal gid {g} present among the joined glyphs {actual_gids:?}",
         );
     }
 }
 
 #[test]
 fn isolated_arabic_letter_emits_isolated_form() {
-    // A single ALEF in isolation should pick Isol form → U+FE8D.
+    // A single ALEF joins to nothing. DejaVu Sans has no `isol`
+    // feature, so the nominal glyph is the isolated form.
     let face = Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans parses");
-    let isol_alef_gid = gid_for_codepoint(&face, '\u{FE8D}');
-    if isol_alef_gid == 0 {
-        eprintln!("[round7-arabic] DejaVuSans missing U+FE8D; skipping");
-        return;
-    }
+    let alef_gid = gid_for_codepoint(&face, '\u{0627}');
+    assert_ne!(alef_gid, 0);
     let chain = FaceChain::new(face);
     let placed = chain.shape("\u{0627}", 32.0).expect("shape ALEF succeeds");
     assert_eq!(placed.len(), 1);
     assert_eq!(
-        placed[0].glyph_id, isol_alef_gid,
-        "isolated ALEF should map to U+FE8D gid"
+        placed[0].glyph_id, alef_gid,
+        "isolated ALEF keeps its nominal glyph"
     );
 }
 

@@ -200,7 +200,7 @@ pub use face::{BaselineAxis, Face, FaceKind};
 pub use face_chain::FaceChain;
 pub use layout::{
     ShapedParagraph, ShapedVisualLine, VisualLine, reorder_line_visual, run_width,
-    shape_paragraphs, shape_visual_line, wrap_and_shape_lines, wrap_lines,
+    shape_paragraphs, shape_visual_line, shape_visual_line_with, wrap_and_shape_lines, wrap_lines,
 };
 pub use outline_cache::{DEFAULT_BUDGET_BYTES, OutlineCache, OutlineCacheStats};
 pub use oxideav_ttf::{NamedInstance, VariationAxis};
@@ -208,7 +208,7 @@ pub use post::{PostTable, STANDARD_MAC_GLYPH_NAMES, standard_mac_glyph_name};
 pub use script::{
     ScriptRun, ot_script_tag, ot_script_tags, resolve_scripts, script_runs, script_runs_str,
 };
-pub use shaper::{PositionedGlyph, Shaper, ShaperBuilder};
+pub use shaper::{PositionedGlyph, ShapeOptions, Shaper, ShaperBuilder};
 pub use shaping::{
     BENGALI_RULES, BURMESE_RULES, ClusterCategory, ClusterFlags, DEVANAGARI_RULES, GUJARATI_RULES,
     GURMUKHI_RULES, IndicCategory, JoiningClass, JoiningForm, KANNADA_RULES, KHMER_RULES,

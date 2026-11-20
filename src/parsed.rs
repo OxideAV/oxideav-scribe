@@ -42,7 +42,14 @@ thread_local! {
 /// (boxed: the parser structs are a few kilobytes of table records).
 enum View {
     Ttf(Box<oxideav_ttf::Font<'static>>),
-    Otf(Box<oxideav_otf::Font<'static>>),
+    /// The CFF view plus, when the layout parser accepts the file,
+    /// its view of the same bytes: glyph mapping, metrics and the
+    /// `GSUB` / `GPOS` / `GDEF` tables are flavour-independent, so
+    /// shaping a CFF face uses the same engine as a TrueType one.
+    Otf(
+        Box<oxideav_otf::Font<'static>>,
+        Option<Box<oxideav_ttf::Font<'static>>>,
+    ),
 }
 
 /// Font bytes plus the view parsed from them. See the module docs for
@@ -60,7 +67,7 @@ impl std::fmt::Debug for ParsedFont {
                 "flavour",
                 &match self.view {
                     View::Ttf(_) => "ttf",
-                    View::Otf(_) => "otf",
+                    View::Otf(..) => "otf",
                 },
             )
             .field("bytes", &self.bytes.len())
@@ -113,8 +120,12 @@ impl ParsedFont {
         PARSE_COUNT.with(|c| c.set(c.get() + 1));
         // SAFETY: as in `new_ttf`.
         let font = oxideav_otf::Font::from_bytes(unsafe { extend(&bytes) }).map_err(Error::from)?;
+        // SAFETY: as in `new_ttf`; a second view over the same bytes.
+        let layout = oxideav_ttf::Font::from_bytes(unsafe { extend(&bytes) })
+            .ok()
+            .map(Box::new);
         Ok(Self {
-            view: View::Otf(Box::new(font)),
+            view: View::Otf(Box::new(font), layout),
             bytes,
         })
     }
@@ -135,14 +146,26 @@ impl ParsedFont {
                 // unmodified (module docs).
                 Some(unsafe { &*font.cast::<oxideav_ttf::Font<'s>>() })
             }
-            View::Otf(_) => None,
+            View::Otf(..) => None,
         }
+    }
+
+    /// The view shaping reads glyph mapping, metrics and layout tables
+    /// from: the TrueType view, or a CFF face's layout view.
+    pub(crate) fn layout<'s>(&'s self) -> Option<&'s oxideav_ttf::Font<'s>> {
+        let font: *const oxideav_ttf::Font<'static> = match &self.view {
+            View::Ttf(font) => &**font,
+            View::Otf(_, Some(font)) => &**font,
+            View::Otf(_, None) => return None,
+        };
+        // SAFETY: as in `ttf`.
+        Some(unsafe { &*font.cast::<oxideav_ttf::Font<'s>>() })
     }
 
     /// The OpenType-CFF view, if this is a CFF face.
     pub(crate) fn otf<'s>(&'s self) -> Option<&'s oxideav_otf::Font<'s>> {
         match &self.view {
-            View::Otf(font) => {
+            View::Otf(font, _) => {
                 let font: *const oxideav_otf::Font<'static> = &**font;
                 // SAFETY: as in `ttf`.
                 Some(unsafe { &*font.cast::<oxideav_otf::Font<'s>>() })
@@ -161,7 +184,7 @@ impl ParsedFont {
     ) -> Option<R> {
         match &mut self.view {
             View::Ttf(font) => Some(edit(font)),
-            View::Otf(_) => None,
+            View::Otf(..) => None,
         }
     }
 }

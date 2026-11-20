@@ -100,19 +100,14 @@ fn devanagari_path_does_not_disturb_ascii_runs() {
 
 #[test]
 fn devanagari_path_does_not_disturb_arabic_runs() {
-    // Regression guard: the round-7 Arabic substitution must continue
-    // to work with the round-8 Devanagari pre-cmap pass appended.
-    // ALEF in isolation must still pick the PF-B isolated form
-    // (U+FE8D) after the Devanagari pass runs (which is a no-op for
-    // Arabic input).
+    // Regression guard: Arabic shaping is unaffected by the Indic
+    // path. A lone ALEF joins to nothing and keeps its nominal glyph
+    // (DejaVu Sans has no `isol` feature).
     let face = Face::from_ttf_bytes(FIXTURE.to_vec()).expect("DejaVu Sans parses");
-    let isol_alef_gid = gid_for_codepoint(&face, '\u{FE8D}');
-    if isol_alef_gid == 0 {
-        eprintln!("[round8-devanagari] DejaVuSans missing U+FE8D; skipping Arabic regression");
-        return;
-    }
+    let alef_gid = gid_for_codepoint(&face, '\u{0627}');
+    assert_ne!(alef_gid, 0);
     let chain = FaceChain::new(face);
     let placed = chain.shape("\u{0627}", 32.0).expect("shape ALEF succeeds");
     assert_eq!(placed.len(), 1);
-    assert_eq!(placed[0].glyph_id, isol_alef_gid);
+    assert_eq!(placed[0].glyph_id, alef_gid);
 }

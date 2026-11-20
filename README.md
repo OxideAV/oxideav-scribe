@@ -86,8 +86,10 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   when the face is upright; falls back to the font's own slant when one
   is present. Bold synthesis is deferred to consumer code (or a real
   Bold face).
-- **Face chain** — multi-face fallback for missing codepoints; per-glyph
-  `face_idx` tells the consumer which face owns each glyph.
+- **Face chain** — multi-face fallback decided per grapheme cluster
+  (a base and its marks, an emoji sequence, a conjunct never split
+  across faces); per-glyph `face_idx` tells the consumer which face
+  owns each glyph. See [Shaping](#shaping).
 - **COLR / CPAL layered colour glyphs** — a `COLR` version 0 colour
   glyph comes back from `Face::glyph_node` as a `Node::Group` of one
   filled path per layer (bottom layer first), coloured from the default
@@ -100,34 +102,80 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `Node::Image` carrying a `VideoFrame`; resampling to the requested
   size happens in scribe (bilinear, straight-alpha).
 
-### Shaping (GSUB / GPOS)
+### Shaping
 
-- **GSUB substitution** — LookupType 1 (single), 2 (multiple), 3
-  (alternate), 4 (ligature), 5 (contextual), 6 (chained-contextual), and
-  8 (reverse-chaining contextual single) are all applied through the
-  caller-driven `Face::shape_text(text, features)` surface as well as
-  through the auto-probe `Shaper::shape` / `FaceChain::shape` path. The
-  contextual types dispatch each rule's nested `SequenceLookupRecord`
-  sub-lookups; type 8 is processed right-to-left per the GSUB chapter's
-  reverse-processing requirement. The required-feature `ccmp` runs as a
-  pre-ligature pass and `calt` as a post-ligature pass for every Latin /
-  Cyrillic / Greek / DFLT run. Worked examples:
-  `face.shape_text("fi", &[*b"liga"])` returns a single fi-ligature
-  glyph; `face.shape_text("Hi", &[*b"smcp"])` returns small-caps where
-  the font ships them; a `frac`/`calt` contextual rule the caller
-  requests now fires instead of passing through.
-- **GPOS positioning** — single adjustment (type 1), pair kerning
-  (type 2), cursive attachment (type 3, with the RIGHT_TO_LEFT lookup flag
-  honoured: clear cascades from the first glyph's baseline, set hangs
-  the chain from the last glyph's),
-  mark-to-base (type 4), mark-to-ligature (type 5), mark-to-mark
-  stacking (type 6), and contextual / chained-contextual positioning
-  (types 7 / 8). The contextual pass runs last so its nested per-glyph
-  adjustments layer on the post-kern / post-mark / post-cursive
-  geometry; it accumulates the `PosRecord` deltas the GPOS lookup
-  dispatches and is gated so plain Latin faces pay one lookup-list scan.
-  Together this is enough for Latin / Cyrillic / Greek / basic CJK /
-  Vietnamese / polytonic Greek.
+`FaceChain::shape` / `Shaper::shape` turn text into positioned glyphs
+(`PositionedGlyph`: glyph id, face, x / y offset, x / y advance, and
+the byte offset of the glyph's cluster in the text). Per call:
+
+1. **Itemise** — script runs by UAX #24 (adjacent scripts that share
+   an OpenType script, like Hiragana and Katakana, form one run).
+2. **Fall back** — each grapheme cluster (UAX #29) goes to the first
+   face of the chain that draws all of it. A cluster with the emoji
+   presentation selector U+FE0F prefers a colour face
+   (`Face::is_color_font`), one with the text selector U+FE0E a
+   monochrome face.
+3. **Normalise per font** — base + marks become the precomposed
+   character when the font has it (`e` + U+0301 → `é`), a precomposed
+   character the font lacks becomes base + marks, Hangul jamo compose
+   to syllables; marks are put in canonical order (with the Hebrew
+   letter points and the Arabic shadda kept next to their letter, so
+   the font's composition and mark-stacking lookups match);
+   right-to-left runs get mirrored brackets; a variation selector picks
+   the `cmap` variation glyph.
+4. **Substitute and position** — the script's default `GSUB` / `GPOS`
+   features under its (or the caller's) language system, in the font's
+   LookupList order, with `lookupFlag` filtering; advances at the
+   installed variation instance (`HVAR`), kerning and mark anchors with
+   their variation deltas; the legacy `kern` table when the font's
+   `GPOS` has no `kern` feature for the script.
+
+| Scripts | What is applied |
+|---------|-----------------|
+| Latin, Cyrillic, Greek, Armenian, Georgian and other "standard" scripts | `ccmp`, `locl`, `rlig`, `liga`, `clig`, `calt`, `rclt`, `kern`, `mark`, `mkmk`, `dist`, `curs`, `abvm`, `blwm`; marks attach to the ligature component they follow |
+| Arabic, Syriac, N'Ko, Mongolian and other cursive scripts | joining analysis from `Joining_Type` (marks transparent, ZWJ / tatweel join-causing, ZWNJ blocking); `isol` / `fina` / `medi` / `init` each on the glyphs of that form, then `rlig`, `calt`, `liga`, `mset`; `curs`, `kern`, `mark`, `mkmk`; fonts without form features fall back to their Arabic presentation-form glyphs |
+| Hebrew | standard features; points reordered so `ccmp` letter + dagesh / shin-dot compositions match; presentation-form composition when the font cannot attach marks |
+| Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam | the Indic procedure of the OpenType script-development specifications: syllables, base consonant found from the font's own below-base / post-base / pre-base forms, matra and sign reordering by the script's class table, `locl` `nukt` `akhn` `rphf` `rkrf` `pref` `blwf` `abvf` `half` `pstf` `vatu` `cjct` one at a time on their part of the syllable, final reordering (pre-base matra, reph, pre-base-reordering consonant), `init` `pres` `abvs` `blws` `psts` `haln` `calt`, then `kern` `dist` `abvm` `blwm` |
+| Thai, Lao | standard features (the scripts are stored in display order) |
+| Hangul | jamo composed to syllables when the font has them; standard features |
+| Han, Kana | standard features; `vert` alternates, vertical advances and origins in vertical runs; ideographic variation sequences |
+| Emoji | ZWJ sequences, skin-tone modifiers, flags, keycaps and tag sequences through the font's `GSUB`; presentation selectors steer the colour / text face |
+| Sinhala, Khmer, Myanmar | the character-level cluster model (`shaping::indic`): cluster segmentation, pre-base reordering, per-position single substitutions |
+
+- **Options** — `FaceChain::shape_with_options(text, size, &ShapeOptions)`:
+
+  ```rust
+  use oxideav_scribe::ShapeOptions;
+  let opts = ShapeOptions::new()
+      .with_feature(*b"smcp", true)        // small capitals on
+      .with_feature(*b"liga", false)       // standard ligatures off
+      .with_feature_value(*b"salt", 2)     // second stylistic alternate
+      .with_language(Some(*b"TRK "))       // Turkish language system
+      .with_vertical(false);
+  ```
+
+  `with_vertical(true)` lays the run out top-to-bottom (`vert`
+  substitution, `vmtx` / `VORG` advances and origins, `y_advance` set).
+  `FaceChain::shape_with_features` applies *only* the named
+  substitution features.
+- **Direction** — `shape` returns glyphs in reading order.
+  `FaceChain::shape_visual_run(text, size, &opts, rtl)` returns one
+  directional run arranged for display (a right-to-left run leftmost
+  glyph first, marks and kerning placed for that order);
+  `layout::shape_visual_line` does the bidi analysis and calls it per
+  level run.
+- **Invisible characters** — default-ignorable characters (ZWJ, ZWNJ,
+  soft hyphen, variation selectors without a variation glyph, …) come
+  out as a zero-advance space glyph; a space character the font lacks
+  (en / em / n-per-em / figure / punctuation / ideographic space) is
+  drawn with the space glyph at its defined width.
+- **CFF faces** shape through the same engine as TrueType ones.
+- **Lookup primitives** — the caller-driven surface is unchanged:
+  `Face::shape_text(text, features)` and friends apply named `GSUB`
+  features to a glyph run through the per-lookup-type entry points
+  (types 1–6 and 8), `Face::position_text*` adds a fixed `GPOS` pass
+  (single / pair / cursive / mark-to-base / mark-to-ligature /
+  mark-to-mark / contextual).
 - **Feature-tag introspection** — `Face::gsub_features_for_script` /
   `has_gsub_feature` and their GPOS mirror `gpos_features_for_script` /
   `has_gpos_feature` report the substitution / positioning feature tags
@@ -172,39 +220,31 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   result is identical to `position_text_with_script` under the resolved
   tag.
 
-### Complex-script shaping
+### Script machinery
 
-- **Arabic contextual joining** — `shaping::arabic` picks `isol` /
-  `init` / `medi` / `fina` per character via the joining-class state
-  machine; `FaceChain::shape` rewrites Arabic letters into their
-  Presentation Forms-B equivalents before cmap so cmap-only fonts
-  render the correct contextual shapes (including LAM-ALEF ligatures).
-- **Indic + Brahmic non-Indic shaping** — `shaping::indic` classifies
+- **Joining analysis** — `shaping::compute_forms` /
+  `shaping::joining_class` (Arabic) and the engine's `Joining_Type`
+  analysis choose `isol` / `init` / `medi` / `fina` per letter;
+  `shaping::presentation_form` maps a letter and a form to its Arabic
+  Presentation Forms code point for fonts without form lookups.
+- **Character-level Indic cluster model** — `shaping::indic` classifies
   Devanagari, Bengali, Tamil, Gurmukhi, Gujarati, Telugu, Kannada,
-  Malayalam, Oriya, Sinhala, Khmer, Thai, Lao, and Myanmar / Burmese,
-  segments runs into orthographic clusters, applies per-script pre-base
-  matra reorder, identifies reph (or the Burmese kinzi), rewrites the
-  leading RA to its reph form via `rphf`, and wires the
-  cluster-position-aware GSUB features (`half`, `pref` / `blwf` /
-  `abvf` / `pstf`, the presentation features `pres` / `psts` / `abvs` /
-  `blws`, and the context-aware `locl` / `nukt` / `akhn` / `cjct` /
-  `init` / `haln`). Per-script reorder rules are exposed as
-  `DEVANAGARI_RULES` / `BENGALI_RULES` / … / `BURMESE_RULES` for callers
-  reusing the cluster machine. Coverage misses pass through unchanged.
+  Malayalam, Oriya, Sinhala, Khmer, Thai, Lao and Myanmar characters,
+  segments runs into orthographic clusters and applies a per-script
+  pre-base reorder (`DEVANAGARI_RULES` / … / `BURMESE_RULES`,
+  `reorder_cluster_with`). The shaper itself uses it for Sinhala, Khmer
+  and Myanmar; the nine scripts listed above use the syllable-level
+  procedure instead.
 - **Universal cluster model** — `shaping::cluster` implements the
   script-agnostic combining-character-sequence cluster of UAX #24 §5.2
   (base + `Mn`/`Mc`/`Me` marks + ZWJ/ZWNJ join controls) for every
   script without a dedicated machine: `cluster_category`,
   `universal_cluster_boundaries` (half-open spans tiling the input),
   and `cluster_script` (the §5.2 first-real-script resolution).
-  `FaceChain`'s font fallback is **cluster-atomic** on top of it: a
-  combining mark is re-sourced from its cluster's base face whenever
-  that face covers it, so GPOS mark attachment never has to cross
-  faces; marks the base face lacks degrade to the per-character scan.
-  The per-script syllable grammars of the OpenType Universal Shaping
-  Engine (USE) model — reordering classes, syllable machines for e.g.
-  Balinese / Javanese / Cham / Tai Tham — need the per-script
-  script-development specs, which are not in the staged docs set.
+  The syllable grammar of the Universal Shaping Engine model (for
+  Balinese, Javanese, Cham, Tai Tham and the other scripts it covers)
+  is not implemented: those scripts shape with the standard feature
+  set, without reordering.
 
 ### Script itemisation
 
@@ -333,6 +373,67 @@ let rgba: oxideav_core::VideoFrame = Renderer::new(400, 80).render(&frame);
   `reorder_combining_marks` (L3), and `mirrored_glyph` /
   `apply_mirroring` (L4, `Bidi_Mirroring_Glyph` via the `intl` crate).
 
+## Shaping conformance
+
+`tests/shaping_conformance.rs` shapes a corpus of strings per script
+with every available font and compares the glyph ids, the absolute
+position of every glyph (± 1.5 font units) and the run advance with an
+expected run. For the committed fonts (DejaVu Sans, Inter Variable,
+Source Sans 3, Noto Sans Arabic) the expectations are committed in
+`tests/fixtures/shaping/expected.tsv`, so the comparison runs
+everywhere. When the `hb-shape` executable is installed it is run as a
+black-box reference as well, also over system fonts and the
+network-gated fixtures (cases whose font is absent are skipped).
+
+On the machine this was measured on — 325 runs over 17 fonts (the four
+committed ones; Arial, Times New Roman, Tahoma, SF Arabic, SF Hebrew,
+Kohinoor Devanagari, Kohinoor Bangla, Noto Sans Kannada, Arial Unicode
+MS, Apple SD Gothic Neo, Hiragino Sans; Noto Sans CJK and Noto Color
+Emoji from the fixture cache) — runs that agree with the reference:
+
+| Script group (cases) | before | now |
+|----------------------|-------:|----:|
+| Latin, Cyrillic, Greek: ligatures, kerning (GPOS and `kern` table), precomposed / combining / stacked marks, marks on ligatures, ZWJ / ZWNJ, variation selectors, spaces, `smcp` `c2sc` `onum` `tnum` `frac` `sups` `zero` `dlig` `ss01` `case` `-liga` `-kern`, variation instances (134) | 61 | 133 |
+| Arabic: joining forms, non-joiners, lam-alef, marks, shadda stacks, marks on lam-alef, tatweel, ZWJ / ZWNJ, Persian / Urdu letters, digits, punctuation (90) | 29 | 89 |
+| Hebrew: letters, points, dagesh, final forms, presentation forms (24) | 18 | 24 |
+| Devanagari: pre-base matra, conjuncts, reph, rakar, half forms, matras, signs, explicit halant with ZWJ / ZWNJ (22) | 5 | 19 |
+| Bengali: pre-base and split matras, conjuncts, reph, ya-phala (5) | 1 | 5 |
+| Kannada (3) | 0 | 2 |
+| Thai: tone marks, below vowels, SARA AM, leading vowels (12) | 4 | 7 |
+| Hangul: syllables, conjoining jamo L+V, L+V+T, syllable + T (15) | 6 | 15 |
+| CJK: horizontal, kana, ideographic variation sequences, vertical with punctuation and Latin (12) | 0 | 12 |
+| Emoji: presentation selectors, skin tones, ZWJ sequences, flags, keycaps, tag sequences (8) | 6 | 8 |
+| **Total (325)** | **130** | **314** |
+
+The 11 runs that differ are listed, with the reason, in
+`KNOWN_DEVIATIONS` in the harness (a listed run that starts to agree
+fails the test, so the list cannot go stale):
+
+- **Mark-to-mark before mark-to-base** (DejaVu Sans, two marks on one
+  base): the font lists its `mkmk` lookup before its `mark` lookups;
+  applied literally in that order the two marks land on the same
+  anchor and overlap. This crate applies mark-to-mark after
+  mark-to-base (the documented feature order), so the second mark sits
+  on the first.
+- **Thai** (5 runs, Tahoma and Arial Unicode MS): SARA AM decomposition
+  with the nikhahit reordered before a tone mark, and the selection of
+  the legacy private-use glyph variants in fonts without Thai `GSUB`,
+  are not specified in the staged documentation.
+- **Older Indic model** (3 runs, Arial Unicode MS): the matra and reph
+  conventions of fonts written for the pre-"2" script tags are not
+  specified beyond one sentence.
+- **Kannada vowel-sign ligature** (1 run): the font's `abvs` contextual
+  lookup is not applied by the font parser.
+- **Digits forced right-to-left** (1 run, SF Arabic): the reference
+  tool does no bidi analysis; real text puts digits in left-to-right
+  runs.
+
+Fonts shaped by Apple Advanced Typography `morx` tables with no `GSUB`
+(Thonburi, Apple Color Emoji) are outside OpenType Layout and are
+skipped. `SCRIBE_SHAPING_REPORT=1` prints every run's verdict;
+`SCRIBE_SHAPING_REGEN=1` rewrites the committed expectations from the
+reference tool.
+
 ## Performance
 
 A `Face` never re-parses its font. Before this was so, every
@@ -433,17 +534,24 @@ println!("{:?}", cache.stats()); // hits, misses, entries, bytes
   plain outline.
 - **CFF2 variable charstrings** — the `blend` operator is not yet
   emitted (the INDEX walker is parsed for table metadata only).
+- **Apple Advanced Typography layout** (`morx` / `kerx`) — fonts that
+  ship only AAT tables shape with `cmap` and `hmtx` alone.
+- **Universal Shaping Engine scripts**, **Hangul jamo forms** (`ljmo` /
+  `vjmo` / `tjmo` for sequences with no precomposed syllable) and
+  **Thai SARA AM decomposition** — see
+  [Shaping conformance](#shaping-conformance).
 - **TrueType bytecode hinting** and **subpixel LCD filtering** —
   deferred.
 
 ## Test fixtures
 
-Reuses `crates/oxideav-ttf/tests/fixtures/DejaVuSans.ttf` plus
-`DejaVuSansMono.ttf` (Bitstream Vera license),
-`crates/oxideav-otf/tests/fixtures/SourceSans3-Regular.otf` (SIL OFL),
-and a vendored copy of `InterVariable.ttf` (SIL OFL — see
-`tests/fixtures/INTER-OFL-LICENSE.txt`) for the variable-font suite.
-Network-gated emoji/CJK fixtures fetch on demand; see
+`tests/fixtures/` holds `DejaVuSans.ttf`, `DejaVuSansMono.ttf` and
+`DejaVuSansMono-Oblique.ttf` (Bitstream Vera license),
+`SourceSans3-Regular.otf` (SIL OFL), `InterVariable.ttf` (SIL OFL —
+see `INTER-OFL-LICENSE.txt`) and `NotoSansArabic-Regular.ttf` (SIL OFL
+— see `NOTO-ARABIC-OFL-LICENSE.txt`), plus the shaping expectations in
+`shaping/expected.tsv` (provenance: the `hb-shape` tool run on those
+fonts). Network-gated emoji / CJK fixtures fetch on demand; see
 `tests/font_fixtures/` and run with `OXIDEAV_NETWORK_TESTS=1`.
 
 ## License

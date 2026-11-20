@@ -81,13 +81,15 @@ fn ccmp_substitutes_capital_dot_above_dejavu() {
 
     let chain = FaceChain::new(face);
 
-    // For uppercase 'I' followed by a combining-above mark, DejaVu Sans
+    // For an uppercase letter followed by a combining-above mark
+    // ('Q' here: a pair with no precomposed character, so the shaper's
+    // normalisation leaves it as two characters), DejaVu Sans
     // ships a ccmp lookup that rewrites the MARK glyph (not the base —
-    // the capital I already has no dot). After ccmp the second glyph
+    // a capital carries no dot of its own). After ccmp the second glyph
     // is the case-specific variant the font uses to position the mark
-    // higher above the cap. The base 'I' is unchanged.
+    // higher above the cap. The base 'Q' is unchanged.
     let combined = chain
-        .shape("I\u{0307}", 16.0)
+        .shape("Q\u{0307}", 16.0)
         .expect("I + combining mark shape doesn't error");
     assert_eq!(combined.len(), 2, "I + mark stays two glyphs");
     assert_ne!(
@@ -98,23 +100,23 @@ fn ccmp_substitutes_capital_dot_above_dejavu() {
 
 #[test]
 fn ccmp_is_noop_for_a_with_combining_acute_dejavu() {
-    // Negative-control: DejaVu Sans publishes no `ccmp` rule for 'a' +
-    // combining acute (U+0301). The base 'a' glyph and the combining
+    // Negative-control: DejaVu Sans publishes no `ccmp` rule for 'q' +
+    // combining acute (U+0301). The base 'q' glyph and the combining
     // acute glyph both come out the cmap path unchanged. This proves
     // ccmp only fires when the font's coverage table matches — it
     // doesn't blanket-substitute every base+mark sequence.
     let face = Face::from_ttf_bytes(DEJAVU_BYTES.to_vec()).expect("DejaVu Sans parses");
-    let raw_a = cmap(&face, 'a');
+    let raw_a = cmap(&face, 'q');
     let raw_acute = cmap(&face, '\u{0301}');
     assert_ne!(raw_a, 0);
     assert_ne!(raw_acute, 0);
 
     let chain = FaceChain::new(face);
     let combined = chain
-        .shape("a\u{0301}", 16.0)
+        .shape("q\u{0301}", 16.0)
         .expect("a + combining acute shape doesn't error");
     assert_eq!(combined.len(), 2);
-    assert_eq!(combined[0].glyph_id, raw_a, "'a' MUST pass through");
+    assert_eq!(combined[0].glyph_id, raw_a, "'q' MUST pass through");
     assert_eq!(
         combined[1].glyph_id, raw_acute,
         "combining acute MUST pass through"

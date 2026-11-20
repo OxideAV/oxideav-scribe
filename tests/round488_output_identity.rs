@@ -5,6 +5,13 @@
 //! implementation (64-bit FNV-1a over the `Debug` rendering, which
 //! prints every `f32` in shortest round-trip form, so equal digests
 //! mean bit-equal coordinates).
+//!
+//! The outline and node digests are those original pins. The digests
+//! that cover *shaping* were taken again when shaping moved to the
+//! script-aware engine (normalisation, per-script feature sets, the
+//! font's joining-form lookups) and glyph records gained `cluster`
+//! and `y_advance`: they now pin that engine's output, cached and
+//! uncached, default and variation instance alike.
 
 use oxideav_scribe::{Face, FaceChain, OutlineCache, Shaper};
 use std::sync::Arc;
@@ -172,24 +179,24 @@ fn shaping_results_are_identical() {
     check(
         "DejaVuSans shaping",
         shaping_digest(Face::from_ttf_bytes(DEJAVU.to_vec()).unwrap()),
-        0x5244_07ec_dcea_ba95,
+        0xb3f7_9e53_28f1_2bde,
     );
     check(
         "Inter shaping",
         shaping_digest(Face::from_ttf_bytes(INTER.to_vec()).unwrap()),
-        0xa8aa_c244_b194_7a12,
+        0xdf55_d8e5_7f70_e1a0,
     );
     let mut bold = Face::from_ttf_bytes(INTER.to_vec()).unwrap();
     bold.set_variation_coords(&[700.0]).unwrap();
     check(
         "Inter wght=700 shaping",
         shaping_digest(bold),
-        0xae5d_ef64_6886_e612,
+        0xaaab_693c_b99c_9bca,
     );
     check(
         "SourceSans3 shaping",
         shaping_digest(Face::from_otf_bytes(SOURCE_SANS.to_vec()).unwrap()),
-        0x73f7_6100_83c7_f099,
+        0xbdd7_6484_f0fa_c7b8,
     );
 }
 
@@ -202,7 +209,7 @@ fn builder_installed_instance_matches_and_restores() {
     h.feed(&bold.shape_to_paths(&mut chain, LATIN, 24.0));
     h.feed(&bold.shape(&mut chain, LATIN, 24.0).ok());
     h.feed(&Shaper::shape_to_paths(&chain, LATIN, 24.0));
-    check("Inter builder sequence", h.0, 0x06ed_97a4_82bf_8691);
+    check("Inter builder sequence", h.0, 0x9319_d99f_7907_2351);
 }
 
 #[test]
@@ -261,7 +268,7 @@ fn cjk_collection_outlines_are_identical() {
     let chain = FaceChain::new(Face::from_ttf_bytes(DEJAVU.to_vec()).unwrap()).push_fallback(face);
     h.feed(&chain.shape("日本語 and Latin 한국어", 16.0).ok());
     h.feed(&Shaper::shape_to_paths(&chain, "日本語 mixed 中文", 18.0));
-    check("NotoSansCJK nodes", h.0, 0xb3dc_86b4_1572_edf0);
+    check("NotoSansCJK nodes", h.0, 0xea86_a9d9_d27c_5884);
 }
 
 /// The same pinned digests with an outline cache attached — cold,
@@ -310,13 +317,13 @@ fn outline_cache_reproduces_the_pinned_digests() {
     check(
         "DejaVuSans shaping (cache)",
         shaping_digest(with_cache(Face::from_ttf_bytes(DEJAVU.to_vec()).unwrap())),
-        0x5244_07ec_dcea_ba95,
+        0xb3f7_9e53_28f1_2bde,
     );
     let mut bold = with_cache(Face::from_ttf_bytes(INTER.to_vec()).unwrap());
     bold.set_variation_coords(&[700.0]).unwrap();
     check(
         "Inter wght=700 shaping (cache)",
         shaping_digest(bold),
-        0xae5d_ef64_6886_e612,
+        0xaaab_693c_b99c_9bca,
     );
 }

@@ -28,15 +28,16 @@ fn load_face() -> Face {
 
 #[test]
 fn double_diacritic_stacks_above_first() {
-    // 'e' + COMBINING CIRCUMFLEX ACCENT (U+0302) + COMBINING ACUTE
+    // 'q' + COMBINING CIRCUMFLEX ACCENT (U+0302) + COMBINING ACUTE
     // ACCENT (U+0301). This is the NFD decomposition of Vietnamese
-    // 'ế' (e with circumflex and acute). DejaVu Sans ships:
-    //   - mark-to-base anchor for ('e', circumflex)
+    // a doubly accented q (no precomposed character exists, so
+    // normalisation keeps the three characters apart). DejaVu Sans ships:
+    //   - mark-to-base anchor for ('q', circumflex)
     //   - mark-to-mark anchor for (circumflex, acute) at a strictly
     //     greater (more-negative-in-raster-space) Y than the
-    //     mark-to-base anchor for ('e', circumflex).
+    //     mark-to-base anchor for ('q', circumflex).
     //
-    // Without mark-to-mark, the acute would attach to 'e' directly
+    // Without mark-to-mark, the acute would attach to 'q' directly
     // and overlap the circumflex (same anchor, same height).
     //
     // NOTE on `y_offset` semantics: the shaper returns `y_offset` as a
@@ -51,7 +52,7 @@ fn double_diacritic_stacks_above_first() {
     // the circumflex), not `circumflex.y_offset < 0`.
     let face = load_face();
     let glyphs =
-        Shaper::shape(&face, "e\u{0302}\u{0301}", 32.0).expect("shape e + circumflex + acute");
+        Shaper::shape(&face, "q\u{0302}\u{0301}", 32.0).expect("shape q + circumflex + acute");
     assert_eq!(glyphs.len(), 3, "expected 3 glyphs (no precomposed)");
 
     let base = glyphs[0];
@@ -83,7 +84,7 @@ fn double_diacritic_stacks_above_first() {
     );
 
     // Both marks share the base's pen X (mark-to-base put them on top of
-    // 'e' first; mark-to-mark only adjusts y).
+    // 'q' first; mark-to-mark only adjusts y).
     assert!(
         (circumflex.x_offset - acute.x_offset).abs() < 1e-3,
         "marks should be horizontally co-located: cx={} acute={}",
@@ -93,7 +94,7 @@ fn double_diacritic_stacks_above_first() {
 
     // The acute should sit STRICTLY ABOVE the circumflex (more
     // negative y_offset in raster space). If the round-3 fallback ran
-    // instead of the round-4 path, the acute would attach to 'e' at the
+    // instead of the round-4 path, the acute would attach to 'q' at the
     // SAME anchor as the circumflex, leaving acute.y_offset ==
     // circumflex.y_offset (overlap).
     //
@@ -127,8 +128,8 @@ fn mark_on_mark_y_offset_proportional_to_size() {
     // Same Vietnamese-style stack at two sizes — the gap between the
     // circumflex y_offset and the acute y_offset must scale with size.
     let face = load_face();
-    let small = Shaper::shape(&face, "e\u{0302}\u{0301}", 16.0).expect("shape small");
-    let large = Shaper::shape(&face, "e\u{0302}\u{0301}", 64.0).expect("shape large");
+    let small = Shaper::shape(&face, "q\u{0302}\u{0301}", 16.0).expect("shape small");
+    let large = Shaper::shape(&face, "q\u{0302}\u{0301}", 64.0).expect("shape large");
     assert_eq!(small.len(), 3);
     assert_eq!(large.len(), 3);
 
@@ -152,7 +153,7 @@ fn single_mark_unaffected_by_round4() {
     // identical positioning whether the round-4 mark-to-mark path
     // exists or not — there's no previous mark to stack on.
     let face = load_face();
-    let glyphs = Shaper::shape(&face, "A\u{0301}", 32.0).expect("shape A + acute");
+    let glyphs = Shaper::shape(&face, "Q\u{0301}", 32.0).expect("shape Q + acute");
     assert_eq!(glyphs.len(), 2);
     let mark = glyphs[1];
     assert!(
@@ -183,7 +184,7 @@ fn mark_to_mark_falls_back_to_base_when_pair_uncovered() {
     // y_offset as the first (overlap is fine — it's a degenerate
     // input that no real text uses).
     let face = load_face();
-    let glyphs = Shaper::shape(&face, "A\u{0301}\u{0301}", 32.0).expect("shape");
+    let glyphs = Shaper::shape(&face, "Q\u{0301}\u{0301}", 32.0).expect("shape");
     assert_eq!(glyphs.len(), 3);
     // Both marks must end up positioned (non-zero y_offset, zero
     // advance) — what we're really testing is "no panic, no skipped
