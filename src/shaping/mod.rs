@@ -1,5 +1,17 @@
-//! Script-aware shaping helpers layered on top of the cmap → GSUB →
-//! GPOS pipeline in [`crate::shaper`].
+//! Shaping: the engine behind [`crate::FaceChain::shape`] and the
+//! script helpers around it.
+//!
+//! The engine proper is internal: `engine` (per-run pipeline:
+//! per-font normalisation, script / language-system selection,
+//! default features, the table-driven path, client-side clean-up),
+//! `staged` (glyph buffer with per-glyph feature masks, stage-by-stage
+//! substitution with `lookupFlag` filtering and ligature-component
+//! tracking, positioning), `joining` (cursive scripts), `indic_ot`
+//! (the Indic syllable procedure), `plan` (what is resolved once per
+//! face) and `text` (character properties).
+//!
+//! The public modules are the building blocks that came first and
+//! remain available on their own:
 //!
 //! - Round 7: [`arabic`] — Unicode joining-class lookup + the
 //!   adjacency state machine that picks `Isol` / `Init` / `Medi` /

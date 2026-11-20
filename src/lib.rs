@@ -8,48 +8,27 @@
 //! [`oxideav-raster`](https://github.com/OxideAV/oxideav-raster).
 //!
 //! Scope:
-//! - **Shaper** — `cmap` + GSUB type 4 (ligatures) + GPOS type 2
-//!   (pair kerning) + mark-to-base / mark-to-mark, enough for Latin /
-//!   Cyrillic / Greek / basic CJK / Vietnamese / polytonic Greek.
-//! - **Arabic contextual joining (round 7)** — `shaping::arabic`
-//!   computes the joining form per character using the Unicode joining
-//!   classes + an adjacency state machine; `FaceChain::shape` then
-//!   translates Arabic letters into their Arabic Presentation Forms-B
-//!   equivalents (U+FE70..U+FEFF) before cmap, so a font that ships
-//!   the PF-B block (DejaVuSans, Noto Sans Arabic, Amiri) renders
-//!   visually-correct contextual shapes — including LAM-ALEF
-//!   ligatures via the existing GSUB pass.
-//! - **Indic + Brahmic complex-script shaping (rounds 8 + 10 + 11 +
-//!   12 + 13)** — `shaping::indic` classifies Devanagari
-//!   (U+0900..U+097F), Bengali (U+0980..U+09FF), Tamil
-//!   (U+0B80..U+0BFF), Gurmukhi (U+0A00..U+0A7F), Gujarati
-//!   (U+0A80..U+0AFF), Telugu (U+0C00..U+0C7F), Kannada
-//!   (U+0C80..U+0CFF), Malayalam (U+0D00..U+0D7F), Oriya
-//!   (U+0B00..U+0B7F), Sinhala (U+0D80..U+0DFF), Khmer
-//!   (U+1780..U+17FF), Thai (U+0E00..U+0E7F), Lao (U+0E80..U+0EFF),
-//!   and Myanmar / Burmese (U+1000..U+109F) codepoints into syllabic
-//!   categories, segments runs into orthographic clusters, and
-//!   applies per-script cluster transformations: pre-base matra
-//!   reorder (a uniform mechanism across all scripts that have one)
-//!   plus reph identification (the Indic core scripts; Tamil +
-//!   Malayalam + Sinhala + Khmer + Thai + Lao are reph-disabled;
-//!   Burmese identifies a kinzi NGA+Asat+Virama+Cons instead via
-//!   `RephKind::BurmeseKinzi`). Khmer's halant role is played by
-//!   U+17D2 COENG which stacks subjoined consonants underneath the
-//!   base; Thai + Lao have no halant and their pre-base vowels are
-//!   already in storage order before their consonant. The
-//!   `FaceChain::shape` pipeline applies the reorder before cmap so
-//!   cmap-only fonts render simple clusters with the matra in the
-//!   correct visual position. When the active face publishes a
-//!   `rphf` GSUB lookup for the script, identified reph clusters
-//!   get the leading RA glyph substituted to its reph-form and the
-//!   halant glyph dropped via `Font::gsub_apply_lookup_type_1`.
-//!   Round 11 wires cluster-position GSUB features (`half` / `pref`
-//!   / `blwf` / `abvf` / `pstf` / `pres` / `psts` / `abvs` / `blws`).
-//!   Round 13 adds a multi-glyph context-aware GSUB pass dispatching
-//!   `locl` / `nukt` / `akhn` / `cjct` / `init` / `haln` via
-//!   `Font::gsub_apply_lookup_type_5` (Contextual) +
-//!   `gsub_apply_lookup_type_6` (Chained Context).
+//! - **Shaper** — [`FaceChain::shape`] / [`Shaper::shape`]: script
+//!   itemisation (UAX #24), grapheme-cluster font fallback, per-font
+//!   normalisation, then each script's default `GSUB` / `GPOS`
+//!   features under its language system. Latin-type scripts, Hebrew,
+//!   Thai, Hangul, CJK and emoji go through the font parser's lookup
+//!   engine; cursive-joining scripts (Arabic, Syriac, …) and nine
+//!   Indic scripts go through the staged engine in [`shaping`], with
+//!   per-glyph feature masks (joining forms; syllable positions and
+//!   reordering per the OpenType script-development specifications).
+//!   [`ShapeOptions`] switches features, picks a language system and
+//!   selects vertical layout. See the README's "Shaping" and "Shaping
+//!   conformance" sections.
+//! - **Script helpers** — [`shaping::arabic`] (joining classes and
+//!   forms, Arabic presentation-form mapping for fonts without form
+//!   lookups) and [`shaping::indic`] (the character-level cluster
+//!   model: categories, cluster boundaries, pre-base reordering for
+//!   fourteen Brahmic scripts — used by the shaper for Sinhala, Khmer
+//!   and Myanmar).
+//! - **Paragraph layout** — [`layout_text`]: UAX #14 line breaking,
+//!   alignment and justification, tab stops, per-paragraph direction,
+//!   vertical columns.
 //! - **Variable fonts (rounds 9 + 14)** — `Face::set_variation_coords`
 //!   / `variation_axes` / `named_instances` / `is_variable` surface
 //!   the font's `fvar` declarations; outlines flow through
