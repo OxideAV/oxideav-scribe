@@ -37,7 +37,6 @@ use crate::shaping::text;
 use intl::unicode::script::Script;
 use intl::unicode::{IndicPositionalCategory as Ipc, IndicSyllabicCategory as Isc};
 use oxideav_ttf::Font;
-use std::collections::HashMap;
 
 // Positions inside a syllable, in display order (the specification's
 // "Reph + HalfConsonant(s) + MainConsonant(s) + BelowBaseConsonant(s)
@@ -357,7 +356,9 @@ struct Forms<'f, 'a> {
     /// The font follows the older model: every form feature is
     /// written for Consonant + Halant.
     old_model: bool,
-    memo: HashMap<([u8; 4], char, char), bool>,
+    /// The script tag answers are kept under (`None`: a language
+    /// system or a variation instance may change them).
+    keep: Option<[u8; 4]>,
 }
 
 impl Forms<'_, '_> {
@@ -366,25 +367,27 @@ impl Forms<'_, '_> {
     /// additional glyphs in context, the consonant has the
     /// corresponding form")?
     fn substitutes(&mut self, feature: [u8; 4], a: char, b: char) -> bool {
-        if let Some(&hit) = self.memo.get(&(feature, a, b)) {
-            return hit;
-        }
-        let font = self.font;
-        let lookups = plan_stage(
-            font,
-            self.plan,
-            self.features,
-            &[(feature, GLOBAL, 1), (*b"locl", GLOBAL, 1)],
-            false,
-        );
-        let formed = !lookups.is_empty() && {
-            let glyph = |c: char| Glyph::new(font.glyph_index(c).unwrap_or(0), c, 0);
-            let mut buffer = Buffer::new(vec![glyph(a), glyph(b)]);
-            buffer.substitute(font, &lookups);
-            buffer.glyphs.iter().any(|g| g.substituted)
+        let (font, plan, features) = (self.font, self.plan, self.features);
+        let probe = || {
+            let lookups = plan_stage(
+                font,
+                plan,
+                features,
+                &[(feature, GLOBAL, 1), (*b"locl", GLOBAL, 1)],
+                false,
+            );
+            !lookups.is_empty() && {
+                let glyph = |c: char| Glyph::new(font.glyph_index(c).unwrap_or(0), c, 0);
+                let mut buffer = Buffer::new(vec![glyph(a), glyph(b)]);
+                buffer.substitute(font, plan, &lookups);
+                buffer.glyphs.iter().any(|g| g.substituted)
+            }
         };
-        self.memo.insert((feature, a, b), formed);
-        formed
+        match self.keep {
+            // The answer depends on the font only: kept per face.
+            Some(tag) => plan.form((tag, feature, a, b), probe),
+            None => probe(),
+        }
     }
 
     /// Does the consonant `c` take the form of `feature` after a
@@ -710,7 +713,9 @@ pub(crate) fn shape_indic(
         plan,
         features: &gsub,
         old_model,
-        memo: HashMap::new(),
+        keep: tags
+            .gsub
+            .filter(|_| spec.opts.language.is_none() && !font.gsub_has_feature_variations()),
     };
 
     // Split multi-part matras the script reorders by part.
@@ -802,17 +807,18 @@ pub(crate) fn shape_indic(
         .filter(|t| t == b" RQD" || on(t))
         .map(|t| (t, GLOBAL, 1))
         .collect();
-    let lookups = plan_stage(font, plan, &gsub, &pre, false);
-    buffer.substitute(font, &lookups);
+    let lang = spec.opts.language;
+    let lookups = tags.stage(font, plan, lang, &pre, false);
+    buffer.substitute(font, plan, &lookups);
     for (tag, mask) in basic {
         if tag == *b"locl" && !on(&tag) {
             continue;
         }
-        let lookups = plan_stage(font, plan, &gsub, &[(tag, mask, 1)], false);
+        let lookups = tags.stage(font, plan, lang, &[(tag, mask, 1)], false);
         if lookups.is_empty() {
             continue;
         }
-        buffer.substitute(font, &lookups);
+        buffer.substitute(font, plan, &lookups);
         if &tag == b"pref" {
             for g in &mut buffer.glyphs {
                 if g.mask & PREF != 0 && g.ligated && g.class != BASE {
@@ -836,6 +842,8 @@ pub(crate) fn shape_indic(
         s = e;
     }
 
+    buffer.invalidate();
+
     // Presentation forms, together.
     let basic_tags: Vec<[u8; 4]> = basic.iter().map(|b| b.0).collect();
     let positioning: [[u8; 4]; 7] = [
@@ -853,20 +861,20 @@ pub(crate) fn shape_indic(
             stage.push((t, GLOBAL, value(t)));
         }
     }
-    let lookups = plan_stage(font, plan, &gsub, &stage, false);
-    buffer.substitute(font, &lookups);
+    let lookups = tags.stage(font, plan, lang, &stage, false);
+    buffer.substitute(font, plan, &lookups);
 
     // Positioning runs over the whole run.
     buffer.bounded = false;
-    let gpos = tags.gpos_features(font, plan, spec.opts.language);
+    buffer.invalidate();
     let stage: Vec<([u8; 4], u32, u32)> = active
         .iter()
         .filter(|t| positioning.contains(t))
         .map(|&t| (t, GLOBAL, value(t)))
         .chain(std::iter::once((*b" RQD", GLOBAL, 1)))
         .collect();
-    let lookups = plan_stage(font, plan, &gpos, &stage, true);
-    buffer.position(font, &lookups, false, false, false)
+    let lookups = tags.stage(font, plan, lang, &stage, true);
+    buffer.position(font, plan, &lookups, false, false, false)
 }
 
 #[cfg(test)]

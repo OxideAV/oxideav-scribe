@@ -186,6 +186,43 @@ impl PlainTags {
     }
 }
 
+impl PlainTags {
+    /// The lookups of one stage of the staged engine, in LookupList
+    /// order. Kept per face for the default language system.
+    pub(crate) fn stage(
+        &self,
+        font: &Font<'_>,
+        plan: &LayoutPlan,
+        lang: Option<[u8; 4]>,
+        features: crate::shaping::staged::StageFeatures<'_>,
+        positioning: bool,
+    ) -> std::sync::Arc<[crate::shaping::staged::StageLookup]> {
+        use crate::shaping::staged::plan_stage;
+        let Some(tag) = (if positioning { self.gpos } else { self.gsub }) else {
+            return std::sync::Arc::from(Vec::new());
+        };
+        let build = || {
+            let table = if positioning {
+                self.gpos_features(font, plan, lang)
+            } else {
+                self.gsub_features(font, plan, lang)
+            };
+            plan_stage(font, plan, &table, features, positioning)
+        };
+        // A variation instance can swap feature tables
+        // (FeatureVariations), and a language system selects its own:
+        // only the plain case is kept.
+        if lang.is_none()
+            && !font.gsub_has_feature_variations()
+            && !font.gpos_has_feature_variations()
+        {
+            plan.stage(positioning, tag, features, build)
+        } else {
+            build().into()
+        }
+    }
+}
+
 /// Map a normalised run to its nominal glyphs for the staged engine:
 /// one glyph per character, a variation selector folded into its
 /// base's `cmap` variation glyph, default-ignorable characters marked
@@ -627,7 +664,7 @@ fn shape_general_staged(
     tags: &PlainTags,
     features: &[[u8; 4]],
 ) -> Vec<RunGlyph> {
-    use crate::shaping::staged::{Buffer, GLOBAL, plan_stage};
+    use crate::shaping::staged::{Buffer, GLOBAL};
     let (glyphs, _) = base_glyphs(font, chars);
     let mut buffer = Buffer::new(glyphs);
     let stage: Vec<([u8; 4], u32, u32)> = features
@@ -635,14 +672,14 @@ fn shape_general_staged(
         .map(|&t| (t, GLOBAL, spec.opts.feature(t).unwrap_or(1)))
         .chain(std::iter::once((*b" RQD", GLOBAL, 1)))
         .collect();
-    let gsub = tags.gsub_features(font, plan, spec.opts.language);
-    buffer.substitute(font, &plan_stage(font, plan, &gsub, &stage, false));
-    let gpos = tags.gpos_features(font, plan, spec.opts.language);
-    let lookups = plan_stage(font, plan, &gpos, &stage, true);
+    let lang = spec.opts.language;
+    buffer.substitute(font, plan, &tags.stage(font, plan, lang, &stage, false));
+    let gpos = tags.gpos_features(font, plan, lang);
+    let lookups = tags.stage(font, plan, lang, &stage, true);
     let kern_on = features.contains(b"kern") && !spec.opts.vertical;
     let legacy_kern =
         kern_on && !gpos.iter().any(|f| &f.tag == b"kern") && font.kern_header_variant().is_some();
-    let mut out = buffer.position(font, &lookups, legacy_kern, true, spec.rtl);
+    let mut out = buffer.position(font, plan, &lookups, legacy_kern, true, spec.rtl);
     if spec.opts.vertical {
         make_vertical(font, &mut out);
     }

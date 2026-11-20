@@ -57,3 +57,9 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 [[bench]]
 name = "hot_paths"
 harness = false
+
+# `cargo bench --bench shaping` — shaping per glyph (warm and cold),
+# paragraph layout of a 100 000-character document, outline retrieval.
+[[bench]]
+name = "shaping"
+harness = false

@@ -22,7 +22,7 @@ use crate::shaping::arabic::JoiningForm;
 use crate::shaping::arabic_pf::presentation_form;
 use crate::shaping::engine::{PlainTags, RunChar, RunGlyph, RunSpec, active_features, base_glyphs};
 use crate::shaping::plan::LayoutPlan;
-use crate::shaping::staged::{Buffer, GLOBAL, plan_stage};
+use crate::shaping::staged::{Buffer, GLOBAL};
 use intl::unicode::JoiningType;
 use oxideav_ttf::Font;
 
@@ -185,8 +185,8 @@ pub(crate) fn shape_joining(
         if stage.is_empty() {
             continue;
         }
-        let lookups = plan_stage(font, plan, &gsub, &stage, false);
-        buffer.substitute(font, &lookups);
+        let lookups = tags.stage(font, plan, spec.opts.language, &stage, false);
+        buffer.substitute(font, plan, &lookups);
     }
 
     let gpos = tags.gpos_features(font, plan, spec.opts.language);
@@ -195,11 +195,11 @@ pub(crate) fn shape_joining(
         .map(|&t| (t, GLOBAL, value(t)))
         .chain(std::iter::once((*b" RQD", GLOBAL, 1)))
         .collect();
-    let lookups = plan_stage(font, plan, &gpos, &stage, true);
+    let lookups = tags.stage(font, plan, spec.opts.language, &stage, true);
     let kern_on = on(b"kern") && !spec.opts.vertical;
     let gpos_kerns = gpos.iter().any(|f| &f.tag == b"kern");
     let legacy_kern = kern_on && !gpos_kerns && font.kern_header_variant().is_some();
-    buffer.position(font, &lookups, legacy_kern, true, spec.rtl)
+    buffer.position(font, plan, &lookups, legacy_kern, true, spec.rtl)
 }
 
 #[cfg(test)]

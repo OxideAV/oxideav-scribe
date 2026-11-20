@@ -110,6 +110,12 @@ const SKIP_FLAGS: u16 = 0xFF1E;
 const CONTEXT_BEFORE: usize = 32;
 const CONTEXT_AFTER: usize = 64;
 
+/// The longest ligature a lookup is offered, in components.
+const LIGATURE_COMPONENTS: usize = 24;
+
+/// [`Buffer::slot`] value of a glyph the current lookup skips.
+const SKIPPED: u32 = u32::MAX;
+
 /// The features of one stage: `(tag, mask bit, value)`.
 pub(crate) type StageFeatures<'a> = &'a [([u8; 4], u32, u32)];
 
@@ -178,9 +184,17 @@ pub(crate) struct Buffer {
     /// looked through.
     pub(crate) joiners_block: bool,
     next_lig_id: u16,
-    /// Scratch: glyph ids shown to a lookup, and their buffer indices.
+    /// The current lookup's view (see [`Buffer::prepare`]): glyph ids
+    /// of the unskipped glyphs, their buffer indices, and each buffer
+    /// position's place in the view.
     view: Vec<u16>,
     view_index: Vec<usize>,
+    slot: Vec<u32>,
+    /// What the view was built for: the lookup's skip flags, its mark
+    /// filtering set, and whether it is a positioning lookup.
+    view_key: Option<(u16, Option<u16>, bool)>,
+    /// An edit made the view stale.
+    dirty: bool,
 }
 
 impl Buffer {
@@ -192,7 +206,16 @@ impl Buffer {
             next_lig_id: 0,
             view: Vec::new(),
             view_index: Vec::new(),
+            slot: Vec::new(),
+            view_key: None,
+            dirty: true,
         }
+    }
+
+    /// The caller reordered or otherwise edited [`Self::glyphs`]
+    /// directly: the kept view no longer describes the buffer.
+    pub(crate) fn invalidate(&mut self) {
+        self.dirty = true;
     }
 
     fn fresh_lig_id(&mut self) -> u16 {
@@ -200,98 +223,165 @@ impl Buffer {
         self.next_lig_id
     }
 
-    /// Whether `lookup` passes over the glyph at `i` while matching.
+    /// Build the lookup's view of the buffer: the glyph ids of every
+    /// glyph the lookup does not skip, their buffer indices, and for
+    /// each buffer position its place in the view ([`SKIPPED`] when
+    /// the lookup passes over it). Rebuilt after every edit.
+    ///
     /// Besides the `lookupFlag` rules, an invisible default-ignorable
     /// glyph is transparent to matching — except ZERO WIDTH NON-JOINER
-    /// in substitution, whose purpose is to keep its neighbours apart.
-    fn skips(&self, font: &Font<'_>, lookup: &StageLookup, i: usize, positioning: bool) -> bool {
-        let g = &self.glyphs[i];
-        if g.ignorable
-            && (positioning || !(g.ch == '\u{200c}' || (g.ch == '\u{200d}' && self.joiners_block)))
-        {
-            return true;
-        }
-        lookup.flags & SKIP_FLAGS != 0
-            && font.lookup_skips_glyph(lookup.flags, lookup.mark_filtering_set, g.gid)
-    }
-
-    /// Fill the scratch view with the unskipped glyphs around `at`:
-    /// up to `before` of them before it and `after` from it on.
-    /// Returns the position of `at` inside the view.
-    fn fill_view(
+    /// in substitution, whose purpose is to keep its neighbours apart
+    /// (and ZERO WIDTH JOINER where the script says it blocks).
+    fn prepare(
         &mut self,
         font: &Font<'_>,
+        plan: &LayoutPlan,
         lookup: &StageLookup,
-        at: usize,
-        before: usize,
-        after: usize,
         positioning: bool,
-    ) -> usize {
+    ) {
+        // Lookups that skip the same glyphs share a view.
+        let key = (
+            lookup.flags & SKIP_FLAGS,
+            lookup
+                .mark_filtering_set
+                .filter(|_| lookup.flags & 0x10 != 0),
+            positioning,
+        );
+        if !self.dirty && self.view_key == Some(key) && self.slot.len() == self.glyphs.len() {
+            return;
+        }
+        self.view_key = Some(key);
         self.view.clear();
         self.view_index.clear();
-        let group = self.glyphs[at].group;
-        let mut i = at;
-        let mut taken = 0;
-        while i > 0 && taken < before {
-            i -= 1;
-            if self.bounded && self.glyphs[i].group != group {
-                break;
+        self.slot.clear();
+        let flagged = lookup.flags & SKIP_FLAGS != 0;
+        let joiners_block = self.joiners_block;
+        let (view, view_index, slot) = (&mut self.view, &mut self.view_index, &mut self.slot);
+        let mut fill = |skips: &mut dyn FnMut(u16) -> bool| {
+            for (i, g) in self.glyphs.iter().enumerate() {
+                let skipped = if g.ignorable {
+                    positioning || !(g.ch == '\u{200c}' || (g.ch == '\u{200d}' && joiners_block))
+                } else {
+                    flagged && skips(g.gid)
+                };
+                if skipped {
+                    slot.push(SKIPPED);
+                } else {
+                    slot.push(view.len() as u32);
+                    view.push(g.gid);
+                    view_index.push(i);
+                }
             }
-            if !self.skips(font, lookup, i, positioning) {
-                self.view_index.push(i);
-                taken += 1;
+        };
+        if flagged {
+            plan.with_skips(font, lookup.flags, lookup.mark_filtering_set, |skips| {
+                fill(skips)
+            });
+        } else {
+            fill(&mut |_| false);
+        }
+        self.dirty = false;
+    }
+
+    /// Give the glyph at `i` a new glyph id, keeping the view in step:
+    /// the view takes the id when the new glyph is as visible to the
+    /// current lookup as the old one was, and is rebuilt otherwise.
+    fn replace(&mut self, font: &Font<'_>, plan: &LayoutPlan, i: usize, gid: u16) {
+        self.glyphs[i].gid = gid;
+        self.glyphs[i].substituted = true;
+        if self.dirty {
+            return;
+        }
+        let (Some((flags, set, _)), Some(&k)) = (self.view_key, self.slot.get(i)) else {
+            self.dirty = true;
+            return;
+        };
+        let skipped = !self.glyphs[i].ignorable
+            && flags != 0
+            && plan.with_skips(font, flags, set, |skips| skips(gid));
+        if k != SKIPPED && !skipped {
+            self.view[k as usize] = gid;
+        } else if (k == SKIPPED) != skipped || self.glyphs[i].ignorable {
+            self.dirty = true;
+        }
+    }
+
+    /// The stretch of the view a lookup is shown for the glyph at
+    /// buffer position `at` (which must not be skipped): up to
+    /// `before` unskipped glyphs before it and `after` from it on,
+    /// within its group when matching is bounded. Returns the view
+    /// range and the position of `at` inside it.
+    fn window(&self, at: usize, before: usize, after: usize) -> (std::ops::Range<usize>, usize) {
+        let k = self.slot[at] as usize;
+        let mut lo = k.saturating_sub(before);
+        let mut hi = (k + after).min(self.view.len());
+        if self.bounded {
+            let group = self.glyphs[at].group;
+            if let Some(j) = (lo..k)
+                .rev()
+                .find(|&j| self.glyphs[self.view_index[j]].group != group)
+            {
+                lo = j + 1;
+            }
+            if let Some(j) = (k + 1..hi).find(|&j| self.glyphs[self.view_index[j]].group != group) {
+                hi = j;
             }
         }
-        self.view_index.reverse();
-        let pos = self.view_index.len();
-        let mut i = at;
-        let mut taken = 0;
-        while i < self.glyphs.len() && taken < after {
-            if self.bounded && self.glyphs[i].group != group {
-                break;
-            }
-            if i == at || !self.skips(font, lookup, i, positioning) {
-                self.view_index.push(i);
-                taken += 1;
-            }
-            i += 1;
-        }
-        self.view
-            .extend(self.view_index.iter().map(|&k| self.glyphs[k].gid));
-        pos
+        (lo..hi, k - lo)
     }
 
     /// Run the substitution lookups of one stage.
-    pub(crate) fn substitute(&mut self, font: &Font<'_>, lookups: &[StageLookup]) {
+    pub(crate) fn substitute(
+        &mut self,
+        font: &Font<'_>,
+        plan: &LayoutPlan,
+        lookups: &[StageLookup],
+    ) {
         for lookup in lookups {
             if self.glyphs.is_empty() {
                 return;
             }
+            self.prepare(font, plan, lookup, false);
             match lookup.ty {
-                1..=3 => self.apply_single(font, lookup),
-                4 => self.apply_ligature(font, lookup),
-                5 | 6 => self.apply_context(font, lookup),
-                8 => self.apply_reverse(font, lookup),
+                1..=3 => self.apply_single(font, plan, lookup),
+                4 => self.apply_ligature(font, plan, lookup),
+                5 | 6 => self.apply_context(font, plan, lookup),
+                8 => self.apply_reverse(font, plan, lookup),
                 _ => {}
             }
         }
     }
 
+    /// The glyph at `i` is one `lookup` may act on: carrying one of
+    /// its mask bits and not skipped. Refreshes the view first when an
+    /// edit made it stale.
+    fn acts_on(
+        &mut self,
+        font: &Font<'_>,
+        plan: &LayoutPlan,
+        lookup: &StageLookup,
+        i: usize,
+    ) -> bool {
+        if self.dirty {
+            self.prepare(font, plan, lookup, false);
+        }
+        self.glyphs[i].mask & lookup.mask != 0 && self.slot[i] != SKIPPED
+    }
+
     /// Lookup types 1 (single), 2 (multiple) and 3 (alternate): one
     /// glyph in.
-    fn apply_single(&mut self, font: &Font<'_>, lookup: &StageLookup) {
+    fn apply_single(&mut self, font: &Font<'_>, plan: &LayoutPlan, lookup: &StageLookup) {
         let mut i = 0;
         while i < self.glyphs.len() {
-            let g = self.glyphs[i];
-            if g.mask & lookup.mask == 0 || self.skips(font, lookup, i, false) {
+            if !self.acts_on(font, plan, lookup, i) {
                 i += 1;
                 continue;
             }
+            let g = self.glyphs[i];
             match lookup.ty {
                 1 => {
-                    if let Some(rep) = font.gsub_apply_lookup_type_1(lookup.index, g.gid) {
-                        self.glyphs[i].gid = rep;
-                        self.glyphs[i].substituted = true;
+                    if let Some(rep) = plan.single_substitute(font, lookup.index, g.gid) {
+                        self.replace(font, plan, i, rep);
                     }
                     i += 1;
                 }
@@ -299,15 +389,13 @@ impl Buffer {
                     if let Some(rep) =
                         font.gsub_apply_lookup_type_3(lookup.index, g.gid, lookup.alternate)
                     {
-                        self.glyphs[i].gid = rep;
-                        self.glyphs[i].substituted = true;
+                        self.replace(font, plan, i, rep);
                     }
                     i += 1;
                 }
                 _ => match font.gsub_apply_lookup_type_2(lookup.index, g.gid) {
                     Some(seq) if seq.len() == 1 => {
-                        self.glyphs[i].gid = seq[0];
-                        self.glyphs[i].substituted = true;
+                        self.replace(font, plan, i, seq[0]);
                         i += 1;
                     }
                     Some(seq) if !seq.is_empty() => {
@@ -318,6 +406,7 @@ impl Buffer {
                             ..g
                         });
                         self.glyphs.splice(i..=i, expanded);
+                        self.dirty = true;
                         i += n;
                     }
                     _ => i += 1,
@@ -327,20 +416,21 @@ impl Buffer {
     }
 
     /// Lookup type 4: ligature substitution over the unskipped glyphs.
-    fn apply_ligature(&mut self, font: &Font<'_>, lookup: &StageLookup) {
+    fn apply_ligature(&mut self, font: &Font<'_>, plan: &LayoutPlan, lookup: &StageLookup) {
         let mut i = 0;
         while i < self.glyphs.len() {
-            if self.glyphs[i].mask & lookup.mask == 0 || self.skips(font, lookup, i, false) {
+            if !self.acts_on(font, plan, lookup, i) {
                 i += 1;
                 continue;
             }
-            self.fill_view(font, lookup, i, 0, 24, false);
-            if let Some((rep, n)) = font.gsub_apply_lookup_type_4(lookup.index, &self.view)
+            let (range, _) = self.window(i, 0, LIGATURE_COMPONENTS);
+            if let Some((rep, n)) =
+                font.gsub_apply_lookup_type_4(lookup.index, &self.view[range.clone()])
                 && n >= 1
-                && n <= self.view_index.len()
+                && n <= range.len()
             {
-                let parts: Vec<usize> = self.view_index[..n].to_vec();
-                self.ligate(font, &parts, rep);
+                let parts: Vec<usize> = self.view_index[range.start..range.start + n].to_vec();
+                self.ligate(font, plan, &parts, rep);
             }
             i += 1;
         }
@@ -349,13 +439,13 @@ impl Buffer {
     /// Replace the glyphs at `parts` (ascending buffer indices) by the
     /// single glyph `rep`, keeping the glyphs skipped between them and
     /// recording which component each of those now belongs to.
-    fn ligate(&mut self, font: &Font<'_>, parts: &[usize], rep: u16) {
+    fn ligate(&mut self, font: &Font<'_>, plan: &LayoutPlan, parts: &[usize], rep: u16) {
         let first = parts[0];
         if parts.len() == 1 {
-            self.glyphs[first].gid = rep;
-            self.glyphs[first].substituted = true;
+            self.replace(font, plan, first, rep);
             return;
         }
+        self.dirty = true;
         let last = *parts.last().expect("non-empty");
         let id = self.fresh_lig_id();
         let cluster = self.glyphs[first..=last]
@@ -414,24 +504,24 @@ impl Buffer {
     /// lookup is shown the unskipped glyphs around the position and
     /// answers with their rewritten sequence; the difference is
     /// applied to the buffer.
-    fn apply_context(&mut self, font: &Font<'_>, lookup: &StageLookup) {
+    fn apply_context(&mut self, font: &Font<'_>, plan: &LayoutPlan, lookup: &StageLookup) {
         let mut i = 0;
         while i < self.glyphs.len() {
-            if self.glyphs[i].mask & lookup.mask == 0 || self.skips(font, lookup, i, false) {
+            if !self.acts_on(font, plan, lookup, i) {
                 i += 1;
                 continue;
             }
-            let pos = self.fill_view(font, lookup, i, CONTEXT_BEFORE, CONTEXT_AFTER, false);
+            let (range, pos) = self.window(i, CONTEXT_BEFORE, CONTEXT_AFTER);
+            let old = &self.view[range.clone()];
             let rewritten = if lookup.ty == 5 {
-                font.gsub_apply_lookup_type_5(lookup.index, &self.view, pos)
+                font.gsub_apply_lookup_type_5(lookup.index, old, pos)
             } else {
-                font.gsub_apply_lookup_type_6(lookup.index, &self.view, pos)
+                font.gsub_apply_lookup_type_6(lookup.index, old, pos)
             };
             let Some(new) = rewritten else {
                 i += 1;
                 continue;
             };
-            let old = &self.view;
             // The rewritten stretch: what lies between the common
             // prefix and the common suffix. It starts at the matched
             // position at the earliest.
@@ -453,15 +543,17 @@ impl Buffer {
                 i += 1;
                 continue;
             }
-            let targets: Vec<usize> = self.view_index[old_mid].to_vec();
+            let window_index = &self.view_index[range.clone()];
+            let targets: Vec<usize> = window_index[old_mid].to_vec();
+            let insert_at = window_index.get(prefix).copied();
             if targets.len() == new_mid.len() {
                 for (&t, &gid) in targets.iter().zip(&new_mid) {
-                    self.glyphs[t].gid = gid;
-                    self.glyphs[t].substituted = true;
+                    self.replace(font, plan, t, gid);
                 }
                 i = targets.last().map_or(i, |&t| t.max(i)) + 1;
             } else if new_mid.len() == 1 && !targets.is_empty() {
-                self.ligate(font, &targets, new_mid[0]);
+                self.ligate(font, plan, &targets, new_mid[0]);
+                self.dirty = true;
                 i = targets[0] + 1;
             } else if let Some(&at) = targets.first() {
                 // n glyphs become m: the new glyphs take the place of
@@ -477,14 +569,11 @@ impl Buffer {
                     ..template
                 });
                 self.glyphs.splice(at..=at, expanded);
+                self.dirty = true;
                 i = at + m.max(1);
             } else {
                 // Pure insertion before the suffix.
-                let at = self
-                    .view_index
-                    .get(prefix)
-                    .copied()
-                    .unwrap_or(self.glyphs.len());
+                let at = insert_at.unwrap_or(self.glyphs.len());
                 let template = self.glyphs[i];
                 let m = new_mid.len();
                 let inserted = new_mid.into_iter().map(|gid| Glyph {
@@ -493,6 +582,7 @@ impl Buffer {
                     ..template
                 });
                 self.glyphs.splice(at..at, inserted);
+                self.dirty = true;
                 i = at + m;
             }
         }
@@ -500,15 +590,14 @@ impl Buffer {
 
     /// Lookup type 8: reverse chaining single substitution, processed
     /// from the end of the run.
-    fn apply_reverse(&mut self, font: &Font<'_>, lookup: &StageLookup) {
+    fn apply_reverse(&mut self, font: &Font<'_>, plan: &LayoutPlan, lookup: &StageLookup) {
         for i in (0..self.glyphs.len()).rev() {
-            if self.glyphs[i].mask & lookup.mask == 0 || self.skips(font, lookup, i, false) {
+            if !self.acts_on(font, plan, lookup, i) {
                 continue;
             }
-            let pos = self.fill_view(font, lookup, i, CONTEXT_BEFORE, CONTEXT_AFTER, false);
-            if let Some(rep) = font.gsub_apply_lookup_type_8(lookup.index, &self.view, pos) {
-                self.glyphs[i].gid = rep;
-                self.glyphs[i].substituted = true;
+            let (range, pos) = self.window(i, CONTEXT_BEFORE, CONTEXT_AFTER);
+            if let Some(rep) = font.gsub_apply_lookup_type_8(lookup.index, &self.view[range], pos) {
+                self.replace(font, plan, i, rep);
             }
         }
     }
@@ -520,6 +609,7 @@ impl Buffer {
     pub(crate) fn position(
         &mut self,
         font: &Font<'_>,
+        plan: &LayoutPlan,
         lookups: &[StageLookup],
         legacy_kern: bool,
         zero_marks: bool,
@@ -549,11 +639,11 @@ impl Buffer {
         // GDEF class 3, and — for attachment — any glyph that stands
         // for a mark character (a font may class a ligature of two
         // marks as a ligature and still attach it as a mark).
-        let gdef_mark: Vec<bool> = self
-            .glyphs
-            .iter()
-            .map(|g| !g.ignorable && font.is_mark_glyph(g.gid))
-            .collect();
+        let mut gdef_mark: Vec<bool> = Vec::with_capacity(n);
+        plan.marks_of(font, self.glyphs.iter().map(|g| g.gid), &mut gdef_mark);
+        for (m, g) in gdef_mark.iter_mut().zip(&self.glyphs) {
+            *m &= !g.ignorable;
+        }
         let is_mark: Vec<bool> = self
             .glyphs
             .iter()
@@ -568,10 +658,11 @@ impl Buffer {
         let (mut pairs_done, mut base_done, mut stacking) = (false, false, false);
 
         for lookup in lookups {
+            self.prepare(font, plan, lookup, true);
             match lookup.ty {
                 1 => {
                     for (i, g) in out.iter_mut().enumerate() {
-                        if self.skips(font, lookup, i, true) {
+                        if self.slot[i] == SKIPPED {
                             continue;
                         }
                         if let Some(v) = font.gpos_apply_lookup_type_1_var(lookup.index, g.gid) {
@@ -588,7 +679,7 @@ impl Buffer {
                     pairs_done = true;
                     let mut prev: Option<usize> = None;
                     for i in 0..n {
-                        if self.skips(font, lookup, i, true) {
+                        if self.slot[i] == SKIPPED {
                             continue;
                         }
                         if let Some(p) = prev {
@@ -603,7 +694,7 @@ impl Buffer {
                     let right_to_left = lookup.flags & 1 != 0;
                     let mut prev: Option<usize> = None;
                     for i in 0..n {
-                        if self.skips(font, lookup, i, true) {
+                        if self.slot[i] == SKIPPED {
                             continue;
                         }
                         if let Some(p) = prev {
@@ -657,7 +748,7 @@ impl Buffer {
                             continue;
                         }
                         let Some(b) = base else { continue };
-                        if attach[i].is_some() || self.skips(font, lookup, i, true) {
+                        if attach[i].is_some() || self.slot[i] == SKIPPED {
                             continue;
                         }
                         if let Some((dx, dy)) = font.lookup_mark_to_base_var(out[b].gid, out[i].gid)
@@ -677,7 +768,7 @@ impl Buffer {
                             continue;
                         }
                         let Some(b) = base else { continue };
-                        if self.skips(font, lookup, i, true) {
+                        if self.slot[i] == SKIPPED {
                             continue;
                         }
                         let lig = self.glyphs[b];
@@ -704,18 +795,18 @@ impl Buffer {
                 6 => stacking = true,
                 7 | 8 => {
                     for i in 0..n {
-                        if self.skips(font, lookup, i, true) {
+                        if self.slot[i] == SKIPPED {
                             continue;
                         }
-                        let pos =
-                            self.fill_view(font, lookup, i, CONTEXT_BEFORE, CONTEXT_AFTER, true);
+                        let (range, pos) = self.window(i, CONTEXT_BEFORE, CONTEXT_AFTER);
+                        let shown = &self.view[range.clone()];
                         let records = if lookup.ty == 7 {
-                            font.gpos_apply_lookup_type_7(lookup.index, &self.view, pos)
+                            font.gpos_apply_lookup_type_7(lookup.index, shown, pos)
                         } else {
-                            font.gpos_apply_lookup_type_8(lookup.index, &self.view, pos)
+                            font.gpos_apply_lookup_type_8(lookup.index, shown, pos)
                         };
                         for r in records.unwrap_or_default() {
-                            let Some(&t) = self.view_index.get(r.glyph_index) else {
+                            let Some(&t) = self.view_index[range.clone()].get(r.glyph_index) else {
                                 continue;
                             };
                             out[t].x_off += i32::from(r.value.x_placement);
