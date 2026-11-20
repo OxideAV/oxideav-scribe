@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-scribe/compare/v0.1.10...v0.2.0) - 2026-11-20
+
+### Other
+
+- crate and shaping module overviews describe the script-aware engine and layout_text
+- staged engine: bound substitution growth; arbitrary-text robustness test; parse-count test covers shaping and layout entry points
+- linear line filling, layout_text (UAX #14 breaks, alignment, justification, tab stops, vertical)
+- staged engine: per-lookup views, kept skip sets / mark classes / stage plans / consonant forms, single-substitution memo
+- script-aware engine, joining and Indic scripts on the font's own lookups, conformance harness
+- layout plan: bound the kept per-script feature lists; FaceChain::with_outline_cache
+- measure each accepted candidate once; feature queries read the layout plan
+- GPOS cursive attachment: honour the RIGHT_TO_LEFT lookup flag
+- COLR version 0 layered colour glyphs
+- keep decoded colour-bitmap strikes
+- per-face layout plan — lookup and feature lists resolved once
+- parse the font once for the life of the face; optional outline cache
+- parse each face once per shaping call ([#17](https://github.com/OxideAV/oxideav-scribe/pull/17))
+- API hygiene: non_exhaustive Error/FaceKind/Script and output records
+- edition 2024, MSRV 1.95
+- README examples use the current registry API
+- ureq without default features — drop the flate2/miniz_oxide gzip layer
+
 ### Added
 
 - Script-aware shaping engine behind `FaceChain::shape` / `Shaper::shape`: UAX #24 script runs, grapheme-cluster font fallback, per-font normalisation (compose to the precomposed character the font has, decompose the one it lacks, canonical mark order, Hangul jamo to syllables, mirroring in right-to-left runs, `cmap` variation sequences), then the script's default `GSUB` / `GPOS` features under its language system in LookupList order with `lookupFlag` filtering. Runs whose features apply to every glyph use the font parser's lookup engine; cursive-joining scripts and nine Indic scripts use a staged engine with per-glyph feature masks.
